@@ -1,0 +1,164 @@
+<h1 align="center">sessions</h1>
+
+<p align="center">
+  Find and resume AI coding sessions.<br/>
+  Browse conversations from <strong>Claude Code</strong>, <strong>Codex</strong>, and <strong>Pi</strong> with fuzzy search, scoped to the current repo or across all projects.
+</p>
+
+<p align="center">
+  <a href="https://github.com/nicknisi/sessions/actions/workflows/ci.yml"><img src="https://github.com/nicknisi/sessions/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <a href="https://github.com/nicknisi/sessions/releases/latest"><img src="https://img.shields.io/github/v/release/nicknisi/sessions" alt="Latest Release" /></a>
+</p>
+
+## Why
+
+AI coding tools don't make it easy to find old sessions. Claude Code buries them in `~/.claude/projects/`, Codex and Pi have their own layouts. You end up grepping JSONL files or scrolling through `claude --resume` hoping to spot the right one.
+
+`sessions` indexes all three tools, extracts the first user prompt from each conversation, and presents them in a unified fuzzy-searchable list. Pick a session and the resume command is copied to your clipboard.
+
+## Install
+
+### Homebrew
+
+```sh
+brew install nicknisi/formulae/sessions
+```
+
+Or, equivalently:
+
+```sh
+brew tap nicknisi/formulae
+brew install sessions
+```
+
+### From source
+
+```sh
+git clone https://github.com/nicknisi/sessions && cd sessions
+bun install && bun run build
+```
+
+The compiled binary is at `dist/sessions`. Requires [Bun](https://bun.sh) when building from source. The Homebrew install is a standalone binary — no runtime needed.
+
+## Dependencies
+
+- **fzf** (optional but recommended) — used for fuzzy selection. If fzf is not installed, a built-in numbered list selector is used as a fallback. Install with `brew install fzf`.
+
+## Usage
+
+```sh
+sessions                     # Browse all sessions with fzf
+sessions <query>             # Search session content for a phrase
+sessions --here              # Scope to current git repo only
+sessions --tool claude       # Filter to Claude Code sessions only
+```
+
+### Options
+
+| Flag            | Description                                           |
+| --------------- | ----------------------------------------------------- |
+| `--here`        | Scope to the current git repo (default: all projects) |
+| `--tool <name>` | Filter by tool: `claude`, `codex`, or `pi`            |
+| `--no-color`    | Disable colored output                                |
+| `-h`, `--help`  | Show help                                             |
+
+### Browsing
+
+With no arguments, `sessions` scans all session directories, extracts the first user prompt from each conversation, and pipes the results into fzf for fuzzy selection:
+
+```
+● my-project       claude  today     Refactor the auth middleware to use JWT
+● my-project       pi      2d        Help me debug the flaky integration test
+● api-server       codex   1w        Add rate limiting to the /api/v2 endpoints
+○ old-project      claude  2025-03   Set up the initial project structure
+```
+
+- **●** (green) — the project directory still exists
+- **○** (red) — the project directory has been deleted
+
+### Searching
+
+Pass a query to search across user messages in all sessions:
+
+```sh
+sessions "rate limit"
+```
+
+This greps through session content (user messages only, ignoring system-injected blocks) and shows matching sessions with a snippet of the matching context. The search is case-insensitive.
+
+### After selection
+
+When you pick a session, `sessions` displays the resume command and copies it to your clipboard:
+
+```
+  my-project (claude)
+  Refactor the auth middleware to use JWT
+
+  cd /Users/you/Developer/my-project && claude --resume abc123
+  (copied to clipboard)
+```
+
+For Claude Code sessions, the command includes `--resume <session-id>`. For Pi and Codex sessions, it navigates to the project directory (these tools don't support direct session resume).
+
+## How it works
+
+### Session discovery
+
+`sessions` reads JSONL session files from these locations:
+
+| Tool        | Directory                       |
+| ----------- | ------------------------------- |
+| Claude Code | `~/.claude/projects/<project>/` |
+| Pi          | `~/.pi/agent/sessions/`         |
+| Codex       | `~/.codex/sessions/`            |
+
+Each session file is parsed to extract:
+
+- **Working directory** — read from the session metadata to determine which project the session belongs to
+- **First user prompt** — the initial message you sent, cleaned of system-injected tags
+- **Last timestamp** — when the session was last active (read from the tail of the file for performance)
+
+### Scoping with `--here`
+
+When `--here` is passed, `sessions` resolves the current git repo root and only shows sessions whose working directory falls under that root. This works with bare repo worktrees — if a `.git` file points to a `.bare` directory, the parent is used as the repo root.
+
+### Search filtering
+
+When a query is provided, only sessions containing that text in user messages are shown. System-injected content (`<system-reminder>`, `<local-command-stdout>`, etc.) is stripped before matching so you only search what you actually typed.
+
+## Development
+
+```sh
+bun install                  # Install dependencies
+bun run dev                  # Run directly without compiling
+bun run build                # Compile to dist/sessions
+bun run typecheck            # Type-check with tsc
+bun run lint                 # Lint with oxlint
+bun run format               # Format with oxfmt
+bun run format:check         # Check formatting without writing
+```
+
+### Cross-compilation
+
+The release workflow compiles binaries for three platforms:
+
+| Target                    | Artifact                 |
+| ------------------------- | ------------------------ |
+| macOS ARM (Apple Silicon) | `sessions-darwin-arm64`  |
+| macOS x86_64 (Intel)      | `sessions-darwin-x86_64` |
+| Linux x86_64              | `sessions-linux-x86_64`  |
+
+Binaries are compiled with `bun build --compile --minify` and distributed as `.tar.gz` archives attached to GitHub Releases.
+
+### Release process
+
+Releases are automated with [release-please](https://github.com/googleapis/release-please):
+
+1. Push commits to `main` using [conventional commit](https://www.conventionalcommits.org/) messages
+2. Release-please opens a version-bump PR with an auto-generated changelog
+3. Merge the PR to trigger the release pipeline
+4. Binaries are built, attached to the GitHub Release, and the Homebrew formula is auto-updated
+
+## License
+
+MIT
