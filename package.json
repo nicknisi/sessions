@@ -1,0 +1,22 @@
+{
+  "name": "sessions",
+  "version": "1.0.0",
+  "description": "Find and resume AI coding sessions (Claude Code, Codex, Pi)",
+  "module": "index.ts",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "sessions": "./dist/sessions"
+  },
+  "scripts": {
+    "dev": "bun run index.ts",
+    "build": "bun build --compile --minify index.ts --outfile dist/sessions",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  }
+}
