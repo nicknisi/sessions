@@ -1,0 +1,116 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.rp.outputs.release_created }}
+      tag_name: ${{ steps.rp.outputs.tag_name }}
+    steps:
+      - id: rp
+        uses: googleapis/release-please-action@v4
+        with:
+          config-file: .release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  build:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created }}
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            target: bun-darwin-arm64
+            artifact: sessions-darwin-arm64
+          - os: macos-latest
+            target: bun-darwin-x64
+            artifact: sessions-darwin-x86_64
+          - os: ubuntu-latest
+            target: bun-linux-x64
+            artifact: sessions-linux-x86_64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Compile binary
+        run: bun build --compile --minify --target=${{ matrix.target }} index.ts --outfile sessions
+
+      - name: Package tarball
+        run: tar czf ${{ matrix.artifact }}.tar.gz sessions
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}.tar.gz
+
+  attach-binaries:
+    needs: [release-please, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.release-please.outputs.tag_name }}
+          files: '*.tar.gz'
+
+  update-formula:
+    needs: [release-please, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout tap repo
+        uses: actions/checkout@v4
+        with:
+          repository: nicknisi/homebrew-formulae
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - name: Update formula
+        env:
+          VERSION: ${{ needs.release-please.outputs.tag_name }}
+        run: |
+          VER="${VERSION#v}"
+          SHA_ARM64=$(shasum -a 256 sessions-darwin-arm64.tar.gz | cut -d' ' -f1)
+          SHA_X86_64=$(shasum -a 256 sessions-darwin-x86_64.tar.gz | cut -d' ' -f1)
+          SHA_LINUX=$(shasum -a 256 sessions-linux-x86_64.tar.gz | cut -d' ' -f1)
+          cd tap
+          sed -i "s/version \".*\"/version \"${VER}\"/" Formula/sessions.rb
+          python3 -c "
+          import re
+          f = 'Formula/sessions.rb'
+          txt = open(f).read()
+          shas = {'arm64': '${SHA_ARM64}', 'x86_64': '${SHA_X86_64}', 'linux': '${SHA_LINUX}'}
+          for arch, sha in shas.items():
+              txt = re.sub(r'(sessions-.*' + arch + r'.*\n\s*sha256 \")([a-fA-F0-9]+|PLACEHOLDER_\w+)(\")', lambda m: m.group(1) + sha + m.group(3), txt)
+          open(f, 'w').write(txt)
+          "
+
+      - name: Commit formula
+        run: |
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/sessions.rb
+          git diff --cached --quiet || git commit -m "sessions: update to ${{ needs.release-please.outputs.tag_name }}"
+          git push
