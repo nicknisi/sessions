@@ -1,10 +1,10 @@
-import { C, disableColors } from "./colors";
-import { type Tool, type CliArgs } from "./types";
+import { C, disableColors } from './colors';
+import { type Tool, type CliArgs } from './types';
 
-const VALID_TOOLS = new Set<string>(["claude", "codex", "pi"]);
+const VALID_TOOLS = new Set<string>(['claude', 'codex', 'pi']);
 
 function usage(): never {
-	process.stderr.write(`${C.bold}sessions${C.reset} — find and resume AI coding sessions
+  process.stderr.write(`${C.bold}sessions${C.reset} — find and resume AI coding sessions
 
 Browse sessions from Claude Code, Codex, and Pi with fuzzy search.
 Scoped to the current git repo.
@@ -24,67 +24,67 @@ ${C.bold}Search:${C.reset}
   With an argument, greps across session content for matching
   sessions, then opens fzf with the results.
 `);
-	process.exit(0);
+  process.exit(0);
 }
 
 function die(msg: string): never {
-	process.stderr.write(`${C.red}error:${C.reset} ${msg}\n`);
-	process.exit(1);
+  process.stderr.write(`${C.red}error:${C.reset} ${msg}\n`);
+  process.exit(1);
 }
 
 export function parseArgs(argv: string[]): CliArgs {
-	const args: CliArgs = { toolFilter: "", searchQuery: "", scopeHere: false };
+  const args: CliArgs = { toolFilter: '', searchQuery: '', scopeHere: false };
 
-	let i = 0;
-	while (i < argv.length) {
-		const arg = argv[i]!;
-		switch (arg) {
-			case "-h":
-			case "--help":
-				usage();
-			case "--tool":
-				i++;
-				if (!argv[i] || !VALID_TOOLS.has(argv[i]!)) {
-					die(`--tool requires one of: claude, codex, pi`);
-				}
-				args.toolFilter = argv[i] as Tool;
-				break;
-			case "--here":
-				args.scopeHere = true;
-				break;
-			case "--no-color":
-				disableColors();
-				break;
-			default:
-				if (arg.startsWith("-")) die(`unknown option: ${arg}`);
-				args.searchQuery = arg;
-		}
-		i++;
-	}
+  let i = 0;
+  while (i < argv.length) {
+    const arg = argv[i]!;
+    switch (arg) {
+      case '-h':
+      case '--help':
+        usage();
+      case '--tool':
+        i++;
+        if (!argv[i] || !VALID_TOOLS.has(argv[i]!)) {
+          die(`--tool requires one of: claude, codex, pi`);
+        }
+        args.toolFilter = argv[i] as Tool;
+        break;
+      case '--here':
+        args.scopeHere = true;
+        break;
+      case '--no-color':
+        disableColors();
+        break;
+      default:
+        if (arg.startsWith('-')) die(`unknown option: ${arg}`);
+        args.searchQuery = arg;
+    }
+    i++;
+  }
 
-	return args;
+  return args;
 }
 
 export function getRepoRoot(scopeHere: boolean): string {
-	if (!scopeHere) return "";
+  if (!scopeHere) return '';
 
-	try {
-		const result = Bun.spawnSync(["git", "rev-parse", "--show-toplevel"]);
-		let root = new TextDecoder().decode(result.stdout).trim();
-		if (!root) return process.cwd();
+  try {
+    const result = Bun.spawnSync(['git', 'rev-parse', '--show-toplevel']);
+    let root = new TextDecoder().decode(result.stdout).trim();
+    if (!root) return process.cwd();
 
-		try {
-			const parentGit = `${root}/../.git`;
-			const content = require("fs").readFileSync(parentGit, "utf-8");
-			if (content.includes("gitdir") && content.includes(".bare")) {
-				root = require("path").resolve(root, "..");
-			}
-		} catch {
-			// not a bare repo worktree
-		}
+    try {
+      const parentGit = `${root}/../.git`;
+      const content = require('fs').readFileSync(parentGit, 'utf-8');
+      if (content.includes('gitdir') && content.includes('.bare')) {
+        root = require('path').resolve(root, '..');
+      }
+    } catch {
+      // not a bare repo worktree
+    }
 
-		return root;
-	} catch {
-		return process.cwd();
-	}
+    return root;
+  } catch {
+    return process.cwd();
+  }
 }

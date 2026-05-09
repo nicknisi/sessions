@@ -11,10 +11,15 @@
   "scripts": {
     "dev": "bun run index.ts",
     "build": "bun build --compile --minify index.ts --outfile dist/sessions",
+    "lint": "oxlint",
+    "format": "oxfmt .",
+    "format:check": "oxfmt --check .",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "oxfmt": "^0.47.0",
+    "oxlint": "^1.62.0"
   },
   "peerDependencies": {
     "typescript": "^5"
