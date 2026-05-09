@@ -93,18 +93,19 @@ export async function scanSessions(
 ): Promise<SessionResult[]> {
   const searchAll = repoRoot === '';
   const claudePrefix = repoRoot ? repoRoot.replaceAll('/', '-') : '';
+  const normalizedQuery = searchQuery.toLowerCase();
 
   const scans: Promise<SessionResult[]>[] = [];
 
   if (toolFilter === '' || toolFilter === 'claude') {
-    scans.push(scanDir(CLAUDE_DIR, claudePrefix, 'claude', repoRoot, searchAll, searchQuery));
+    scans.push(scanDir(CLAUDE_DIR, claudePrefix, 'claude', repoRoot, searchAll, normalizedQuery));
   }
   if (toolFilter === '' || toolFilter === 'pi') {
     const piPrefix = repoRoot ? `-${claudePrefix}-` : '--';
-    scans.push(scanDir(PI_DIR, piPrefix, 'pi', repoRoot, searchAll, searchQuery));
+    scans.push(scanDir(PI_DIR, piPrefix, 'pi', repoRoot, searchAll, normalizedQuery));
   }
   if (toolFilter === '' || toolFilter === 'codex') {
-    scans.push(scanDir(CODEX_DIR, '', 'codex', repoRoot, searchAll, searchQuery));
+    scans.push(scanDir(CODEX_DIR, '', 'codex', repoRoot, searchAll, normalizedQuery));
   }
 
   const all = (await Promise.all(scans)).flat();
