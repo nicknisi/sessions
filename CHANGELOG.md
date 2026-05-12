@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.0](https://github.com/nicknisi/sessions/compare/v1.2.0...v1.3.0) (2026-05-12)
+
+
+### Features
+
+* add MCP server with SQLite-indexed search ([f0163cf](https://github.com/nicknisi/sessions/commit/f0163cf7ecbcf5919e936352bf265fe2c75dcc9a))
+
 ## [1.2.0](https://github.com/nicknisi/sessions/compare/v1.1.0...v1.2.0) (2026-05-09)
 
 
