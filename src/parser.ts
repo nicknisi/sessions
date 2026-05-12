@@ -157,6 +157,65 @@ export function contentMatches(lines: string[], query: string): boolean {
   return false;
 }
 
+export interface SessionMessage {
+  role: 'user' | 'assistant';
+  text: string;
+  index: number;
+}
+
+function extractAssistantText(d: JsonLine): string {
+  if (d.type === 'assistant') {
+    const msg = d.message;
+    if (typeof msg === 'string') return msg;
+    if (!msg || typeof msg !== 'object') return '';
+    const content = (msg as Record<string, unknown>).content;
+    if (typeof content === 'string') return content;
+    if (Array.isArray(content)) {
+      const texts: string[] = [];
+      for (const c of content) {
+        if (typeof c === 'object' && c !== null && (c as Record<string, unknown>).type === 'text') {
+          texts.push((c as Record<string, string>).text ?? '');
+        }
+      }
+      return texts.join(' ');
+    }
+  }
+  if (d.type === 'message') {
+    const msg = d.message;
+    if (typeof msg !== 'object' || msg === null) return '';
+    if ((msg as Record<string, unknown>).role !== 'assistant') return '';
+    const content = (msg as Record<string, unknown>).content;
+    if (typeof content === 'string') return content;
+    if (Array.isArray(content)) {
+      const texts: string[] = [];
+      for (const c of content) {
+        if (typeof c === 'object' && c !== null && (c as Record<string, unknown>).type === 'text') {
+          texts.push((c as Record<string, string>).text ?? '');
+        }
+      }
+      return texts.join(' ');
+    }
+  }
+  return '';
+}
+
+export function getSessionMessages(lines: string[]): SessionMessage[] {
+  const messages: SessionMessage[] = [];
+  let idx = 0;
+  for (const line of lines) {
+    const d = tryParseJson(line);
+    if (!d) continue;
+    if (isUserMessage(d)) {
+      const text = extractUserText(d);
+      if (text.trim()) messages.push({ role: 'user', text, index: idx++ });
+    } else {
+      const text = extractAssistantText(d);
+      if (text.trim()) messages.push({ role: 'assistant', text, index: idx++ });
+    }
+  }
+  return messages;
+}
+
 export function findMatchContext(lines: string[], query: string): string {
   for (const line of lines) {
     const d = tryParseJson(line);

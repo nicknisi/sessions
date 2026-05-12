@@ -17,6 +17,8 @@ ${C.bold}Usage:${C.reset}
 ${C.bold}Options:${C.reset}
   --here           Scope to current git repo (default: all projects)
   --tool <name>    Filter: claude, codex, pi
+  --mcp            Start as an MCP server (stdio transport)
+  --clear-cache    Remove the search index (rebuilds on next use)
   -h, --help       Show this help
 
 ${C.bold}Search:${C.reset}

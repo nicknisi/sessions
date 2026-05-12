@@ -6,6 +6,18 @@ import { formatLine } from './src/display';
 import { selectSession } from './src/select';
 import { copyToClipboard } from './src/clipboard';
 
+if (Bun.argv.includes('--clear-cache')) {
+  const { clearCache } = await import('./src/cache');
+  clearCache();
+  process.exit(0);
+}
+
+if (Bun.argv.includes('--mcp')) {
+  const { startMcpServer } = await import('./src/mcp');
+  await startMcpServer();
+  await new Promise(() => {});
+}
+
 const args = parseArgs(Bun.argv.slice(2));
 const repoRoot = getRepoRoot(args.scopeHere);
 

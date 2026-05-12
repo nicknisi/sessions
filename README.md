@@ -59,6 +59,8 @@ sessions --tool claude       # Filter to Claude Code sessions only
 | --------------- | ----------------------------------------------------- |
 | `--here`        | Scope to the current git repo (default: all projects) |
 | `--tool <name>` | Filter by tool: `claude`, `codex`, or `pi`            |
+| `--mcp`         | Start as an MCP server (stdio transport)              |
+| `--clear-cache` | Remove the search index (rebuilds on next use)        |
 | `--no-color`    | Disable colored output                                |
 | `-h`, `--help`  | Show help                                             |
 
@@ -99,6 +101,44 @@ When you pick a session, `sessions` displays the resume command and copies it to
 ```
 
 For Claude Code sessions, the command includes `--resume <session-id>`. For Pi and Codex sessions, it navigates to the project directory (these tools don't support direct session resume).
+
+## MCP Server
+
+`sessions` can run as an [MCP](https://modelcontextprotocol.io/) server, giving AI agents searchable access to your past conversations. This lets Claude, Codex, or any MCP-compatible client recall how you solved problems, what decisions you made, and what tools you used — across all three AI coding tools.
+
+### Setup
+
+Add to your MCP configuration (e.g., `~/.claude/.mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "sessions": {
+      "command": "sessions",
+      "args": ["--mcp"]
+    }
+  }
+}
+```
+
+### Tools
+
+The MCP server exposes two tools:
+
+| Tool                   | Description                                                                 |
+| ---------------------- | --------------------------------------------------------------------------- |
+| `search_sessions`      | Search across sessions by keyword, filter by tool or project, list recent   |
+| `get_session_messages`  | Retrieve messages from a specific session, paginated by offset and limit    |
+
+### Search index
+
+The MCP server maintains a SQLite + FTS5 index at `~/.cache/sessions/index.db` for fast full-text search across all sessions. The index is built automatically on first use (~5s for thousands of sessions) and updated incrementally on subsequent calls by checking file modification times — only new or changed sessions are re-indexed.
+
+To clear the index and force a full rebuild:
+
+```sh
+sessions --clear-cache
+```
 
 ## How it works
 
