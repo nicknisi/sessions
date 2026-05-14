@@ -3,7 +3,16 @@ import { join, basename } from 'node:path';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { type Tool, type SessionResult } from './types';
-import { getCwdFromSession, firstPrompt, lastTimestamp, contentMatches, findMatchContext } from './parser';
+import {
+  getCwdFromSession,
+  firstPrompt,
+  lastTimestamp,
+  contentMatches,
+  findMatchContext,
+  customTitle,
+  firstTimestamp,
+  messageCount,
+} from './parser';
 
 const home = homedir();
 const CLAUDE_DIR = join(home, '.claude/projects');
@@ -36,16 +45,41 @@ async function processSession(
 
   const sessionId = basename(filePath).replace('.jsonl', '');
 
+  const date = lastTimestamp(raw);
+  const createdAt = firstTimestamp(lines);
+  const title = customTitle(lines);
+  const msgCount = messageCount(lines);
+
   if (searchQuery) {
     if (!contentMatches(lines, searchQuery)) return null;
     const displayText = findMatchContext(lines, searchQuery);
-    const date = lastTimestamp(raw);
-    return { date, cwd, tool, sessionId, displayText, filePath, exists: existsSync(cwd) };
+    return {
+      date,
+      createdAt,
+      cwd,
+      tool,
+      sessionId,
+      displayText,
+      customTitle: title,
+      messageCount: msgCount,
+      filePath,
+      exists: existsSync(cwd),
+    };
   }
 
-  const displayText = firstPrompt(lines, tool);
-  const date = lastTimestamp(raw);
-  return { date, cwd, tool, sessionId, displayText, filePath, exists: existsSync(cwd) };
+  const displayText = title || firstPrompt(lines, tool);
+  return {
+    date,
+    createdAt,
+    cwd,
+    tool,
+    sessionId,
+    displayText,
+    customTitle: title,
+    messageCount: msgCount,
+    filePath,
+    exists: existsSync(cwd),
+  };
 }
 
 async function scanDir(

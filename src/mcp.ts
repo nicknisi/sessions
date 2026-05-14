@@ -1,7 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { searchSessions, refreshIndex } from './cache';
+import { searchSessions } from './cache';
 import { getSessionMessages } from './parser';
 import { type SessionResult } from './types';
 
@@ -30,8 +30,11 @@ server.tool(
       sessionId: r.sessionId,
       tool: r.tool,
       date: r.date,
+      createdAt: r.createdAt,
       project: r.cwd,
+      title: r.customTitle || null,
       snippet: r.displayText,
+      messageCount: r.messageCount,
       exists: r.exists,
       filePath: r.filePath,
     }));
