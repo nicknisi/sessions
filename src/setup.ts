@@ -11,11 +11,6 @@ const PLUGIN_VERSION = '1.0.0';
 const MARKETPLACE_NAME = 'sessions';
 const PLUGIN_NAME = 'sessions';
 
-const CLAUDE_PLUGINS_DIR = join(home, '.claude', 'plugins');
-const CLAUDE_CACHE_DIR = join(CLAUDE_PLUGINS_DIR, 'cache', MARKETPLACE_NAME, PLUGIN_NAME, PLUGIN_VERSION);
-const KNOWN_MARKETPLACES_PATH = join(CLAUDE_PLUGINS_DIR, 'known_marketplaces.json');
-const INSTALLED_PLUGINS_PATH = join(CLAUDE_PLUGINS_DIR, 'installed_plugins.json');
-
 interface ToolConfig {
   name: string;
   detected: boolean;
@@ -138,78 +133,24 @@ function configureMcp(tool: ToolConfig): boolean {
   }
 }
 
-function registerClaudePlugin(): boolean {
+function runClaude(...args: string[]): boolean {
   try {
-    mkdirSync(CLAUDE_CACHE_DIR, { recursive: true });
-    cpSync(PLUGIN_DEST, CLAUDE_CACHE_DIR, { recursive: true, force: true });
-
-    let marketplaces: Record<string, unknown> = {};
-    if (existsSync(KNOWN_MARKETPLACES_PATH)) {
-      try {
-        marketplaces = JSON.parse(readFileSync(KNOWN_MARKETPLACES_PATH, 'utf-8'));
-      } catch {}
-    }
-    marketplaces[MARKETPLACE_NAME] = {
-      source: { source: 'directory', path: SESSIONS_DIR },
-      installLocation: SESSIONS_DIR,
-      lastUpdated: new Date().toISOString(),
-    };
-    writeFileSync(KNOWN_MARKETPLACES_PATH, JSON.stringify(marketplaces, null, 2) + '\n');
-
-    let installed: Record<string, unknown> = { version: 2, plugins: {} };
-    if (existsSync(INSTALLED_PLUGINS_PATH)) {
-      try {
-        installed = JSON.parse(readFileSync(INSTALLED_PLUGINS_PATH, 'utf-8'));
-      } catch {}
-    }
-    const plugins = (installed.plugins ?? {}) as Record<string, unknown[]>;
-    const key = `${PLUGIN_NAME}@${MARKETPLACE_NAME}`;
-    plugins[key] = [
-      {
-        scope: 'user',
-        installPath: CLAUDE_CACHE_DIR,
-        version: PLUGIN_VERSION,
-        installedAt: new Date().toISOString(),
-        lastUpdated: new Date().toISOString(),
-      },
-    ];
-    installed.plugins = plugins;
-    writeFileSync(INSTALLED_PLUGINS_PATH, JSON.stringify(installed, null, 2) + '\n');
-
-    return true;
+    const result = Bun.spawnSync(['claude', 'plugins', ...args], { stderr: 'pipe', stdout: 'pipe' });
+    return result.exitCode === 0;
   } catch {
     return false;
   }
 }
 
+function registerClaudePlugin(): { marketplace: boolean; install: boolean } {
+  const marketplace = runClaude('marketplace', 'add', SESSIONS_DIR);
+  const install = runClaude('install', `${PLUGIN_NAME}@${MARKETPLACE_NAME}`);
+  return { marketplace, install };
+}
+
 function unregisterClaudePlugin(): void {
-  try {
-    if (existsSync(KNOWN_MARKETPLACES_PATH)) {
-      const marketplaces = JSON.parse(readFileSync(KNOWN_MARKETPLACES_PATH, 'utf-8'));
-      if (marketplaces[MARKETPLACE_NAME]) {
-        delete marketplaces[MARKETPLACE_NAME];
-        writeFileSync(KNOWN_MARKETPLACES_PATH, JSON.stringify(marketplaces, null, 2) + '\n');
-      }
-    }
-  } catch {}
-
-  try {
-    if (existsSync(INSTALLED_PLUGINS_PATH)) {
-      const installed = JSON.parse(readFileSync(INSTALLED_PLUGINS_PATH, 'utf-8'));
-      const plugins = installed.plugins ?? {};
-      const key = `${PLUGIN_NAME}@${MARKETPLACE_NAME}`;
-      if (plugins[key]) {
-        delete plugins[key];
-        installed.plugins = plugins;
-        writeFileSync(INSTALLED_PLUGINS_PATH, JSON.stringify(installed, null, 2) + '\n');
-      }
-    }
-  } catch {}
-
-  try {
-    const cacheDir = join(CLAUDE_PLUGINS_DIR, 'cache', MARKETPLACE_NAME);
-    require('node:fs').rmSync(cacheDir, { recursive: true, force: true });
-  } catch {}
+  runClaude('uninstall', `${PLUGIN_NAME}@${MARKETPLACE_NAME}`);
+  runClaude('marketplace', 'remove', MARKETPLACE_NAME);
 }
 
 export function runSetup(): void {
@@ -240,10 +181,16 @@ export function runSetup(): void {
     }
 
     if (tool.name === 'Claude Code') {
-      if (registerClaudePlugin()) {
-        w(`  ${C.green}✓${C.reset} Plugin registered with ${C.dim}${tool.name}${C.reset}\n`);
+      const result = registerClaudePlugin();
+      if (result.marketplace) {
+        w(`  ${C.green}✓${C.reset} Marketplace added to ${C.dim}${tool.name}${C.reset}\n`);
       } else {
-        w(`  ${C.red}✗${C.reset} Failed to register plugin with ${tool.name}\n`);
+        w(`  ${C.dim}ℹ${C.reset} Marketplace already registered with ${C.dim}${tool.name}${C.reset}\n`);
+      }
+      if (result.install) {
+        w(`  ${C.green}✓${C.reset} Plugin installed in ${C.dim}${tool.name}${C.reset}\n`);
+      } else {
+        w(`  ${C.dim}ℹ${C.reset} Plugin already installed in ${C.dim}${tool.name}${C.reset}\n`);
       }
     }
   }
@@ -280,15 +227,9 @@ export function runUninstall(): void {
     }
   }
 
-  // Clean up old symlinks from previous versions
-  const oldLink = join(CLAUDE_PLUGINS_DIR, 'sessions');
   try {
-    require('node:fs').rmSync(oldLink, { recursive: true, force: true });
-  } catch {}
-
-  try {
-    require('node:fs').rmSync(PLUGIN_DEST, { recursive: true, force: true });
-    w(`  ${C.green}✓${C.reset} Removed ${C.dim}${PLUGIN_DEST}${C.reset}\n`);
+    require('node:fs').rmSync(SESSIONS_DIR, { recursive: true, force: true });
+    w(`  ${C.green}✓${C.reset} Removed ${C.dim}${SESSIONS_DIR}${C.reset}\n`);
   } catch {}
 
   w(`\n  ${C.dim}Done. Plugin and MCP config removed.${C.reset}\n\n`);
