@@ -5,7 +5,8 @@ import { C } from './colors';
 import { PLUGIN_FILES } from './plugin-files';
 
 const home = homedir();
-const PLUGIN_DEST = join(home, '.local', 'share', 'sessions', 'plugin');
+const SESSIONS_DIR = join(home, '.local', 'share', 'sessions');
+const PLUGIN_DEST = join(SESSIONS_DIR, 'plugin');
 const PLUGIN_VERSION = '1.0.0';
 const MARKETPLACE_NAME = 'sessions';
 const PLUGIN_NAME = 'sessions';
@@ -77,10 +78,29 @@ function installPluginFromEmbed(): boolean {
   }
 }
 
+function writeMarketplaceJson(): void {
+  const marketplace = {
+    name: MARKETPLACE_NAME,
+    owner: { name: 'Nick Nisi', email: 'nick@nisi.org' },
+    metadata: { description: 'Skills for summarizing and recalling AI coding sessions', version: PLUGIN_VERSION },
+    plugins: [
+      {
+        name: PLUGIN_NAME,
+        source: './plugin',
+        description: 'Weekly summaries, standups, recall, and metrics for AI coding sessions.',
+      },
+    ],
+  };
+  const dir = join(SESSIONS_DIR, '.claude-plugin');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'marketplace.json'), JSON.stringify(marketplace, null, 2) + '\n');
+}
+
 function installPlugin(): boolean {
   const source = findPluginSource();
-  if (source) return installPluginFromDisk(source);
-  return installPluginFromEmbed();
+  const ok = source ? installPluginFromDisk(source) : installPluginFromEmbed();
+  if (ok) writeMarketplaceJson();
+  return ok;
 }
 
 function sessionsCommand(): string {
@@ -130,8 +150,8 @@ function registerClaudePlugin(): boolean {
       } catch {}
     }
     marketplaces[MARKETPLACE_NAME] = {
-      source: { source: 'directory', path: PLUGIN_DEST },
-      installLocation: PLUGIN_DEST,
+      source: { source: 'directory', path: SESSIONS_DIR },
+      installLocation: SESSIONS_DIR,
       lastUpdated: new Date().toISOString(),
     };
     writeFileSync(KNOWN_MARKETPLACES_PATH, JSON.stringify(marketplaces, null, 2) + '\n');
