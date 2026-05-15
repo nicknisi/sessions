@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, writeFileSync, readFileSync, statSync, cpSync } 
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { C } from './colors';
+import { PLUGIN_FILES } from './plugin-files';
 
 const home = homedir();
 const PLUGIN_DEST = join(home, '.local', 'share', 'sessions', 'plugin');
@@ -48,18 +49,34 @@ function findPluginSource(): string {
   return '';
 }
 
-function copyDir(src: string, dest: string): void {
-  cpSync(src, dest, { recursive: true, force: true });
-}
-
-function installPlugin(source: string): boolean {
+function installPluginFromDisk(source: string): boolean {
   try {
     mkdirSync(dirname(PLUGIN_DEST), { recursive: true });
-    copyDir(source, PLUGIN_DEST);
+    cpSync(source, PLUGIN_DEST, { recursive: true, force: true });
     return true;
   } catch {
     return false;
   }
+}
+
+function installPluginFromEmbed(): boolean {
+  try {
+    mkdirSync(dirname(PLUGIN_DEST), { recursive: true });
+    for (const [relPath, content] of Object.entries(PLUGIN_FILES)) {
+      const dest = join(PLUGIN_DEST, relPath);
+      mkdirSync(dirname(dest), { recursive: true });
+      writeFileSync(dest, content);
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function installPlugin(): boolean {
+  const source = findPluginSource();
+  if (source) return installPluginFromDisk(source);
+  return installPluginFromEmbed();
 }
 
 function sessionsCommand(): string {
@@ -121,15 +138,7 @@ export function runSetup(): void {
 
   w(`\n${C.bold}sessions setup${C.reset}\n\n`);
 
-  const source = findPluginSource();
-  if (!source) {
-    w(
-      `${C.red}error:${C.reset} Could not find plugin files. Make sure you're running the sessions binary or are in the repo directory.\n`,
-    );
-    process.exit(1);
-  }
-
-  if (installPlugin(source)) {
+  if (installPlugin()) {
     w(`  ${C.green}✓${C.reset} Plugin installed to ${C.dim}${PLUGIN_DEST}${C.reset}\n`);
   } else {
     w(`  ${C.red}✗${C.reset} Failed to install plugin to ${PLUGIN_DEST}\n`);

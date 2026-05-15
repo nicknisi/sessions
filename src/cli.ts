@@ -24,6 +24,7 @@ ${C.bold}Options:${C.reset}
 ${C.bold}Commands:${C.reset}
   setup            Install plugin and configure MCP for detected tools
   uninstall        Remove plugin and MCP config from all tools
+  cleanup          Uninstall plugin + clear search index (full reset)
 
 ${C.bold}Search:${C.reset}
   With no argument, opens fzf with session summaries.

@@ -59,6 +59,7 @@ sessions --tool claude       # Filter to Claude Code sessions only
 | --------------- | ----------------------------------------------------- |
 | `setup`         | Install plugin and configure MCP for detected tools   |
 | `uninstall`     | Remove plugin and MCP config from all tools           |
+| `cleanup`       | Full reset: uninstall plugin + clear search index     |
 | `--here`        | Scope to the current git repo (default: all projects) |
 | `--tool <name>` | Filter by tool: `claude`, `codex`, or `pi`            |
 | `--mcp`         | Start as an MCP server (stdio transport)              |
