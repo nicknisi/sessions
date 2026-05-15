@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.4.0](https://github.com/nicknisi/sessions/compare/v1.3.0...v1.4.0) (2026-05-15)
+
+
+### Features
+
+* add custom titles, message counts, and subagent indexing ([#4](https://github.com/nicknisi/sessions/issues/4)) ([a499950](https://github.com/nicknisi/sessions/commit/a499950dff9c9bdae7d3ed1cb84c65b90745b1da))
+* add get_activity_digest MCP tool ([#6](https://github.com/nicknisi/sessions/issues/6)) ([9a4982e](https://github.com/nicknisi/sessions/commit/9a4982e6df847d60b8cec84dc9d3116f009cb254))
+
 ## [1.3.0](https://github.com/nicknisi/sessions/compare/v1.2.0...v1.3.0) (2026-05-12)
 
 
