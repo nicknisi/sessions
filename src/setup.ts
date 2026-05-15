@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, writeFileSync, readFileSync, statSync, cpSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync, readFileSync, cpSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { C } from './colors';
@@ -6,12 +6,19 @@ import { PLUGIN_FILES } from './plugin-files';
 
 const home = homedir();
 const PLUGIN_DEST = join(home, '.local', 'share', 'sessions', 'plugin');
+const PLUGIN_VERSION = '1.0.0';
+const MARKETPLACE_NAME = 'sessions';
+const PLUGIN_NAME = 'sessions';
+
+const CLAUDE_PLUGINS_DIR = join(home, '.claude', 'plugins');
+const CLAUDE_CACHE_DIR = join(CLAUDE_PLUGINS_DIR, 'cache', MARKETPLACE_NAME, PLUGIN_NAME, PLUGIN_VERSION);
+const KNOWN_MARKETPLACES_PATH = join(CLAUDE_PLUGINS_DIR, 'known_marketplaces.json');
+const INSTALLED_PLUGINS_PATH = join(CLAUDE_PLUGINS_DIR, 'installed_plugins.json');
 
 interface ToolConfig {
   name: string;
   detected: boolean;
   mcpConfigPath: string;
-  pluginDir: string;
 }
 
 function detectTools(): ToolConfig[] {
@@ -20,19 +27,16 @@ function detectTools(): ToolConfig[] {
       name: 'Claude Code',
       detected: existsSync(join(home, '.claude')),
       mcpConfigPath: join(home, '.claude', '.mcp.json'),
-      pluginDir: join(home, '.claude', 'plugins'),
     },
     {
       name: 'Cursor',
       detected: existsSync(join(home, '.cursor')),
       mcpConfigPath: join(home, '.cursor', '.mcp.json'),
-      pluginDir: join(home, '.cursor', 'plugins', 'local'),
     },
     {
       name: 'Codex',
       detected: existsSync(join(home, '.codex')),
       mcpConfigPath: join(home, '.codex', '.mcp.json'),
-      pluginDir: join(home, '.codex', 'plugins'),
     },
   ];
 }
@@ -114,23 +118,78 @@ function configureMcp(tool: ToolConfig): boolean {
   }
 }
 
-function registerPlugin(tool: ToolConfig): boolean {
+function registerClaudePlugin(): boolean {
   try {
-    const dest = join(tool.pluginDir, 'sessions');
-    mkdirSync(tool.pluginDir, { recursive: true });
+    mkdirSync(CLAUDE_CACHE_DIR, { recursive: true });
+    cpSync(PLUGIN_DEST, CLAUDE_CACHE_DIR, { recursive: true, force: true });
 
-    try {
-      const stat = statSync(dest);
-      if (stat.isSymbolicLink() || stat.isDirectory()) {
-        require('node:fs').rmSync(dest, { recursive: true, force: true });
-      }
-    } catch {}
+    let marketplaces: Record<string, unknown> = {};
+    if (existsSync(KNOWN_MARKETPLACES_PATH)) {
+      try {
+        marketplaces = JSON.parse(readFileSync(KNOWN_MARKETPLACES_PATH, 'utf-8'));
+      } catch {}
+    }
+    marketplaces[MARKETPLACE_NAME] = {
+      source: { source: 'directory', path: PLUGIN_DEST },
+      installLocation: PLUGIN_DEST,
+      lastUpdated: new Date().toISOString(),
+    };
+    writeFileSync(KNOWN_MARKETPLACES_PATH, JSON.stringify(marketplaces, null, 2) + '\n');
 
-    require('node:fs').symlinkSync(PLUGIN_DEST, dest);
+    let installed: Record<string, unknown> = { version: 2, plugins: {} };
+    if (existsSync(INSTALLED_PLUGINS_PATH)) {
+      try {
+        installed = JSON.parse(readFileSync(INSTALLED_PLUGINS_PATH, 'utf-8'));
+      } catch {}
+    }
+    const plugins = (installed.plugins ?? {}) as Record<string, unknown[]>;
+    const key = `${PLUGIN_NAME}@${MARKETPLACE_NAME}`;
+    plugins[key] = [
+      {
+        scope: 'user',
+        installPath: CLAUDE_CACHE_DIR,
+        version: PLUGIN_VERSION,
+        installedAt: new Date().toISOString(),
+        lastUpdated: new Date().toISOString(),
+      },
+    ];
+    installed.plugins = plugins;
+    writeFileSync(INSTALLED_PLUGINS_PATH, JSON.stringify(installed, null, 2) + '\n');
+
     return true;
   } catch {
     return false;
   }
+}
+
+function unregisterClaudePlugin(): void {
+  try {
+    if (existsSync(KNOWN_MARKETPLACES_PATH)) {
+      const marketplaces = JSON.parse(readFileSync(KNOWN_MARKETPLACES_PATH, 'utf-8'));
+      if (marketplaces[MARKETPLACE_NAME]) {
+        delete marketplaces[MARKETPLACE_NAME];
+        writeFileSync(KNOWN_MARKETPLACES_PATH, JSON.stringify(marketplaces, null, 2) + '\n');
+      }
+    }
+  } catch {}
+
+  try {
+    if (existsSync(INSTALLED_PLUGINS_PATH)) {
+      const installed = JSON.parse(readFileSync(INSTALLED_PLUGINS_PATH, 'utf-8'));
+      const plugins = installed.plugins ?? {};
+      const key = `${PLUGIN_NAME}@${MARKETPLACE_NAME}`;
+      if (plugins[key]) {
+        delete plugins[key];
+        installed.plugins = plugins;
+        writeFileSync(INSTALLED_PLUGINS_PATH, JSON.stringify(installed, null, 2) + '\n');
+      }
+    }
+  } catch {}
+
+  try {
+    const cacheDir = join(CLAUDE_PLUGINS_DIR, 'cache', MARKETPLACE_NAME);
+    require('node:fs').rmSync(cacheDir, { recursive: true, force: true });
+  } catch {}
 }
 
 export function runSetup(): void {
@@ -160,10 +219,12 @@ export function runSetup(): void {
       w(`  ${C.red}✗${C.reset} Failed to configure MCP for ${tool.name}\n`);
     }
 
-    if (registerPlugin(tool)) {
-      w(`  ${C.green}✓${C.reset} Plugin registered with ${C.dim}${tool.name}${C.reset}\n`);
-    } else {
-      w(`  ${C.red}✗${C.reset} Failed to register plugin with ${tool.name}\n`);
+    if (tool.name === 'Claude Code') {
+      if (registerClaudePlugin()) {
+        w(`  ${C.green}✓${C.reset} Plugin registered with ${C.dim}${tool.name}${C.reset}\n`);
+      } else {
+        w(`  ${C.red}✗${C.reset} Failed to register plugin with ${tool.name}\n`);
+      }
     }
   }
 
@@ -182,12 +243,6 @@ export function runUninstall(): void {
 
   const tools = detectTools();
   for (const tool of tools.filter((t) => t.detected)) {
-    const link = join(tool.pluginDir, 'sessions');
-    try {
-      require('node:fs').rmSync(link, { recursive: true, force: true });
-      w(`  ${C.green}✓${C.reset} Removed plugin from ${C.dim}${tool.name}${C.reset}\n`);
-    } catch {}
-
     try {
       if (existsSync(tool.mcpConfigPath)) {
         const config = JSON.parse(readFileSync(tool.mcpConfigPath, 'utf-8'));
@@ -198,7 +253,18 @@ export function runUninstall(): void {
         }
       }
     } catch {}
+
+    if (tool.name === 'Claude Code') {
+      unregisterClaudePlugin();
+      w(`  ${C.green}✓${C.reset} Removed plugin from ${C.dim}${tool.name}${C.reset}\n`);
+    }
   }
+
+  // Clean up old symlinks from previous versions
+  const oldLink = join(CLAUDE_PLUGINS_DIR, 'sessions');
+  try {
+    require('node:fs').rmSync(oldLink, { recursive: true, force: true });
+  } catch {}
 
   try {
     require('node:fs').rmSync(PLUGIN_DEST, { recursive: true, force: true });
