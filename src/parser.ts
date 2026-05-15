@@ -130,6 +130,42 @@ export function firstPrompt(lines: string[], tool: Tool): string {
   return '';
 }
 
+export function customTitle(lines: string[]): string {
+  let title = '';
+  for (const line of lines) {
+    const d = tryParseJson(line);
+    if (!d) continue;
+    if (d.type === 'custom-title') {
+      title = ((d as Record<string, unknown>).customTitle as string) ?? '';
+    }
+  }
+  return title;
+}
+
+export function firstTimestamp(lines: string[]): string {
+  for (const line of lines) {
+    const d = tryParseJson(line);
+    if (!d) continue;
+    const ts = d.timestamp as string | undefined;
+    if (ts && ts[0] === '2') return ts.slice(0, 10);
+  }
+  return '?';
+}
+
+export function messageCount(lines: string[]): number {
+  let count = 0;
+  for (const line of lines) {
+    const d = tryParseJson(line);
+    if (!d) continue;
+    if (isUserMessage(d) || d.type === 'assistant') count++;
+    else if (d.type === 'message') {
+      const msg = d.message;
+      if (typeof msg === 'object' && msg !== null && (msg as Record<string, unknown>).role === 'assistant') count++;
+    }
+  }
+  return count;
+}
+
 export function lastTimestamp(content: string): string {
   const lines = content.trimEnd().split('\n');
   for (let i = lines.length - 1; i >= Math.max(0, lines.length - 200); i--) {

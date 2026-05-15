@@ -27,11 +27,12 @@ export function formatLine(r: SessionResult, cols: number): string {
   const tc = toolColor[r.tool] ?? '';
   const toolBadge = `${tc}${r.tool}${C.reset}`;
   const rel = relativeDate(r.date);
+  const msgs = r.messageCount > 0 ? `${C.dim}${r.messageCount}msg${C.reset}` : '';
 
-  const maxPrompt = Math.max(20, cols - 40);
+  const maxPrompt = Math.max(20, cols - 50);
   const truncated = prompt.length > maxPrompt ? prompt.slice(0, maxPrompt - 1) + '…' : prompt;
 
-  const display = `${dot} ${C.bold}${dirName}${C.reset}  ${toolBadge}  ${C.dim}${rel}${C.reset}  ${truncated}`;
+  const display = `${dot} ${C.bold}${dirName}${C.reset}  ${toolBadge}  ${C.dim}${rel}${C.reset}  ${msgs ? msgs + '  ' : ''}${truncated}`;
 
   // tab-separated: cwd, tool, sessionId, exists, prompt, display
   return `${r.cwd}\t${r.tool}\t${r.sessionId}\t${r.exists ? 'exists' : 'deleted'}\t${prompt}\t${display}`;

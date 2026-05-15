@@ -4,7 +4,15 @@ import { join, basename } from 'node:path';
 import { homedir } from 'node:os';
 import { readdir } from 'node:fs/promises';
 import { type Tool, type SessionResult } from './types';
-import { getCwdFromSession, firstPrompt, lastTimestamp, getSessionMessages } from './parser';
+import {
+  getCwdFromSession,
+  firstPrompt,
+  lastTimestamp,
+  getSessionMessages,
+  customTitle,
+  firstTimestamp,
+  messageCount,
+} from './parser';
 
 const CACHE_DIR = join(homedir(), '.cache', 'sessions');
 const DB_PATH = join(CACHE_DIR, 'index.db');
@@ -14,13 +22,17 @@ const CLAUDE_DIR = join(home, '.claude/projects');
 const PI_DIR = join(home, '.pi/agent/sessions');
 const CODEX_DIR = join(home, '.codex/sessions');
 
+const SCHEMA_VERSION = 2;
 let _db: Database | null = null;
 
 export function clearCache(): void {
   const files = [DB_PATH, DB_PATH + '-wal', DB_PATH + '-shm'];
   let cleared = false;
   for (const f of files) {
-    try { require('node:fs').unlinkSync(f); cleared = true; } catch {}
+    try {
+      require('node:fs').unlinkSync(f);
+      cleared = true;
+    } catch {}
   }
   process.stderr.write(cleared ? 'Cache cleared. It will rebuild on next use.\n' : 'No cache to clear.\n');
 }
@@ -29,9 +41,17 @@ function getDb(): Database {
   if (_db) return _db;
   mkdirSync(CACHE_DIR, { recursive: true });
   const db = new Database(DB_PATH);
-  db.exec('PRAGMA journal_mode=WAL');
-  db.exec('PRAGMA synchronous=NORMAL');
-  db.exec(`
+  db.run('PRAGMA journal_mode=WAL');
+  db.run('PRAGMA synchronous=NORMAL');
+
+  const row = db.query<{ user_version: number }, []>('PRAGMA user_version').get();
+  if (!row || row.user_version !== SCHEMA_VERSION) {
+    db.run('DROP TABLE IF EXISTS sessions');
+    db.run('DROP TABLE IF EXISTS session_fts');
+    db.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+  }
+
+  db.run(`
     CREATE TABLE IF NOT EXISTS sessions (
       file_path TEXT PRIMARY KEY,
       mtime REAL NOT NULL,
@@ -40,10 +60,13 @@ function getDb(): Database {
       tool TEXT NOT NULL,
       session_id TEXT NOT NULL,
       date TEXT NOT NULL,
-      first_prompt TEXT NOT NULL
+      created_at TEXT NOT NULL DEFAULT '?',
+      first_prompt TEXT NOT NULL,
+      custom_title TEXT NOT NULL DEFAULT '',
+      message_count INTEGER NOT NULL DEFAULT 0
     )
   `);
-  db.exec(`
+  db.run(`
     CREATE VIRTUAL TABLE IF NOT EXISTS session_fts USING fts5(
       file_path UNINDEXED,
       user_content
@@ -63,7 +86,11 @@ async function discoverFiles(): Promise<FileEntry[]> {
 
   if (existsSync(CLAUDE_DIR)) {
     let dirs: string[];
-    try { dirs = await readdir(CLAUDE_DIR); } catch { dirs = []; }
+    try {
+      dirs = await readdir(CLAUDE_DIR);
+    } catch {
+      dirs = [];
+    }
     for (const dirname of dirs) {
       const dirpath = join(CLAUDE_DIR, dirname);
       const glob = new Bun.Glob('*.jsonl');
@@ -75,7 +102,11 @@ async function discoverFiles(): Promise<FileEntry[]> {
 
   if (existsSync(PI_DIR)) {
     let dirs: string[];
-    try { dirs = await readdir(PI_DIR); } catch { dirs = []; }
+    try {
+      dirs = await readdir(PI_DIR);
+    } catch {
+      dirs = [];
+    }
     for (const dirname of dirs) {
       const dirpath = join(PI_DIR, dirname);
       const glob = new Bun.Glob('*.jsonl');
@@ -95,20 +126,50 @@ async function discoverFiles(): Promise<FileEntry[]> {
   return entries;
 }
 
+function collectSubagentContent(filePath: string): string {
+  const dir = join(filePath.replace(/\.jsonl$/, ''), 'subagents');
+  if (!existsSync(dir)) return '';
+
+  const parts: string[] = [];
+  try {
+    const files = require('node:fs').readdirSync(dir) as string[];
+    for (const f of files) {
+      if (!f.endsWith('.jsonl')) continue;
+      try {
+        const raw = readFileSync(join(dir, f), 'utf-8');
+        const lines = raw.trimEnd().split('\n');
+        const msgs = getSessionMessages(lines);
+        for (const m of msgs) {
+          if (m.role === 'user') parts.push(m.text);
+        }
+      } catch {}
+    }
+  } catch {}
+  return parts.join('\n');
+}
+
 function indexFile(db: Database, filePath: string, tool: Tool): boolean {
   let stat;
-  try { stat = statSync(filePath); } catch { return false; }
+  try {
+    stat = statSync(filePath);
+  } catch {
+    return false;
+  }
 
-  const existing = db.query<{ mtime: number; size: number }, [string]>(
-    'SELECT mtime, size FROM sessions WHERE file_path = ?'
-  ).get(filePath);
+  const existing = db
+    .query<{ mtime: number; size: number }, [string]>('SELECT mtime, size FROM sessions WHERE file_path = ?')
+    .get(filePath);
 
   if (existing && existing.mtime === stat.mtimeMs && existing.size === stat.size) {
     return false;
   }
 
   let raw: string;
-  try { raw = readFileSync(filePath, 'utf-8'); } catch { return false; }
+  try {
+    raw = readFileSync(filePath, 'utf-8');
+  } catch {
+    return false;
+  }
   const lines = raw.trimEnd().split('\n');
   if (lines.length === 0) return false;
 
@@ -118,7 +179,10 @@ function indexFile(db: Database, filePath: string, tool: Tool): boolean {
 
   const sessionId = basename(filePath).replace('.jsonl', '');
   const prompt = firstPrompt(lines, tool);
+  const title = customTitle(lines);
   const date = lastTimestamp(raw);
+  const createdAt = firstTimestamp(lines);
+  const msgCount = messageCount(lines);
 
   const messages = getSessionMessages(lines);
   const userContent = messages
@@ -126,18 +190,18 @@ function indexFile(db: Database, filePath: string, tool: Tool): boolean {
     .map((m) => m.text)
     .join('\n');
 
+  const subagentContent = tool === 'claude' ? collectSubagentContent(filePath) : '';
+  const fullContent = subagentContent ? userContent + '\n' + subagentContent : userContent;
+
   if (existing) {
     db.run('DELETE FROM session_fts WHERE file_path = ?', [filePath]);
   }
   db.run(
-    `INSERT OR REPLACE INTO sessions (file_path, mtime, size, cwd, tool, session_id, date, first_prompt)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    [filePath, stat.mtimeMs, stat.size, cwd, tool, sessionId, date, prompt]
+    `INSERT OR REPLACE INTO sessions (file_path, mtime, size, cwd, tool, session_id, date, created_at, first_prompt, custom_title, message_count)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [filePath, stat.mtimeMs, stat.size, cwd, tool, sessionId, date, createdAt, prompt, title, msgCount],
   );
-  db.run(
-    'INSERT INTO session_fts (file_path, user_content) VALUES (?, ?)',
-    [filePath, userContent]
-  );
+  db.run('INSERT INTO session_fts (file_path, user_content) VALUES (?, ?)', [filePath, fullContent]);
   return true;
 }
 
@@ -181,18 +245,27 @@ export async function searchSessions(
   const db = getDb();
   await refreshIndex();
 
-  let rows: Array<{
+  interface SessionRow {
     file_path: string;
     cwd: string;
     tool: string;
     session_id: string;
     date: string;
+    created_at: string;
     first_prompt: string;
+    custom_title: string;
+    message_count: number;
     snippet: string | null;
-  }>;
+  }
+
+  let rows: SessionRow[];
 
   if (query) {
-    const ftsQuery = query.replace(/['"]/g, '').split(/\s+/).map((w) => `"${w}"`).join(' ');
+    const ftsQuery = query
+      .replace(/['"]/g, '')
+      .split(/\s+/)
+      .map((w) => `"${w}"`)
+      .join(' ');
     const conditions: string[] = [];
     const params: (string | number)[] = [ftsQuery];
 
@@ -207,8 +280,10 @@ export async function searchSessions(
     params.push(limit);
 
     const extra = conditions.length > 0 ? 'AND ' + conditions.join(' AND ') : '';
-    rows = db.query<any, any[]>(`
-      SELECT s.file_path, s.cwd, s.tool, s.session_id, s.date, s.first_prompt,
+    rows = db
+      .query<SessionRow, any[]>(`
+      SELECT s.file_path, s.cwd, s.tool, s.session_id, s.date, s.created_at, s.first_prompt,
+             s.custom_title, s.message_count,
              snippet(session_fts, 1, '', '', '…', 32) as snippet
       FROM session_fts f
       JOIN sessions s ON s.file_path = f.file_path
@@ -216,7 +291,8 @@ export async function searchSessions(
       ${extra}
       ORDER BY s.date DESC
       LIMIT ?
-    `).all(...params);
+    `)
+      .all(...params);
   } else {
     const conditions: string[] = [];
     const params: (string | number)[] = [];
@@ -232,19 +308,25 @@ export async function searchSessions(
     params.push(limit);
 
     const where = conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : '';
-    rows = db.query<any, any[]>(`
-      SELECT file_path, cwd, tool, session_id, date, first_prompt, NULL as snippet
+    rows = db
+      .query<SessionRow, any[]>(`
+      SELECT file_path, cwd, tool, session_id, date, created_at, first_prompt,
+             custom_title, message_count, NULL as snippet
       FROM sessions ${where}
       ORDER BY date DESC LIMIT ?
-    `).all(...params);
+    `)
+      .all(...params);
   }
 
   return rows.map((r) => ({
     date: r.date,
+    createdAt: r.created_at,
     cwd: r.cwd,
     tool: r.tool as Tool,
     sessionId: r.session_id,
-    displayText: r.snippet ?? r.first_prompt,
+    displayText: r.snippet ?? (r.custom_title || r.first_prompt),
+    customTitle: r.custom_title,
+    messageCount: r.message_count,
     filePath: r.file_path,
     exists: existsSync(r.cwd),
   }));

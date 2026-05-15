@@ -125,10 +125,10 @@ Add to your MCP configuration (e.g., `~/.claude/.mcp.json`):
 
 The MCP server exposes two tools:
 
-| Tool                   | Description                                                                 |
-| ---------------------- | --------------------------------------------------------------------------- |
-| `search_sessions`      | Search across sessions by keyword, filter by tool or project, list recent   |
-| `get_session_messages`  | Retrieve messages from a specific session, paginated by offset and limit    |
+| Tool                   | Description                                                               |
+| ---------------------- | ------------------------------------------------------------------------- |
+| `search_sessions`      | Search across sessions by keyword, filter by tool or project, list recent |
+| `get_session_messages` | Retrieve messages from a specific session, paginated by offset and limit  |
 
 ### Search index
 
