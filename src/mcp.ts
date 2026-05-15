@@ -80,7 +80,7 @@ server.tool(
 
 server.tool(
   'get_activity_digest',
-  'Get a digest of all AI coding sessions within a date range. Returns user messages grouped by day and project — ideal for generating summaries, standups, or blog posts about recent work.',
+  'Get a compact digest of AI coding sessions within a date range, grouped by day and project. Returns topics and file paths — use get_session_messages to drill into specific sessions for full detail.',
   {
     startDate: z.string().describe('Start date inclusive (YYYY-MM-DD). Example: "2026-05-07"'),
     endDate: z.string().describe('End date inclusive (YYYY-MM-DD). Example: "2026-05-14"'),
