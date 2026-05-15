@@ -80,15 +80,22 @@ server.tool(
 
 server.tool(
   'get_activity_digest',
-  'Get a compact digest of AI coding sessions within a date range, grouped by day and project. Returns topics and file paths — use get_session_messages to drill into specific sessions for full detail.',
+  'Get a digest of AI coding sessions within a date range, grouped by day and project. Use detail "compact" (default) for a quick overview with topics, or "full" to include user messages per session for generating summaries and blog posts.',
   {
     startDate: z.string().describe('Start date inclusive (YYYY-MM-DD). Example: "2026-05-07"'),
     endDate: z.string().describe('End date inclusive (YYYY-MM-DD). Example: "2026-05-14"'),
     tool: z.enum(['claude', 'codex', 'pi']).optional().describe('Filter to a specific tool'),
     project: z.string().optional().describe('Filter to sessions from this project directory path'),
+    detail: z
+      .enum(['compact', 'full'])
+      .optional()
+      .default('compact')
+      .describe(
+        'compact: topics + file paths only. full: includes user messages per session (top 10 sessions per project, 20 messages each, 500 char cap)',
+      ),
   },
-  async ({ startDate, endDate, tool, project }) => {
-    const digest = await getActivityDigest(startDate, endDate, tool ?? '', project ?? '');
+  async ({ startDate, endDate, tool, project, detail }) => {
+    const digest = await getActivityDigest(startDate, endDate, tool ?? '', project ?? '', detail);
 
     if (digest.totalSessions === 0) {
       return { content: [{ type: 'text' as const, text: 'No sessions found in that date range.' }] };

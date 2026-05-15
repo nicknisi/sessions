@@ -9,6 +9,7 @@ import {
   type ActivityDigest,
   type DigestProjectGroup,
   type DigestDay,
+  type DigestSessionDetail,
   type SessionMetrics,
 } from './types';
 import {
@@ -343,6 +344,7 @@ interface DateRangeRow {
   file_path: string;
   cwd: string;
   tool: string;
+  session_id: string;
   date: string;
   created_at: string;
   first_prompt: string;
@@ -372,11 +374,36 @@ function queryDateRange(
   const where = 'WHERE ' + conditions.join(' AND ');
   return db
     .query<DateRangeRow, any[]>(
-      `SELECT file_path, cwd, tool, date, created_at, first_prompt, custom_title, message_count
+      `SELECT file_path, cwd, tool, session_id, date, created_at, first_prompt, custom_title, message_count
        FROM sessions ${where}
        ORDER BY created_at ASC, date ASC`,
     )
     .all(...params);
+}
+
+const MAX_TOPICS = 10;
+const MAX_FILEPATHS = 5;
+const MAX_SESSIONS_DETAIL = 10;
+const MAX_USER_MESSAGES = 20;
+const MAX_MESSAGE_LENGTH = 500;
+
+interface PendingGroup {
+  group: DigestProjectGroup;
+  rows: DateRangeRow[];
+}
+
+function readUserMessages(filePath: string): string[] {
+  try {
+    const raw = readFileSync(filePath, 'utf-8');
+    const lines = raw.trimEnd().split('\n');
+    const msgs = getSessionMessages(lines);
+    return msgs
+      .filter((m) => m.role === 'user')
+      .slice(0, MAX_USER_MESSAGES)
+      .map((m) => (m.text.length > MAX_MESSAGE_LENGTH ? m.text.slice(0, MAX_MESSAGE_LENGTH) + '…' : m.text));
+  } catch {
+    return [];
+  }
 }
 
 export async function getActivityDigest(
@@ -384,6 +411,7 @@ export async function getActivityDigest(
   endDate: string,
   toolFilter: Tool | '',
   project: string,
+  detail: 'compact' | 'full' = 'compact',
 ): Promise<ActivityDigest> {
   const db = getDb();
   await refreshIndex();
@@ -394,7 +422,7 @@ export async function getActivityDigest(
   const projectSet = new Set<string>();
   let totalMessages = 0;
 
-  const dayProjectMap = new Map<string, Map<string, DigestProjectGroup>>();
+  const dayProjectMap = new Map<string, Map<string, PendingGroup>>();
 
   for (const r of rows) {
     toolCounts[r.tool] = (toolCounts[r.tool] ?? 0) + 1;
@@ -407,34 +435,54 @@ export async function getActivityDigest(
 
     if (!projectMap.has(r.cwd)) {
       projectMap.set(r.cwd, {
-        project: r.cwd,
-        sessions: 0,
-        totalMessages: 0,
-        tools: [],
-        topics: [],
-        filePaths: [],
+        group: {
+          project: r.cwd,
+          sessions: 0,
+          totalMessages: 0,
+          tools: [],
+          topics: [],
+          filePaths: [],
+        },
+        rows: [],
       });
     }
 
-    const group = projectMap.get(r.cwd)!;
-    group.sessions++;
-    group.totalMessages += r.message_count;
-    if (!group.tools.includes(r.tool)) group.tools.push(r.tool);
+    const pending = projectMap.get(r.cwd)!;
+    const g = pending.group;
+    g.sessions++;
+    g.totalMessages += r.message_count;
+    if (!g.tools.includes(r.tool)) g.tools.push(r.tool);
     const topic = r.custom_title || r.first_prompt;
-    if (topic) group.topics.push(topic);
-    group.filePaths.push(r.file_path);
+    if (topic) g.topics.push(topic);
+    g.filePaths.push(r.file_path);
+    pending.rows.push(r);
   }
-
-  const MAX_TOPICS = 10;
-  const MAX_FILEPATHS = 5;
 
   const days: DigestDay[] = [];
   for (const [date, projectMap] of dayProjectMap) {
-    const projects = [...projectMap.values()].map((g) => ({
-      ...g,
-      topics: [...new Set(g.topics)].slice(0, MAX_TOPICS),
-      filePaths: g.filePaths.slice(-MAX_FILEPATHS),
-    }));
+    const projects = [...projectMap.values()].map(({ group: g, rows: sessionRows }) => {
+      const result: DigestProjectGroup = {
+        ...g,
+        topics: [...new Set(g.topics)].slice(0, MAX_TOPICS),
+        filePaths: g.filePaths.slice(-MAX_FILEPATHS),
+      };
+
+      if (detail === 'full') {
+        const sorted = [...sessionRows].sort((a, b) => b.message_count - a.message_count);
+        result.sessionDetails = sorted.slice(0, MAX_SESSIONS_DETAIL).map(
+          (r): DigestSessionDetail => ({
+            sessionId: r.session_id,
+            tool: r.tool,
+            title: r.custom_title || r.first_prompt,
+            messageCount: r.message_count,
+            filePath: r.file_path,
+            userMessages: readUserMessages(r.file_path),
+          }),
+        );
+      }
+
+      return result;
+    });
     const daySessions = projects.reduce((sum, p) => sum + p.sessions, 0);
     days.push({ date, sessions: daySessions, projects });
   }

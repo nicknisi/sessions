@@ -13,6 +13,15 @@ export interface SessionResult {
   exists: boolean;
 }
 
+export interface DigestSessionDetail {
+  sessionId: string;
+  tool: string;
+  title: string;
+  messageCount: number;
+  filePath: string;
+  userMessages: string[];
+}
+
 export interface DigestProjectGroup {
   project: string;
   sessions: number;
@@ -20,6 +29,7 @@ export interface DigestProjectGroup {
   tools: string[];
   topics: string[];
   filePaths: string[];
+  sessionDetails?: DigestSessionDetail[];
 }
 
 export interface DigestDay {
