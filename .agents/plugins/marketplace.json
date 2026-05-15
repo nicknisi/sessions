@@ -1,0 +1,22 @@
+{
+  "name": "sessions",
+  "owner": {
+    "name": "Nick Nisi",
+    "email": "nick@nisi.org"
+  },
+  "plugins": [
+    {
+      "name": "sessions",
+      "source": {
+        "source": "local",
+        "path": "./plugin"
+      },
+      "description": "Weekly summaries, standups, recall, and metrics for AI coding sessions across Claude Code, Codex, and Pi.",
+      "interface": {
+        "displayName": "Sessions",
+        "shortDescription": "Summarize and recall AI coding sessions"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

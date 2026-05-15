@@ -18,6 +18,18 @@ if (Bun.argv.includes('--mcp')) {
   await new Promise(() => {});
 }
 
+if (Bun.argv.includes('setup')) {
+  const { runSetup } = await import('./src/setup');
+  runSetup();
+  process.exit(0);
+}
+
+if (Bun.argv.includes('uninstall')) {
+  const { runUninstall } = await import('./src/setup');
+  runUninstall();
+  process.exit(0);
+}
+
 const args = parseArgs(Bun.argv.slice(2));
 const repoRoot = getRepoRoot(args.scopeHere);
 
