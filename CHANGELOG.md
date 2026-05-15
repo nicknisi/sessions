@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.5.0](https://github.com/nicknisi/sessions/compare/v1.4.0...v1.5.0) (2026-05-15)
+
+
+### Features
+
+* compact activity digest and session metrics ([#7](https://github.com/nicknisi/sessions/issues/7)) ([e5de75d](https://github.com/nicknisi/sessions/commit/e5de75dddc111caffe5a6614d11a9caedff2cba4))
+* plugin with skills and `sessions setup` command ([#9](https://github.com/nicknisi/sessions/issues/9)) ([065c249](https://github.com/nicknisi/sessions/commit/065c2496d561da655e7c61ce550cd0f104f259a4))
+
 ## [1.4.0](https://github.com/nicknisi/sessions/compare/v1.3.0...v1.4.0) (2026-05-15)
 
 
