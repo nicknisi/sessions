@@ -55,8 +55,10 @@ sessions --tool claude       # Filter to Claude Code sessions only
 
 ### Options
 
-| Flag            | Description                                           |
+| Flag / Command  | Description                                           |
 | --------------- | ----------------------------------------------------- |
+| `setup`         | Install plugin and configure MCP for detected tools   |
+| `uninstall`     | Remove plugin and MCP config from all tools           |
 | `--here`        | Scope to the current git repo (default: all projects) |
 | `--tool <name>` | Filter by tool: `claude`, `codex`, or `pi`            |
 | `--mcp`         | Start as an MCP server (stdio transport)              |
@@ -102,13 +104,65 @@ When you pick a session, `sessions` displays the resume command and copies it to
 
 For Claude Code sessions, the command includes `--resume <session-id>`. For Pi and Codex sessions, it navigates to the project directory (these tools don't support direct session resume).
 
+## Quick Setup
+
+After installing, run:
+
+```sh
+sessions setup
+```
+
+This automatically:
+
+1. Copies the plugin and skills to `~/.local/share/sessions/plugin/`
+2. Detects which AI tools you have installed (Claude Code, Cursor, Codex)
+3. Adds the MCP server config to each tool
+4. Registers the plugin so skills are discoverable
+
+```
+❯ sessions setup
+
+sessions setup
+
+  ✓ Plugin installed to ~/.local/share/sessions/plugin/
+  ✓ MCP server added to Claude Code
+  ✓ Plugin registered with Claude Code
+  ✓ MCP server added to Cursor
+  ✓ Plugin registered with Cursor
+
+  Skills available:
+    /weekly-summary    Summarize your past week's AI sessions
+    /standup           Yesterday + today activity for standups
+    /recall            What did I do on a specific project?
+    /session-metrics   Usage dashboard with tool breakdown
+
+  Run `sessions setup` again after upgrading to update skills.
+```
+
+After upgrading sessions (e.g., `brew upgrade sessions`), run `sessions setup` again to update the skills to the latest version.
+
+To remove everything: `sessions uninstall`
+
+## Skills
+
+The plugin ships four skills that compose the MCP tools into repeatable workflows:
+
+| Skill              | Trigger                                     | What it does                                                      |
+| ------------------ | ------------------------------------------- | ----------------------------------------------------------------- |
+| `/weekly-summary`  | "summarize my week", "weekly recap"         | Fetches full digest for the past 7 days, writes structured report |
+| `/standup`         | "standup", "what did I do yesterday"        | Yesterday + today in compact format, terse bullets for Slack      |
+| `/recall`          | "what did I do on [project]"                | Searches sessions by project/topic, shows chronological history   |
+| `/session-metrics` | "session stats", "which tool do I use most" | Tool/project breakdown, daily activity, active hours heatmap      |
+
+Skills work with Claude Code, Cursor, Codex, and any agent that supports the skills.sh format.
+
 ## MCP Server
 
-`sessions` can run as an [MCP](https://modelcontextprotocol.io/) server, giving AI agents searchable access to your past conversations. This lets Claude, Codex, or any MCP-compatible client recall how you solved problems, what decisions you made, and what tools you used — across all three AI coding tools.
+`sessions` includes an [MCP](https://modelcontextprotocol.io/) server that gives AI agents searchable access to your past conversations. The MCP server is configured automatically by `sessions setup`, but you can also set it up manually.
 
-### Setup
+### Manual MCP Setup
 
-Add to your MCP configuration (e.g., `~/.claude/.mcp.json`):
+If you prefer to configure the MCP server yourself, add to your MCP configuration (e.g., `~/.claude/.mcp.json`):
 
 ```json
 {
@@ -131,6 +185,8 @@ The MCP server exposes four tools:
 | `get_session_messages` | Retrieve messages from a specific session, paginated by offset and limit                      |
 | `get_activity_digest`  | Compact digest of sessions in a date range, grouped by day and project — for weekly summaries |
 | `get_session_metrics`  | Usage metrics for a date range: tool/project breakdown, daily activity, active hours          |
+
+The `get_activity_digest` tool supports a `detail` parameter: `"compact"` (default) returns topics and file paths only, while `"full"` includes user messages per session for generating rich summaries like blog posts.
 
 ### Search index
 

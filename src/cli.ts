@@ -21,6 +21,10 @@ ${C.bold}Options:${C.reset}
   --clear-cache    Remove the search index (rebuilds on next use)
   -h, --help       Show this help
 
+${C.bold}Commands:${C.reset}
+  setup            Install plugin and configure MCP for detected tools
+  uninstall        Remove plugin and MCP config from all tools
+
 ${C.bold}Search:${C.reset}
   With no argument, opens fzf with session summaries.
   With an argument, greps across session content for matching
