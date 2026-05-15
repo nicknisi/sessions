@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.1](https://github.com/nicknisi/sessions/compare/v1.5.0...v1.5.1) (2026-05-15)
+
+
+### Bug Fixes
+
+* embed plugin files in compiled binary ([#10](https://github.com/nicknisi/sessions/issues/10)) ([29907eb](https://github.com/nicknisi/sessions/commit/29907eb46f4492ba57da17882b2e9b16079d03d2))
+
 ## [1.5.0](https://github.com/nicknisi/sessions/compare/v1.4.0...v1.5.0) (2026-05-15)
 
 
