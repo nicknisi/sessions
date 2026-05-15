@@ -123,12 +123,14 @@ Add to your MCP configuration (e.g., `~/.claude/.mcp.json`):
 
 ### Tools
 
-The MCP server exposes two tools:
+The MCP server exposes four tools:
 
-| Tool                   | Description                                                               |
-| ---------------------- | ------------------------------------------------------------------------- |
-| `search_sessions`      | Search across sessions by keyword, filter by tool or project, list recent |
-| `get_session_messages` | Retrieve messages from a specific session, paginated by offset and limit  |
+| Tool                   | Description                                                                                   |
+| ---------------------- | --------------------------------------------------------------------------------------------- |
+| `search_sessions`      | Search across sessions by keyword, filter by tool or project, list recent                     |
+| `get_session_messages` | Retrieve messages from a specific session, paginated by offset and limit                      |
+| `get_activity_digest`  | Compact digest of sessions in a date range, grouped by day and project — for weekly summaries |
+| `get_session_metrics`  | Usage metrics for a date range: tool/project breakdown, daily activity, active hours          |
 
 ### Search index
 
@@ -156,7 +158,10 @@ Each session file is parsed to extract:
 
 - **Working directory** — read from the session metadata to determine which project the session belongs to
 - **First user prompt** — the initial message you sent, cleaned of system-injected tags
-- **Last timestamp** — when the session was last active (read from the tail of the file for performance)
+- **Custom title** — if the session was renamed in Claude Code, that title is used instead
+- **Message count** — total user + assistant messages in the session
+- **Timestamps** — first and last timestamps for session duration and date-range queries
+- **Subagent content** — for Claude Code, user messages from subagent sidecar files are folded into the search index
 
 ### Scoping with `--here`
 

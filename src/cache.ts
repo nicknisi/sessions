@@ -3,7 +3,14 @@ import { existsSync, mkdirSync, statSync, readFileSync } from 'node:fs';
 import { join, basename } from 'node:path';
 import { homedir } from 'node:os';
 import { readdir } from 'node:fs/promises';
-import { type Tool, type SessionResult, type ActivityDigest, type DigestSession, type DigestDay } from './types';
+import {
+  type Tool,
+  type SessionResult,
+  type ActivityDigest,
+  type DigestProjectGroup,
+  type DigestDay,
+  type SessionMetrics,
+} from './types';
 import {
   getCwdFromSession,
   firstPrompt,
@@ -332,27 +339,24 @@ export async function searchSessions(
   }));
 }
 
-export async function getActivityDigest(
+interface DateRangeRow {
+  file_path: string;
+  cwd: string;
+  tool: string;
+  date: string;
+  created_at: string;
+  first_prompt: string;
+  custom_title: string;
+  message_count: number;
+}
+
+function queryDateRange(
+  db: Database,
   startDate: string,
   endDate: string,
   toolFilter: Tool | '',
   project: string,
-): Promise<ActivityDigest> {
-  const db = getDb();
-  await refreshIndex();
-
-  interface DigestRow {
-    file_path: string;
-    cwd: string;
-    tool: string;
-    session_id: string;
-    date: string;
-    created_at: string;
-    first_prompt: string;
-    custom_title: string;
-    message_count: number;
-  }
-
+): DateRangeRow[] {
   const conditions: string[] = ['created_at >= ?', 'created_at <= ?'];
   const params: (string | number)[] = [startDate, endDate];
 
@@ -366,53 +370,73 @@ export async function getActivityDigest(
   }
 
   const where = 'WHERE ' + conditions.join(' AND ');
-  const rows = db
-    .query<DigestRow, any[]>(
-      `SELECT file_path, cwd, tool, session_id, date, created_at, first_prompt, custom_title, message_count
+  return db
+    .query<DateRangeRow, any[]>(
+      `SELECT file_path, cwd, tool, date, created_at, first_prompt, custom_title, message_count
        FROM sessions ${where}
        ORDER BY created_at ASC, date ASC`,
     )
     .all(...params);
+}
+
+export async function getActivityDigest(
+  startDate: string,
+  endDate: string,
+  toolFilter: Tool | '',
+  project: string,
+): Promise<ActivityDigest> {
+  const db = getDb();
+  await refreshIndex();
+
+  const rows = queryDateRange(db, startDate, endDate, toolFilter, project);
 
   const toolCounts: Record<string, number> = {};
   const projectSet = new Set<string>();
-  const dayMap = new Map<string, DigestSession[]>();
   let totalMessages = 0;
+
+  const dayProjectMap = new Map<string, Map<string, DigestProjectGroup>>();
 
   for (const r of rows) {
     toolCounts[r.tool] = (toolCounts[r.tool] ?? 0) + 1;
     projectSet.add(r.cwd);
     totalMessages += r.message_count;
 
-    let userMessages: string[] = [];
-    try {
-      const raw = readFileSync(r.file_path, 'utf-8');
-      const lines = raw.trimEnd().split('\n');
-      const msgs = getSessionMessages(lines);
-      userMessages = msgs.filter((m) => m.role === 'user').map((m) => m.text);
-    } catch {}
-
-    const session: DigestSession = {
-      sessionId: r.session_id,
-      tool: r.tool as Tool,
-      project: r.cwd,
-      title: r.custom_title || r.first_prompt,
-      firstPrompt: r.first_prompt,
-      messageCount: r.message_count,
-      createdAt: r.created_at,
-      lastActive: r.date,
-      filePath: r.file_path,
-      userMessages,
-    };
-
     const day = r.created_at;
-    if (!dayMap.has(day)) dayMap.set(day, []);
-    dayMap.get(day)!.push(session);
+    if (!dayProjectMap.has(day)) dayProjectMap.set(day, new Map());
+    const projectMap = dayProjectMap.get(day)!;
+
+    if (!projectMap.has(r.cwd)) {
+      projectMap.set(r.cwd, {
+        project: r.cwd,
+        sessions: 0,
+        totalMessages: 0,
+        tools: [],
+        topics: [],
+        filePaths: [],
+      });
+    }
+
+    const group = projectMap.get(r.cwd)!;
+    group.sessions++;
+    group.totalMessages += r.message_count;
+    if (!group.tools.includes(r.tool)) group.tools.push(r.tool);
+    const topic = r.custom_title || r.first_prompt;
+    if (topic) group.topics.push(topic);
+    group.filePaths.push(r.file_path);
   }
 
+  const MAX_TOPICS = 10;
+  const MAX_FILEPATHS = 5;
+
   const days: DigestDay[] = [];
-  for (const [date, sessions] of dayMap) {
-    days.push({ date, sessions });
+  for (const [date, projectMap] of dayProjectMap) {
+    const projects = [...projectMap.values()].map((g) => ({
+      ...g,
+      topics: [...new Set(g.topics)].slice(0, MAX_TOPICS),
+      filePaths: g.filePaths.slice(-MAX_FILEPATHS),
+    }));
+    const daySessions = projects.reduce((sum, p) => sum + p.sessions, 0);
+    days.push({ date, sessions: daySessions, projects });
   }
 
   return {
@@ -422,5 +446,70 @@ export async function getActivityDigest(
     tools: toolCounts,
     projects: [...projectSet],
     days,
+  };
+}
+
+export async function getSessionMetrics(
+  startDate: string,
+  endDate: string,
+  toolFilter: Tool | '',
+  project: string,
+): Promise<SessionMetrics> {
+  const db = getDb();
+  await refreshIndex();
+
+  const rows = queryDateRange(db, startDate, endDate, toolFilter, project);
+
+  const toolBreakdown: Record<string, number> = {};
+  const projectMap = new Map<string, { sessions: number; messages: number }>();
+  const dailyMap = new Map<string, { sessions: number; messages: number }>();
+  const activeHours: Record<string, number> = {};
+  let totalMessages = 0;
+
+  for (const r of rows) {
+    toolBreakdown[r.tool] = (toolBreakdown[r.tool] ?? 0) + 1;
+    totalMessages += r.message_count;
+
+    const pm = projectMap.get(r.cwd) ?? { sessions: 0, messages: 0 };
+    pm.sessions++;
+    pm.messages += r.message_count;
+    projectMap.set(r.cwd, pm);
+
+    const day = r.created_at;
+    const dm = dailyMap.get(day) ?? { sessions: 0, messages: 0 };
+    dm.sessions++;
+    dm.messages += r.message_count;
+    dailyMap.set(day, dm);
+  }
+
+  for (const r of rows) {
+    try {
+      const raw = readFileSync(r.file_path, 'utf-8');
+      const firstLine = raw.slice(0, raw.indexOf('\n'));
+      const d = JSON.parse(firstLine);
+      const ts = d.timestamp as string | undefined;
+      if (ts && ts.includes('T')) {
+        const hour = ts.slice(11, 13);
+        activeHours[hour] = (activeHours[hour] ?? 0) + 1;
+      }
+    } catch {}
+  }
+
+  const projectBreakdown = [...projectMap.entries()]
+    .map(([p, v]) => ({ project: p, sessions: v.sessions, messages: v.messages }))
+    .sort((a, b) => b.sessions - a.sessions);
+
+  const dailyActivity = [...dailyMap.entries()]
+    .map(([date, v]) => ({ date, sessions: v.sessions, messages: v.messages }))
+    .sort((a, b) => (a.date > b.date ? 1 : -1));
+
+  return {
+    period: { start: startDate, end: endDate },
+    totalSessions: rows.length,
+    totalMessages,
+    toolBreakdown,
+    projectBreakdown,
+    dailyActivity,
+    activeHours,
   };
 }

@@ -13,22 +13,19 @@ export interface SessionResult {
   exists: boolean;
 }
 
-export interface DigestSession {
-  sessionId: string;
-  tool: Tool;
+export interface DigestProjectGroup {
   project: string;
-  title: string;
-  firstPrompt: string;
-  messageCount: number;
-  createdAt: string;
-  lastActive: string;
-  filePath: string;
-  userMessages: string[];
+  sessions: number;
+  totalMessages: number;
+  tools: string[];
+  topics: string[];
+  filePaths: string[];
 }
 
 export interface DigestDay {
   date: string;
-  sessions: DigestSession[];
+  sessions: number;
+  projects: DigestProjectGroup[];
 }
 
 export interface ActivityDigest {
@@ -38,6 +35,16 @@ export interface ActivityDigest {
   tools: Record<string, number>;
   projects: string[];
   days: DigestDay[];
+}
+
+export interface SessionMetrics {
+  period: { start: string; end: string };
+  totalSessions: number;
+  totalMessages: number;
+  toolBreakdown: Record<string, number>;
+  projectBreakdown: { project: string; sessions: number; messages: number }[];
+  dailyActivity: { date: string; sessions: number; messages: number }[];
+  activeHours: Record<string, number>;
 }
 
 export interface CliArgs {
