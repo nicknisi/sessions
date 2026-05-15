@@ -1,7 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { searchSessions } from './cache';
+import { searchSessions, getActivityDigest } from './cache';
 import { getSessionMessages } from './parser';
 import { type SessionResult } from './types';
 
@@ -74,6 +74,28 @@ server.tool(
 
     return {
       content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+    };
+  },
+);
+
+server.tool(
+  'get_activity_digest',
+  'Get a digest of all AI coding sessions within a date range. Returns user messages grouped by day and project — ideal for generating summaries, standups, or blog posts about recent work.',
+  {
+    startDate: z.string().describe('Start date inclusive (YYYY-MM-DD). Example: "2026-05-07"'),
+    endDate: z.string().describe('End date inclusive (YYYY-MM-DD). Example: "2026-05-14"'),
+    tool: z.enum(['claude', 'codex', 'pi']).optional().describe('Filter to a specific tool'),
+    project: z.string().optional().describe('Filter to sessions from this project directory path'),
+  },
+  async ({ startDate, endDate, tool, project }) => {
+    const digest = await getActivityDigest(startDate, endDate, tool ?? '', project ?? '');
+
+    if (digest.totalSessions === 0) {
+      return { content: [{ type: 'text' as const, text: 'No sessions found in that date range.' }] };
+    }
+
+    return {
+      content: [{ type: 'text' as const, text: JSON.stringify(digest, null, 2) }],
     };
   },
 );

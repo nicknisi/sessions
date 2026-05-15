@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, statSync, readFileSync } from 'node:fs';
 import { join, basename } from 'node:path';
 import { homedir } from 'node:os';
 import { readdir } from 'node:fs/promises';
-import { type Tool, type SessionResult } from './types';
+import { type Tool, type SessionResult, type ActivityDigest, type DigestSession, type DigestDay } from './types';
 import {
   getCwdFromSession,
   firstPrompt,
@@ -330,4 +330,97 @@ export async function searchSessions(
     filePath: r.file_path,
     exists: existsSync(r.cwd),
   }));
+}
+
+export async function getActivityDigest(
+  startDate: string,
+  endDate: string,
+  toolFilter: Tool | '',
+  project: string,
+): Promise<ActivityDigest> {
+  const db = getDb();
+  await refreshIndex();
+
+  interface DigestRow {
+    file_path: string;
+    cwd: string;
+    tool: string;
+    session_id: string;
+    date: string;
+    created_at: string;
+    first_prompt: string;
+    custom_title: string;
+    message_count: number;
+  }
+
+  const conditions: string[] = ['created_at >= ?', 'created_at <= ?'];
+  const params: (string | number)[] = [startDate, endDate];
+
+  if (toolFilter) {
+    conditions.push('tool = ?');
+    params.push(toolFilter);
+  }
+  if (project) {
+    conditions.push('cwd LIKE ?');
+    params.push(project + '%');
+  }
+
+  const where = 'WHERE ' + conditions.join(' AND ');
+  const rows = db
+    .query<DigestRow, any[]>(
+      `SELECT file_path, cwd, tool, session_id, date, created_at, first_prompt, custom_title, message_count
+       FROM sessions ${where}
+       ORDER BY created_at ASC, date ASC`,
+    )
+    .all(...params);
+
+  const toolCounts: Record<string, number> = {};
+  const projectSet = new Set<string>();
+  const dayMap = new Map<string, DigestSession[]>();
+  let totalMessages = 0;
+
+  for (const r of rows) {
+    toolCounts[r.tool] = (toolCounts[r.tool] ?? 0) + 1;
+    projectSet.add(r.cwd);
+    totalMessages += r.message_count;
+
+    let userMessages: string[] = [];
+    try {
+      const raw = readFileSync(r.file_path, 'utf-8');
+      const lines = raw.trimEnd().split('\n');
+      const msgs = getSessionMessages(lines);
+      userMessages = msgs.filter((m) => m.role === 'user').map((m) => m.text);
+    } catch {}
+
+    const session: DigestSession = {
+      sessionId: r.session_id,
+      tool: r.tool as Tool,
+      project: r.cwd,
+      title: r.custom_title || r.first_prompt,
+      firstPrompt: r.first_prompt,
+      messageCount: r.message_count,
+      createdAt: r.created_at,
+      lastActive: r.date,
+      filePath: r.file_path,
+      userMessages,
+    };
+
+    const day = r.created_at;
+    if (!dayMap.has(day)) dayMap.set(day, []);
+    dayMap.get(day)!.push(session);
+  }
+
+  const days: DigestDay[] = [];
+  for (const [date, sessions] of dayMap) {
+    days.push({ date, sessions });
+  }
+
+  return {
+    period: { start: startDate, end: endDate },
+    totalSessions: rows.length,
+    totalMessages,
+    tools: toolCounts,
+    projects: [...projectSet],
+    days,
+  };
 }
