@@ -12,6 +12,14 @@ if (Bun.argv.includes('--clear-cache')) {
   process.exit(0);
 }
 
+if (Bun.argv.includes('cleanup')) {
+  const { clearCache } = await import('./src/cache');
+  const { runUninstall } = await import('./src/setup');
+  runUninstall();
+  clearCache();
+  process.exit(0);
+}
+
 if (Bun.argv.includes('--mcp')) {
   const { startMcpServer } = await import('./src/mcp');
   await startMcpServer();

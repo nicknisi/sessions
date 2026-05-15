@@ -392,26 +392,35 @@ interface PendingGroup {
   rows: DateRangeRow[];
 }
 
-function readUserMessages(filePath: string): string[] {
+function readUserMessages(filePath: string, mode: 'full' | 'highlights'): string[] {
   try {
     const raw = readFileSync(filePath, 'utf-8');
     const lines = raw.trimEnd().split('\n');
-    const msgs = getSessionMessages(lines);
-    return msgs
-      .filter((m) => m.role === 'user')
-      .slice(0, MAX_USER_MESSAGES)
-      .map((m) => (m.text.length > MAX_MESSAGE_LENGTH ? m.text.slice(0, MAX_MESSAGE_LENGTH) + '…' : m.text));
+    const msgs = getSessionMessages(lines).filter((m) => m.role === 'user');
+    if (msgs.length === 0) return [];
+
+    const cap = (t: string, len: number) => (t.length > len ? t.slice(0, len) + '…' : t);
+
+    if (mode === 'highlights') {
+      const result = [cap(msgs[0]!.text, 300)];
+      if (msgs.length > 1) result.push(cap(msgs[msgs.length - 1]!.text, 300));
+      return result;
+    }
+
+    return msgs.slice(0, MAX_USER_MESSAGES).map((m) => cap(m.text, MAX_MESSAGE_LENGTH));
   } catch {
     return [];
   }
 }
+
+export type DigestDetail = 'compact' | 'highlights' | 'full';
 
 export async function getActivityDigest(
   startDate: string,
   endDate: string,
   toolFilter: Tool | '',
   project: string,
-  detail: 'compact' | 'full' = 'compact',
+  detail: DigestDetail = 'compact',
 ): Promise<ActivityDigest> {
   const db = getDb();
   await refreshIndex();
@@ -467,16 +476,18 @@ export async function getActivityDigest(
         filePaths: g.filePaths.slice(-MAX_FILEPATHS),
       };
 
-      if (detail === 'full') {
+      if (detail === 'full' || detail === 'highlights') {
         const sorted = [...sessionRows].sort((a, b) => b.message_count - a.message_count);
-        result.sessionDetails = sorted.slice(0, MAX_SESSIONS_DETAIL).map(
+        const minMessages = detail === 'highlights' ? 3 : 0;
+        const candidates = sorted.filter((r) => r.message_count > minMessages);
+        result.sessionDetails = candidates.slice(0, MAX_SESSIONS_DETAIL).map(
           (r): DigestSessionDetail => ({
             sessionId: r.session_id,
             tool: r.tool,
             title: r.custom_title || r.first_prompt,
             messageCount: r.message_count,
             filePath: r.file_path,
-            userMessages: readUserMessages(r.file_path),
+            userMessages: readUserMessages(r.file_path, detail),
           }),
         );
       }

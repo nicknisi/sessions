@@ -1,16 +1,20 @@
-import { existsSync, mkdirSync, writeFileSync, readFileSync, statSync, cpSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync, readFileSync, cpSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { C } from './colors';
+import { PLUGIN_FILES } from './plugin-files';
 
 const home = homedir();
-const PLUGIN_DEST = join(home, '.local', 'share', 'sessions', 'plugin');
+const SESSIONS_DIR = join(home, '.local', 'share', 'sessions');
+const PLUGIN_DEST = join(SESSIONS_DIR, 'plugin');
+const PLUGIN_VERSION = '1.0.0';
+const MARKETPLACE_NAME = 'sessions';
+const PLUGIN_NAME = 'sessions';
 
 interface ToolConfig {
   name: string;
   detected: boolean;
   mcpConfigPath: string;
-  pluginDir: string;
 }
 
 function detectTools(): ToolConfig[] {
@@ -19,19 +23,16 @@ function detectTools(): ToolConfig[] {
       name: 'Claude Code',
       detected: existsSync(join(home, '.claude')),
       mcpConfigPath: join(home, '.claude', '.mcp.json'),
-      pluginDir: join(home, '.claude', 'plugins'),
     },
     {
       name: 'Cursor',
       detected: existsSync(join(home, '.cursor')),
       mcpConfigPath: join(home, '.cursor', '.mcp.json'),
-      pluginDir: join(home, '.cursor', 'plugins', 'local'),
     },
     {
       name: 'Codex',
       detected: existsSync(join(home, '.codex')),
       mcpConfigPath: join(home, '.codex', '.mcp.json'),
-      pluginDir: join(home, '.codex', 'plugins'),
     },
   ];
 }
@@ -48,18 +49,53 @@ function findPluginSource(): string {
   return '';
 }
 
-function copyDir(src: string, dest: string): void {
-  cpSync(src, dest, { recursive: true, force: true });
-}
-
-function installPlugin(source: string): boolean {
+function installPluginFromDisk(source: string): boolean {
   try {
     mkdirSync(dirname(PLUGIN_DEST), { recursive: true });
-    copyDir(source, PLUGIN_DEST);
+    cpSync(source, PLUGIN_DEST, { recursive: true, force: true });
     return true;
   } catch {
     return false;
   }
+}
+
+function installPluginFromEmbed(): boolean {
+  try {
+    mkdirSync(dirname(PLUGIN_DEST), { recursive: true });
+    for (const [relPath, content] of Object.entries(PLUGIN_FILES)) {
+      const dest = join(PLUGIN_DEST, relPath);
+      mkdirSync(dirname(dest), { recursive: true });
+      writeFileSync(dest, content);
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function writeMarketplaceJson(): void {
+  const marketplace = {
+    name: MARKETPLACE_NAME,
+    owner: { name: 'Nick Nisi', email: 'nick@nisi.org' },
+    metadata: { description: 'Skills for summarizing and recalling AI coding sessions', version: PLUGIN_VERSION },
+    plugins: [
+      {
+        name: PLUGIN_NAME,
+        source: './plugin',
+        description: 'Weekly summaries, standups, recall, and metrics for AI coding sessions.',
+      },
+    ],
+  };
+  const dir = join(SESSIONS_DIR, '.claude-plugin');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'marketplace.json'), JSON.stringify(marketplace, null, 2) + '\n');
+}
+
+function installPlugin(): boolean {
+  const source = findPluginSource();
+  const ok = source ? installPluginFromDisk(source) : installPluginFromEmbed();
+  if (ok) writeMarketplaceJson();
+  return ok;
 }
 
 function sessionsCommand(): string {
@@ -97,23 +133,24 @@ function configureMcp(tool: ToolConfig): boolean {
   }
 }
 
-function registerPlugin(tool: ToolConfig): boolean {
+function runClaude(...args: string[]): boolean {
   try {
-    const dest = join(tool.pluginDir, 'sessions');
-    mkdirSync(tool.pluginDir, { recursive: true });
-
-    try {
-      const stat = statSync(dest);
-      if (stat.isSymbolicLink() || stat.isDirectory()) {
-        require('node:fs').rmSync(dest, { recursive: true, force: true });
-      }
-    } catch {}
-
-    require('node:fs').symlinkSync(PLUGIN_DEST, dest);
-    return true;
+    const result = Bun.spawnSync(['claude', 'plugins', ...args], { stderr: 'pipe', stdout: 'pipe' });
+    return result.exitCode === 0;
   } catch {
     return false;
   }
+}
+
+function registerClaudePlugin(): { marketplace: boolean; install: boolean } {
+  const marketplace = runClaude('marketplace', 'add', SESSIONS_DIR);
+  const install = runClaude('install', `${PLUGIN_NAME}@${MARKETPLACE_NAME}`);
+  return { marketplace, install };
+}
+
+function unregisterClaudePlugin(): void {
+  runClaude('uninstall', `${PLUGIN_NAME}@${MARKETPLACE_NAME}`);
+  runClaude('marketplace', 'remove', MARKETPLACE_NAME);
 }
 
 export function runSetup(): void {
@@ -121,15 +158,7 @@ export function runSetup(): void {
 
   w(`\n${C.bold}sessions setup${C.reset}\n\n`);
 
-  const source = findPluginSource();
-  if (!source) {
-    w(
-      `${C.red}error:${C.reset} Could not find plugin files. Make sure you're running the sessions binary or are in the repo directory.\n`,
-    );
-    process.exit(1);
-  }
-
-  if (installPlugin(source)) {
+  if (installPlugin()) {
     w(`  ${C.green}✓${C.reset} Plugin installed to ${C.dim}${PLUGIN_DEST}${C.reset}\n`);
   } else {
     w(`  ${C.red}✗${C.reset} Failed to install plugin to ${PLUGIN_DEST}\n`);
@@ -151,10 +180,18 @@ export function runSetup(): void {
       w(`  ${C.red}✗${C.reset} Failed to configure MCP for ${tool.name}\n`);
     }
 
-    if (registerPlugin(tool)) {
-      w(`  ${C.green}✓${C.reset} Plugin registered with ${C.dim}${tool.name}${C.reset}\n`);
-    } else {
-      w(`  ${C.red}✗${C.reset} Failed to register plugin with ${tool.name}\n`);
+    if (tool.name === 'Claude Code') {
+      const result = registerClaudePlugin();
+      if (result.marketplace) {
+        w(`  ${C.green}✓${C.reset} Marketplace added to ${C.dim}${tool.name}${C.reset}\n`);
+      } else {
+        w(`  ${C.dim}ℹ${C.reset} Marketplace already registered with ${C.dim}${tool.name}${C.reset}\n`);
+      }
+      if (result.install) {
+        w(`  ${C.green}✓${C.reset} Plugin installed in ${C.dim}${tool.name}${C.reset}\n`);
+      } else {
+        w(`  ${C.dim}ℹ${C.reset} Plugin already installed in ${C.dim}${tool.name}${C.reset}\n`);
+      }
     }
   }
 
@@ -173,12 +210,6 @@ export function runUninstall(): void {
 
   const tools = detectTools();
   for (const tool of tools.filter((t) => t.detected)) {
-    const link = join(tool.pluginDir, 'sessions');
-    try {
-      require('node:fs').rmSync(link, { recursive: true, force: true });
-      w(`  ${C.green}✓${C.reset} Removed plugin from ${C.dim}${tool.name}${C.reset}\n`);
-    } catch {}
-
     try {
       if (existsSync(tool.mcpConfigPath)) {
         const config = JSON.parse(readFileSync(tool.mcpConfigPath, 'utf-8'));
@@ -189,11 +220,16 @@ export function runUninstall(): void {
         }
       }
     } catch {}
+
+    if (tool.name === 'Claude Code') {
+      unregisterClaudePlugin();
+      w(`  ${C.green}✓${C.reset} Removed plugin from ${C.dim}${tool.name}${C.reset}\n`);
+    }
   }
 
   try {
-    require('node:fs').rmSync(PLUGIN_DEST, { recursive: true, force: true });
-    w(`  ${C.green}✓${C.reset} Removed ${C.dim}${PLUGIN_DEST}${C.reset}\n`);
+    require('node:fs').rmSync(SESSIONS_DIR, { recursive: true, force: true });
+    w(`  ${C.green}✓${C.reset} Removed ${C.dim}${SESSIONS_DIR}${C.reset}\n`);
   } catch {}
 
   w(`\n  ${C.dim}Done. Plugin and MCP config removed.${C.reset}\n\n`);
