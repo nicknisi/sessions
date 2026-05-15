@@ -1,7 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { searchSessions, getActivityDigest } from './cache';
+import { searchSessions, getActivityDigest, getSessionMetrics } from './cache';
 import { getSessionMessages } from './parser';
 import { type SessionResult } from './types';
 
@@ -80,15 +80,22 @@ server.tool(
 
 server.tool(
   'get_activity_digest',
-  'Get a digest of all AI coding sessions within a date range. Returns user messages grouped by day and project — ideal for generating summaries, standups, or blog posts about recent work.',
+  'Get a digest of AI coding sessions within a date range, grouped by day and project. Use detail "compact" (default) for a quick overview with topics, or "full" to include user messages per session for generating summaries and blog posts.',
   {
     startDate: z.string().describe('Start date inclusive (YYYY-MM-DD). Example: "2026-05-07"'),
     endDate: z.string().describe('End date inclusive (YYYY-MM-DD). Example: "2026-05-14"'),
     tool: z.enum(['claude', 'codex', 'pi']).optional().describe('Filter to a specific tool'),
     project: z.string().optional().describe('Filter to sessions from this project directory path'),
+    detail: z
+      .enum(['compact', 'full'])
+      .optional()
+      .default('compact')
+      .describe(
+        'compact: topics + file paths only. full: includes user messages per session (top 10 sessions per project, 20 messages each, 500 char cap)',
+      ),
   },
-  async ({ startDate, endDate, tool, project }) => {
-    const digest = await getActivityDigest(startDate, endDate, tool ?? '', project ?? '');
+  async ({ startDate, endDate, tool, project, detail }) => {
+    const digest = await getActivityDigest(startDate, endDate, tool ?? '', project ?? '', detail);
 
     if (digest.totalSessions === 0) {
       return { content: [{ type: 'text' as const, text: 'No sessions found in that date range.' }] };
@@ -96,6 +103,28 @@ server.tool(
 
     return {
       content: [{ type: 'text' as const, text: JSON.stringify(digest, null, 2) }],
+    };
+  },
+);
+
+server.tool(
+  'get_session_metrics',
+  'Get usage metrics for AI coding sessions within a date range. Returns tool breakdown, project breakdown, daily activity counts, and active hours heatmap.',
+  {
+    startDate: z.string().describe('Start date inclusive (YYYY-MM-DD). Example: "2026-05-07"'),
+    endDate: z.string().describe('End date inclusive (YYYY-MM-DD). Example: "2026-05-14"'),
+    tool: z.enum(['claude', 'codex', 'pi']).optional().describe('Filter to a specific tool'),
+    project: z.string().optional().describe('Filter to sessions from this project directory path'),
+  },
+  async ({ startDate, endDate, tool, project }) => {
+    const metrics = await getSessionMetrics(startDate, endDate, tool ?? '', project ?? '');
+
+    if (metrics.totalSessions === 0) {
+      return { content: [{ type: 'text' as const, text: 'No sessions found in that date range.' }] };
+    }
+
+    return {
+      content: [{ type: 'text' as const, text: JSON.stringify(metrics, null, 2) }],
     };
   },
 );
