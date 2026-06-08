@@ -38,6 +38,18 @@ if (Bun.argv.includes('uninstall')) {
   process.exit(0);
 }
 
+if (Bun.argv.includes('report')) {
+  const { parseReportArgs, runReport } = await import('./src/report/index.ts');
+  const idx = Bun.argv.indexOf('report');
+  const opts = parseReportArgs(Bun.argv.slice(idx + 1));
+  const res = await runReport(opts);
+  if (!opts.stdout) {
+    if (res.jsonPath) process.stderr.write(`wrote ${res.jsonPath}\n`);
+    if (res.htmlPath) process.stderr.write(`wrote ${res.htmlPath}\n`);
+  }
+  process.exit(0);
+}
+
 const args = parseArgs(Bun.argv.slice(2));
 const repoRoot = getRepoRoot(args.scopeHere);
 

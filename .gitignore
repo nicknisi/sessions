@@ -34,3 +34,10 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 .DS_Store
 
 *.bun-build
+
+# superpowers brainstorm/visual-companion artifacts
+.superpowers/
+
+# `sessions report` default output artifacts
+usage-report.json
+report.html

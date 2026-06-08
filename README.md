@@ -51,21 +51,23 @@ sessions                     # Browse all sessions with fzf
 sessions <query>             # Search session content for a phrase
 sessions --here              # Scope to current git repo only
 sessions --tool claude       # Filter to Claude Code sessions only
+sessions report              # Generate a usage report (JSON + HTML dashboard)
 ```
 
 ### Options
 
-| Flag / Command  | Description                                           |
-| --------------- | ----------------------------------------------------- |
-| `setup`         | Install plugin and configure MCP for detected tools   |
-| `uninstall`     | Remove plugin and MCP config from all tools           |
-| `cleanup`       | Full reset: uninstall plugin + clear search index     |
-| `--here`        | Scope to the current git repo (default: all projects) |
-| `--tool <name>` | Filter by tool: `claude`, `codex`, or `pi`            |
-| `--mcp`         | Start as an MCP server (stdio transport)              |
-| `--clear-cache` | Remove the search index (rebuilds on next use)        |
-| `--no-color`    | Disable colored output                                |
-| `-h`, `--help`  | Show help                                             |
+| Flag / Command  | Description                                                                           |
+| --------------- | ------------------------------------------------------------------------------------- |
+| `report`        | Generate a usage report — JSON + HTML dashboard (see [Usage reports](#usage-reports)) |
+| `setup`         | Install plugin and configure MCP for detected tools                                   |
+| `uninstall`     | Remove plugin and MCP config from all tools                                           |
+| `cleanup`       | Full reset: uninstall plugin + clear search index                                     |
+| `--here`        | Scope to the current git repo (default: all projects)                                 |
+| `--tool <name>` | Filter by tool: `claude`, `codex`, or `pi`                                            |
+| `--mcp`         | Start as an MCP server (stdio transport)                                              |
+| `--clear-cache` | Remove the search index (rebuilds on next use)                                        |
+| `--no-color`    | Disable colored output                                                                |
+| `-h`, `--help`  | Show help                                                                             |
 
 ### Browsing
 
@@ -104,6 +106,48 @@ When you pick a session, `sessions` displays the resume command and copies it to
 ```
 
 For Claude Code sessions, the command includes `--resume <session-id>`. For Pi and Codex sessions, it navigates to the project directory (these tools don't support direct session resume).
+
+## Usage reports
+
+`sessions report` does a fresh pass over your local Claude Code, Codex, and Pi logs and produces a token/cost usage report — as machine-readable JSON, a self-contained HTML dashboard, or both.
+
+```sh
+sessions report                              # writes usage-report.json + report.html to the cwd
+sessions report --format html --out /tmp/r   # just the dashboard
+sessions report --format json --stdout       # print JSON to stdout (for piping)
+sessions report --days 30 --tool claude      # last 30 days, Claude Code only
+sessions report --this-month                 # current month to date
+sessions report --month 2026-05              # a specific calendar month
+```
+
+The selected period is shown prominently at the top of both outputs (and in the JSON `period`).
+
+### Report options
+
+| Flag                                                                        | Description                                                                                                    |
+| --------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `--format json\|html\|both`                                                 | What to emit. Default `both`.                                                                                  |
+| `--out <path>`                                                              | For `both`, a directory (default `.`) → `usage-report.json` + `report.html`. For a single format, a file path. |
+| `--from YYYY-MM-DD` / `--to YYYY-MM-DD`                                     | Inclusive local-date range. Default: all time.                                                                 |
+| `--days N`                                                                  | Last `N` days (instead of `--from`/`--to`).                                                                    |
+| `--today` / `--this-week` / `--this-month` / `--last-month` / `--this-year` | Convenience presets that resolve to a date range.                                                              |
+| `--month YYYY-MM`                                                           | A specific calendar month.                                                                                     |
+| `--tool claude\|codex\|pi`                                                  | Restrict to one tool. Default: all three.                                                                      |
+| `--tz <IANA>`                                                               | Timezone for day/hour bucketing. Default: `$TIMEZONE`, else `America/Chicago`.                                 |
+| `--stdout`                                                                  | Print the JSON to stdout and skip the JSON file (HTML is still written if requested).                          |
+
+### What's in the report
+
+Both outputs are built from the same data:
+
+- **Summary** — total cost, tokens, sessions, messages, active days, current/longest streak, peak hour, and most-used model.
+- **Breakdowns** — by tool, provider, model, and project.
+- **Daily series** — per-day tokens/cost/sessions/messages with an hourly histogram.
+- **Insights** — a weekly trend plus hour-of-day and weekday activity profiles.
+
+The JSON is a sessions-owned `UsageReport` (`{ "generator": "sessions", "version": 1, ... }`). The HTML is fully self-contained (inline SVG charts, no external assets) and adapts to light/dark.
+
+Cost is estimated from a built-in pricing table for Claude and other known models; Pi sessions use the cost recorded in their own logs. Tokens for unknown models are still counted, with cost shown as `$0`. Token totals exclude cache reads (replayed context, mostly free reuse).
 
 ## Quick Setup
 
