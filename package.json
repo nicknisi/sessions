@@ -1,6 +1,6 @@
 {
   "name": "sessions",
-  "version": "1.5.1",
+  "version": "1.6.0",
   "description": "Find and resume AI coding sessions (Claude Code, Codex, Pi)",
   "module": "index.ts",
   "type": "module",

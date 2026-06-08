@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.0](https://github.com/nicknisi/sessions/compare/v1.5.1...v1.6.0) (2026-06-08)
+
+
+### Features
+
+* add `sessions report` (usage report — JSON + HTML dashboard) ([#12](https://github.com/nicknisi/sessions/issues/12)) ([f6ecb58](https://github.com/nicknisi/sessions/commit/f6ecb5859948b0cf8aef1570e73a8f6a77662c73))
+
 ## [1.5.1](https://github.com/nicknisi/sessions/compare/v1.5.0...v1.5.1) (2026-05-15)
 
 
