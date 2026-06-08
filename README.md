@@ -116,19 +116,25 @@ sessions report                              # writes usage-report.json + report
 sessions report --format html --out /tmp/r   # just the dashboard
 sessions report --format json --stdout       # print JSON to stdout (for piping)
 sessions report --days 30 --tool claude      # last 30 days, Claude Code only
+sessions report --this-month                 # current month to date
+sessions report --month 2026-05              # a specific calendar month
 ```
+
+The selected period is shown prominently at the top of both outputs (and in the JSON `period`).
 
 ### Report options
 
-| Flag                                    | Description                                                                                                    |
-| --------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| `--format json\|html\|both`             | What to emit. Default `both`.                                                                                  |
-| `--out <path>`                          | For `both`, a directory (default `.`) → `usage-report.json` + `report.html`. For a single format, a file path. |
-| `--from YYYY-MM-DD` / `--to YYYY-MM-DD` | Inclusive local-date range. Default: all time.                                                                 |
-| `--days N`                              | Last `N` days (instead of `--from`/`--to`).                                                                    |
-| `--tool claude\|codex\|pi`              | Restrict to one tool. Default: all three.                                                                      |
-| `--tz <IANA>`                           | Timezone for day/hour bucketing. Default: `$TIMEZONE`, else `America/Chicago`.                                 |
-| `--stdout`                              | Print the JSON to stdout and skip the JSON file (HTML is still written if requested).                          |
+| Flag                                                                        | Description                                                                                                    |
+| --------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `--format json\|html\|both`                                                 | What to emit. Default `both`.                                                                                  |
+| `--out <path>`                                                              | For `both`, a directory (default `.`) → `usage-report.json` + `report.html`. For a single format, a file path. |
+| `--from YYYY-MM-DD` / `--to YYYY-MM-DD`                                     | Inclusive local-date range. Default: all time.                                                                 |
+| `--days N`                                                                  | Last `N` days (instead of `--from`/`--to`).                                                                    |
+| `--today` / `--this-week` / `--this-month` / `--last-month` / `--this-year` | Convenience presets that resolve to a date range.                                                              |
+| `--month YYYY-MM`                                                           | A specific calendar month.                                                                                     |
+| `--tool claude\|codex\|pi`                                                  | Restrict to one tool. Default: all three.                                                                      |
+| `--tz <IANA>`                                                               | Timezone for day/hour bucketing. Default: `$TIMEZONE`, else `America/Chicago`.                                 |
+| `--stdout`                                                                  | Print the JSON to stdout and skip the JSON file (HTML is still written if requested).                          |
 
 ### What's in the report
 
