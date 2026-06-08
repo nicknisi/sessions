@@ -5,6 +5,7 @@ import { gatherEvents, defaultRoots, type ReportRoots } from './extract.ts';
 import { aggregate } from './aggregate.ts';
 import { renderHtml } from './html.ts';
 import { toUsageReport } from './schema.ts';
+import { resolvePeriod, type PeriodPreset } from './period.ts';
 import { localDate } from './parsers/util.ts';
 
 export type ReportFormat = 'json' | 'html' | 'both';
@@ -15,6 +16,8 @@ export interface ReportOptions {
   from?: string;
   to?: string;
   days?: number;
+  preset?: PeriodPreset;
+  month?: string;
   tool?: ToolId;
   tz: string;
   stdout: boolean;
@@ -79,6 +82,17 @@ export function parseReportArgs(argv: string[]): ReportOptions {
         opts.tool = mapped;
         break;
       }
+      case '--today':
+      case '--this-week':
+      case '--this-month':
+      case '--last-month':
+      case '--this-year':
+        opts.preset = a.slice(2) as PeriodPreset;
+        break;
+      case '--month':
+        opts.preset = 'month';
+        opts.month = argv[++i];
+        break;
       default:
         die(`unknown option: ${a}`);
     }
@@ -101,8 +115,14 @@ export async function runReport(opts: ReportOptions): Promise<ReportResult> {
   const events = await gatherEvents(opts.roots ?? defaultRoots(), tools);
 
   const todayLocal = localDate(now, tz);
-  const from = opts.days ? daysAgo(todayLocal, opts.days) : opts.from;
-  const to = opts.to;
+  // Precedence: a named preset wins, then --days, then explicit --from/--to.
+  let from = opts.from;
+  let to = opts.to;
+  if (opts.preset) {
+    ({ from, to } = resolvePeriod(opts.preset, opts.month, todayLocal));
+  } else if (opts.days) {
+    from = daysAgo(todayLocal, opts.days);
+  }
   const inRange = events.filter((e) => {
     const d = localDate(e.timestamp, tz);
     if (from && d < from) return false;
@@ -114,6 +134,9 @@ export async function runReport(opts: ReportOptions): Promise<ReportResult> {
 
   const data = aggregate({ events: inRange, prs: [], now, tz, exclude: new Set<string>(), priorDaily: [] });
   const report = toUsageReport(data);
+  // The internal aggregate always reports "to today"; reflect the requested
+  // window instead so an explicit range (e.g. --month 2026-05) reads correctly.
+  report.period = { from: from ?? data.period.from, to: to ?? data.period.to };
   const json = JSON.stringify(report, null, 2);
   const result: ReportResult = { json };
 

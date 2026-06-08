@@ -32,6 +32,10 @@ describe('renderHtml', () => {
     expect(html).toContain('<svg');
     expect(html).toContain('Total cost');
     expect(html).toContain('sessions usage report');
+    // prominent period badge with human-formatted dates
+    expect(html).toContain('class="period"');
+    expect(html).toContain('Jun 1, 2026');
+    expect(html).toContain('Jun 6, 2026');
     // self-contained: no external resource references
     expect(html).not.toContain('http://');
     expect(html).not.toContain('https://');

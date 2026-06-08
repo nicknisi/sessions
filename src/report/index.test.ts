@@ -43,6 +43,14 @@ describe('parseReportArgs', () => {
     expect(o.tz).toBe('UTC');
     expect(o.stdout).toBe(true);
   });
+
+  test('parses period presets', () => {
+    expect(parseReportArgs(['--this-month']).preset).toBe('this-month');
+    expect(parseReportArgs(['--today']).preset).toBe('today');
+    const m = parseReportArgs(['--month', '2026-05']);
+    expect(m.preset).toBe('month');
+    expect(m.month).toBe('2026-05');
+  });
 });
 
 describe('runReport', () => {
@@ -67,5 +75,24 @@ describe('runReport', () => {
     expect(report.weeklyHighlights).toBeUndefined();
     expect(report.summary.totalTokens).toBe(1700);
     expect(readFileSync(res.htmlPath!, 'utf8').startsWith('<!DOCTYPE html>')).toBe(true);
+  });
+
+  test('period reflects the requested range, and out-of-range events are excluded', async () => {
+    const out = join(tmp, 'may.json');
+    // The only fixture event is 2026-06-01, so a May window yields an empty report.
+    const res = await runReport({
+      format: 'json',
+      out,
+      tz: 'UTC',
+      stdout: false,
+      roots,
+      now: '2026-06-06T00:00:00Z',
+      from: '2026-05-01',
+      to: '2026-05-31',
+    });
+    const report = JSON.parse(readFileSync(res.jsonPath!, 'utf8'));
+    expect(report.period).toEqual({ from: '2026-05-01', to: '2026-05-31' });
+    expect(report.summary.sessions).toBe(0);
+    expect(report.summary.totalTokens).toBe(0);
   });
 });

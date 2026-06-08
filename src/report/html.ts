@@ -21,6 +21,16 @@ function hourLabel(h: number): string {
 }
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+function formatDate(ymd: string): string {
+  const [y, m, d] = ymd.split('-').map(Number);
+  return `${MONTHS[m! - 1]} ${d}, ${y}`;
+}
+
+function periodLabel(from: string, to: string): string {
+  return from === to ? formatDate(from) : `${formatDate(from)} → ${formatDate(to)}`;
+}
 
 interface Bar {
   value: number;
@@ -79,8 +89,10 @@ const CSS = `
 @media (prefers-color-scheme:dark){:root{--bg:#0e0f13;--panel:#16181d;--ink:#e8eaed;--muted:#9aa1ad;--line:#262a31;--grid:#20242b;--shadow:0 1px 2px rgba(0,0,0,.3),0 6px 20px rgba(0,0,0,.35);}}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:14px;line-height:1.45;}
 .wrap{max-width:1080px;margin:0 auto;padding:28px 24px 60px;}
-header.rep{border-bottom:1px solid var(--line);padding-bottom:18px;margin-bottom:22px;}
-header.rep h1{font-size:20px;margin:0 0 2px;}header.rep .sub{color:var(--muted);font-size:13px;}
+header.rep{display:flex;justify-content:space-between;align-items:flex-end;flex-wrap:wrap;gap:8px;border-bottom:1px solid var(--line);padding-bottom:18px;margin-bottom:22px;}
+header.rep h1{font-size:20px;margin:0;}
+.period{font-family:var(--mono);font-size:16px;font-weight:600;color:var(--accent);margin-top:6px;}
+.genstamp{color:var(--muted);font-size:11px;font-family:var(--mono);}
 .hero{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:12px;}
 .stat{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px;box-shadow:var(--shadow);}
 .stat .k,.ministat .k{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);}
@@ -154,8 +166,9 @@ export function renderHtml(data: UsageReport): string {
 <title>AI Usage Report — ${esc(data.period.from)} to ${esc(data.period.to)}</title>
 <style>${CSS}</style></head>
 <body><div class="wrap">
-<header class="rep"><h1>AI Usage Report</h1>
-<div class="sub">${esc(data.period.from)} – ${esc(data.period.to)} · generated ${esc(data.generatedAt)}</div></header>
+<header class="rep"><div><h1>AI Usage Report</h1>
+<div class="period">${esc(periodLabel(data.period.from, data.period.to))}</div></div>
+<div class="genstamp">generated ${esc(data.generatedAt)}</div></header>
 <div class="hero">
 <div class="stat"><div class="k">Total cost</div><div class="v">${fmtUSD(s.totalCostUSD)}</div></div>
 <div class="stat"><div class="k">Total tokens</div><div class="v">${fmtTokens(s.totalTokens)}</div></div>
