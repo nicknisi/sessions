@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.7.0](https://github.com/nicknisi/sessions/compare/v1.6.0...v1.7.0) (2026-06-10)
+
+
+### Features
+
+* add --here flag to scope `sessions report` to the current project ([#14](https://github.com/nicknisi/sessions/issues/14)) ([e337552](https://github.com/nicknisi/sessions/commit/e3375526d5c4dce8970cbfc0cda78fb9ee13ad8b))
+* **report:** redesign HTML dashboard with themes and accent switcher ([#16](https://github.com/nicknisi/sessions/issues/16)) ([eb9b098](https://github.com/nicknisi/sessions/commit/eb9b0982d3409fda3ed14c1a01c5fe60ce4cd824))
+
 ## [1.6.0](https://github.com/nicknisi/sessions/compare/v1.5.1...v1.6.0) (2026-06-08)
 
 
