@@ -29,6 +29,25 @@ writeFileSync(
 );
 const roots = { claudeCode: claudeDir, pi: join(tmp, 'no-pi'), codex: join(tmp, 'no-codex') };
 
+// Separate fixture set for --here: three events across two projects plus one with no cwd.
+const hereClaudeDir = join(tmp, 'claude-here');
+mkdirSync(join(hereClaudeDir, 'proj'), { recursive: true });
+const hereEvent = (sessionId: string, cwd: string | undefined, input: number, output: number) =>
+  JSON.stringify({
+    type: 'assistant',
+    sessionId,
+    ...(cwd ? { cwd } : {}),
+    timestamp: '2026-06-01T14:30:00Z',
+    message: { model: 'claude-opus-4-6', usage: { input_tokens: input, output_tokens: output } },
+  }) + '\n';
+writeFileSync(
+  join(hereClaudeDir, 'proj', 'b.jsonl'),
+  hereEvent('s1', '/Users/x/Developer/sessions', 1000, 500) +
+    hereEvent('s2', '/Users/x/Developer/otherproj', 100, 50) +
+    hereEvent('s3', undefined, 10, 5),
+);
+const hereRoots = { claudeCode: hereClaudeDir, pi: join(tmp, 'no-pi'), codex: join(tmp, 'no-codex') };
+
 describe('parseReportArgs', () => {
   test('defaults', () => {
     const o = parseReportArgs([]);
@@ -42,6 +61,11 @@ describe('parseReportArgs', () => {
     expect(o.tool).toBe('claude-code');
     expect(o.tz).toBe('UTC');
     expect(o.stdout).toBe(true);
+  });
+
+  test('parses --here', () => {
+    expect(parseReportArgs(['--here']).here).toBe(true);
+    expect(parseReportArgs([]).here).toBeUndefined();
   });
 
   test('parses period presets', () => {
@@ -94,5 +118,39 @@ describe('runReport', () => {
     expect(report.period).toEqual({ from: '2026-05-01', to: '2026-05-31' });
     expect(report.summary.sessions).toBe(0);
     expect(report.summary.totalTokens).toBe(0);
+  });
+
+  const hereOpts = {
+    format: 'json' as const,
+    tz: 'UTC',
+    stdout: false,
+    roots: hereRoots,
+    now: '2026-06-06T00:00:00Z',
+    here: true,
+  };
+
+  test('--here keeps only events from the cwd project, dropping other and unknown projects', async () => {
+    const out = join(tmp, 'here-sessions.json');
+    const res = await runReport({ ...hereOpts, out, cwd: '/Users/x/Developer/sessions' });
+    const report = JSON.parse(readFileSync(res.jsonPath!, 'utf8'));
+    expect(report.summary.sessions).toBe(1);
+    expect(report.summary.totalTokens).toBe(1500);
+  });
+
+  test('--here matches by project name from any cwd path resolving to it', async () => {
+    const out = join(tmp, 'here-other.json');
+    // A subdirectory cwd still resolves to the repo name.
+    const res = await runReport({ ...hereOpts, out, cwd: '/Users/x/Developer/otherproj/src/deep' });
+    const report = JSON.parse(readFileSync(res.jsonPath!, 'utf8'));
+    expect(report.summary.sessions).toBe(1);
+    expect(report.summary.totalTokens).toBe(150);
+  });
+
+  test('without --here all projects are included', async () => {
+    const out = join(tmp, 'here-off.json');
+    const res = await runReport({ ...hereOpts, here: false, out });
+    const report = JSON.parse(readFileSync(res.jsonPath!, 'utf8'));
+    expect(report.summary.sessions).toBe(3);
+    expect(report.summary.totalTokens).toBe(1665);
   });
 });

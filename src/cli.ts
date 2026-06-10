@@ -23,6 +23,7 @@ ${C.bold}Options:${C.reset}
 
 ${C.bold}Commands:${C.reset}
   report           Generate a usage report (JSON for tokenmaxing + HTML dashboard)
+                   Accepts --here to scope the report to the current project
   setup            Install plugin and configure MCP for detected tools
   uninstall        Remove plugin and MCP config from all tools
   cleanup          Uninstall plugin + clear search index (full reset)
