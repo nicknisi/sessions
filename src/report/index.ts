@@ -6,6 +6,7 @@ import { aggregate } from './aggregate.ts';
 import { renderHtml } from './html.ts';
 import { toUsageReport } from './schema.ts';
 import { resolvePeriod, type PeriodPreset } from './period.ts';
+import { resolveProject } from './project.ts';
 import { localDate } from './parsers/util.ts';
 
 export type ReportFormat = 'json' | 'html' | 'both';
@@ -23,6 +24,8 @@ export interface ReportOptions {
   stdout: boolean;
   roots?: ReportRoots;
   now?: string;
+  here?: boolean;
+  cwd?: string;
 }
 
 export interface ReportResult {
@@ -75,6 +78,9 @@ export function parseReportArgs(argv: string[]): ReportOptions {
       case '--stdout':
         opts.stdout = true;
         break;
+      case '--here':
+        opts.here = true;
+        break;
       case '--tool': {
         const v = argv[++i] ?? '';
         const mapped = TOOL_MAP[v];
@@ -123,14 +129,21 @@ export async function runReport(opts: ReportOptions): Promise<ReportResult> {
   } else if (opts.days) {
     from = daysAgo(todayLocal, opts.days);
   }
+  // Project scoping matches by resolved name on both sides, so events whose
+  // cwd lacks a known project ('unknown') drop out of a --here report.
+  const hereProject = opts.here ? resolveProject(opts.cwd ?? process.cwd()) : undefined;
   const inRange = events.filter((e) => {
+    if (hereProject && resolveProject(e.projectPath) !== hereProject) return false;
     const d = localDate(e.timestamp, tz);
     if (from && d < from) return false;
     if (to && d > to) return false;
     return true;
   });
 
-  if (inRange.length === 0) process.stderr.write('warning: no usage events in range; report is empty\n');
+  if (inRange.length === 0) {
+    const scope = hereProject ? ` for project ${hereProject}` : '';
+    process.stderr.write(`warning: no usage events in range${scope}; report is empty\n`);
+  }
 
   const data = aggregate({ events: inRange, prs: [], now, tz, exclude: new Set<string>(), priorDaily: [] });
   const report = toUsageReport(data);
