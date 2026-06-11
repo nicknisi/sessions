@@ -1,4 +1,5 @@
-import { writeFile } from 'node:fs/promises';
+import { writeFile, mkdtemp } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ToolId } from './types.ts';
 import { gatherEvents, defaultRoots, type ReportRoots } from './extract.ts';
@@ -43,7 +44,7 @@ function die(msg: string): never {
 
 export function parseReportArgs(argv: string[]): ReportOptions {
   const opts: ReportOptions = {
-    format: 'both',
+    format: 'html',
     tz: process.env['TIMEZONE'] ?? 'America/Chicago',
     stdout: false,
   };
@@ -156,17 +157,21 @@ export async function runReport(opts: ReportOptions): Promise<ReportResult> {
   const wantJson = opts.format === 'json' || opts.format === 'both';
   const wantHtml = opts.format === 'html' || opts.format === 'both';
 
+  // With no --out, files land in a fresh temp dir (the CLI opens the HTML from there).
+  const needsFile = wantHtml || (wantJson && !opts.stdout);
+  const outBase = opts.out ?? (needsFile ? await mkdtemp(join(tmpdir(), 'sessions-report-')) : undefined);
+
   if (opts.stdout) {
     process.stdout.write(json + '\n');
   } else if (wantJson) {
-    const p = opts.format === 'both' ? join(opts.out ?? '.', 'usage-report.json') : (opts.out ?? './usage-report.json');
+    const p = opts.format === 'both' || !opts.out ? join(outBase!, 'usage-report.json') : opts.out;
     await writeFile(p, json, 'utf8');
     result.jsonPath = p;
   }
 
   if (wantHtml) {
     const html = renderHtml(report);
-    const p = opts.format === 'both' ? join(opts.out ?? '.', 'report.html') : (opts.out ?? './report.html');
+    const p = opts.format === 'both' || !opts.out ? join(outBase!, 'report.html') : opts.out;
     await writeFile(p, html, 'utf8');
     result.htmlPath = p;
   }

@@ -22,8 +22,10 @@ ${C.bold}Options:${C.reset}
   -h, --help       Show this help
 
 ${C.bold}Commands:${C.reset}
-  report           Generate a usage report (JSON for tokenmaxing + HTML dashboard)
-                   Accepts --here to scope the report to the current project
+  report           Generate a usage report (HTML dashboard, opens in browser)
+                   --out <path> saves instead of opening; --format json|html|both
+                   (default html); --stdout prints JSON; --here scopes to the
+                   current project; --from/--to/--days/--month limit the period
   setup            Install plugin and configure MCP for detected tools
   uninstall        Remove plugin and MCP config from all tools
   cleanup          Uninstall plugin + clear search index (full reset)
