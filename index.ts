@@ -47,6 +47,10 @@ if (Bun.argv.includes('report')) {
     if (res.jsonPath) process.stderr.write(`wrote ${res.jsonPath}\n`);
     if (res.htmlPath) process.stderr.write(`wrote ${res.htmlPath}\n`);
   }
+  if (res.htmlPath && !opts.out && !opts.stdout) {
+    const opener = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
+    Bun.spawnSync([opener, res.htmlPath]);
+  }
   process.exit(0);
 }
 

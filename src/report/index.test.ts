@@ -51,8 +51,9 @@ const hereRoots = { claudeCode: hereClaudeDir, pi: join(tmp, 'no-pi'), codex: jo
 describe('parseReportArgs', () => {
   test('defaults', () => {
     const o = parseReportArgs([]);
-    expect(o.format).toBe('both');
+    expect(o.format).toBe('html');
     expect(o.stdout).toBe(false);
+    expect(o.out).toBeUndefined();
   });
   test('parses flags', () => {
     const o = parseReportArgs(['--format', 'json', '--days', '7', '--tool', 'claude', '--tz', 'UTC', '--stdout']);
@@ -78,6 +79,35 @@ describe('parseReportArgs', () => {
 });
 
 describe('runReport', () => {
+  test('without --out, writes html to a fresh temp dir', async () => {
+    const res = await runReport({
+      format: 'html',
+      tz: 'UTC',
+      stdout: false,
+      roots,
+      now: '2026-06-06T00:00:00Z',
+    });
+    expect(res.jsonPath).toBeUndefined();
+    expect(res.htmlPath).toContain('sessions-report-');
+    expect(res.htmlPath!.endsWith('report.html')).toBe(true);
+    expect(readFileSync(res.htmlPath!, 'utf8').startsWith('<!DOCTYPE html>')).toBe(true);
+    rmSync(join(res.htmlPath!, '..'), { recursive: true, force: true });
+  });
+
+  test('without --out, format both puts both files in the same temp dir', async () => {
+    const res = await runReport({
+      format: 'both',
+      tz: 'UTC',
+      stdout: false,
+      roots,
+      now: '2026-06-06T00:00:00Z',
+    });
+    expect(res.jsonPath).toContain('sessions-report-');
+    expect(join(res.jsonPath!, '..')).toBe(join(res.htmlPath!, '..'));
+    expect(existsSync(res.jsonPath!)).toBe(true);
+    rmSync(join(res.jsonPath!, '..'), { recursive: true, force: true });
+  });
+
   test('writes both json and html to the out dir', async () => {
     const outDir = join(tmp, 'out');
     mkdirSync(outDir, { recursive: true });
