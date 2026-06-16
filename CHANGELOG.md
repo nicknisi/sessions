@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.8.0](https://github.com/nicknisi/sessions/compare/v1.7.0...v1.8.0) (2026-06-11)
+
+
+### Features
+
+* **report:** open HTML dashboard from a temp dir by default ([#17](https://github.com/nicknisi/sessions/issues/17)) ([ac658ca](https://github.com/nicknisi/sessions/commit/ac658ca0d830bde42e5443ea80c1bca740ef5159))
+
 ## [1.7.0](https://github.com/nicknisi/sessions/compare/v1.6.0...v1.7.0) (2026-06-10)
 
 
