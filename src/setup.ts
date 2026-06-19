@@ -196,6 +196,7 @@ export function runSetup(): void {
   }
 
   w(`\n  ${C.bold}Skills available:${C.reset}\n`);
+  w(`    ${C.cyan}/context${C.reset}           Context primer for the current repo\n`);
   w(`    ${C.cyan}/weekly-summary${C.reset}    Summarize your past week's AI sessions\n`);
   w(`    ${C.cyan}/standup${C.reset}           Yesterday + today activity for standups\n`);
   w(`    ${C.cyan}/recall${C.reset}            What did I do on a specific project?\n`);

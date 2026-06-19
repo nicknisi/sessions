@@ -54,6 +54,13 @@ if (Bun.argv.includes('report')) {
   process.exit(0);
 }
 
+if (Bun.argv.includes('context')) {
+  const i = Bun.argv.indexOf('context');
+  const { parseContextArgs, runContext } = await import('./src/context.ts');
+  await runContext(parseContextArgs(Bun.argv.slice(i + 1)));
+  process.exit(0);
+}
+
 const args = parseArgs(Bun.argv.slice(2));
 const repoRoot = getRepoRoot(args.scopeHere);
 

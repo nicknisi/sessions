@@ -23,6 +23,9 @@ ${C.bold}Options:${C.reset}
   -h, --help       Show this help
 
 ${C.bold}Commands:${C.reset}
+  context          Print a context primer for the current repo (markdown)
+                   --full widens detail; --limit/--days/--tool filter; --worktree
+                   narrows to the current worktree; --out <path> writes to a file
   report           Generate a usage report (HTML dashboard, opens in browser)
                    --out <path> saves instead of opening; --format json|html|both
                    (default html); --stdout prints JSON; --here scopes to the

@@ -1,8 +1,9 @@
-import { describe, test, expect, afterAll } from 'bun:test';
+import { describe, test, expect, afterAll, spyOn } from 'bun:test';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { RepoInfo } from './repo';
+import type { ContextPrimer } from './types';
 
 // Point the index at hermetic temp dirs BEFORE importing the cache module, since
 // it captures these paths in module constants at import time.
@@ -166,5 +167,146 @@ describe('empty-state', () => {
     expect(primer.recent).toEqual([]);
     expect(primer.headlines).toEqual([]);
     expect(primer.repoLabel).toBe('no-sessions-here');
+  });
+});
+
+const ctx = await import('./context');
+
+describe('cli', () => {
+  test('renderMarkdown produces two-tier headings, intent, files, and earlier bullets', () => {
+    const primer: ContextPrimer = {
+      repoLabel: 'myrepo',
+      toolFilter: '',
+      isEmpty: false,
+      recent: [
+        {
+          sessionId: 's1',
+          tool: 'claude',
+          branch: 'main',
+          date: '2026-06-19',
+          messageCount: 8,
+          intent: 'wire up the renderer',
+          files: ['/a/x.ts', '/a/y.ts'],
+          opening: 'wire up the renderer',
+          closing: { user: 'is it done?', assistant: 'yes, tests pass' },
+        },
+      ],
+      headlines: [{ date: '2026-06-10', tool: 'codex', branch: 'main', intent: 'earlier task' }],
+    };
+
+    const md = ctx.renderMarkdown(primer, false);
+    expect(md).toContain('## Recent');
+    expect(md).toContain('## Earlier');
+    expect(md).toContain('wire up the renderer'); // most-recent intent
+    expect(md).toContain('/a/x.ts');
+    expect(md).toContain('is it done?');
+    expect(md).toContain('yes, tests pass');
+    expect(md).toContain('- **2026-06-10**'); // earlier headline bullet
+    expect(md).toContain('earlier task');
+  });
+
+  test('renderMarkdown on an empty primer emits the empty-state line and no tier headings', () => {
+    const primer: ContextPrimer = {
+      repoLabel: 'blank',
+      toolFilter: '',
+      isEmpty: true,
+      recent: [],
+      headlines: [],
+    };
+    const md = ctx.renderMarkdown(primer, false);
+    expect(md).toContain('No past sessions found for this repo.');
+    expect(md).not.toContain('## Recent');
+  });
+
+  test('--full widens per-session detail (shows divergent opening, no file truncation)', () => {
+    const files = Array.from({ length: 8 }, (_, i) => `/f/${i}.ts`);
+    const primer: ContextPrimer = {
+      repoLabel: 'r',
+      toolFilter: '',
+      isEmpty: false,
+      recent: [
+        {
+          sessionId: 's',
+          tool: 'pi',
+          branch: 'feat',
+          date: '2026-06-19',
+          messageCount: 3,
+          intent: 'short title',
+          files,
+          opening: 'a much longer verbatim opening prompt that differs from the title',
+          closing: { user: '', assistant: '' },
+        },
+      ],
+      headlines: [],
+    };
+
+    const compact = ctx.renderMarkdown(primer, false);
+    const full = ctx.renderMarkdown(primer, true);
+    expect(compact).toContain('+3 more'); // 8 files, capped at 5
+    expect(compact).not.toContain('much longer verbatim opening');
+    expect(full).not.toContain('+3 more');
+    expect(full).toContain('/f/7.ts');
+    expect(full).toContain('much longer verbatim opening');
+  });
+
+  test('parseContextArgs parses flags', () => {
+    const args = ctx.parseContextArgs(['--limit', '5', '--tool', 'codex', '--worktree', '--out', 'p.md', '--full']);
+    expect(args.limit).toBe(5);
+    expect(args.tool).toBe('codex');
+    expect(args.worktreeOnly).toBe(true);
+    expect(args.out).toBe('p.md');
+    expect(args.full).toBe(true);
+    expect(args.here).toBe(true);
+  });
+
+  test('parseContextArgs defaults', () => {
+    const args = ctx.parseContextArgs([]);
+    expect(args.limit).toBe(10);
+    expect(args.tool).toBe('');
+    expect(args.worktreeOnly).toBe(false);
+    expect(args.full).toBe(false);
+    expect(args.out).toBeUndefined();
+    expect(args.days).toBeUndefined();
+  });
+
+  test('parseContextArgs rejects unknown flags via die', () => {
+    const exitSpy = spyOn(process, 'exit').mockImplementation(((): never => {
+      throw new Error('exit');
+    }) as never);
+    const errSpy = spyOn(process.stderr, 'write').mockImplementation((() => true) as never);
+    try {
+      expect(() => ctx.parseContextArgs(['--bogus'])).toThrow('exit');
+      expect(errSpy).toHaveBeenCalled();
+    } finally {
+      exitSpy.mockRestore();
+      errSpy.mockRestore();
+    }
+  });
+});
+
+describe('mcp', () => {
+  test('the primer JSON the MCP tool serializes round-trips to the renderer-consumed shape', async () => {
+    const cwd = join(fixtureRoot, 'mcp-parity');
+    writeClaudeSession({
+      cwd,
+      firstPrompt: 'mcp parity intent',
+      edits: ['/mcp-parity/a.ts'],
+      closingUser: 'done?',
+      closingAssistant: 'all green',
+      createdAt: '2026-06-19T08:00:00.000Z',
+    });
+
+    // The MCP handler does exactly this: getContextPrimer → JSON.stringify(_, null, 2).
+    const primer = await cache.getContextPrimer(fakeRepo(cwd, {}), { tool: '', worktreeOnly: undefined });
+    const json = JSON.stringify(primer, null, 2);
+    const parsed = JSON.parse(json) as ContextPrimer;
+
+    // Same structure the CLI renderer consumes — render it to prove parity.
+    expect(parsed.isEmpty).toBe(false);
+    expect(parsed.recent[0]!.intent).toBe('mcp parity intent');
+    const md = ctx.renderMarkdown(parsed, false);
+    expect(md).toContain('mcp parity intent');
+    expect(md).toContain('/mcp-parity/a.ts');
+    expect(md).toContain('all green');
   });
 });
