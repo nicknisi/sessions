@@ -252,6 +252,31 @@ export function getSessionMessages(lines: string[]): SessionMessage[] {
   return messages;
 }
 
+/** Max length of each stored closing message (bounds the indexed columns). */
+export const CLOSING_MAX = 500;
+
+/**
+ * Last user message and last assistant message from a session, stripped of
+ * injected tags and truncated to CLOSING_MAX. Both roles are returned so the
+ * synthesis layer (Phase 2) can decide what the open thread is — the last
+ * assistant turn alone is often a question or tool call, not an outcome.
+ */
+export function closingMessages(lines: string[], _tool: Tool): { user: string; assistant: string } {
+  const messages = getSessionMessages(lines);
+  let user = '';
+  let assistant = '';
+  for (let i = messages.length - 1; i >= 0 && (!user || !assistant); i--) {
+    const m = messages[i]!;
+    if (m.role === 'user' && !user) user = m.text;
+    else if (m.role === 'assistant' && !assistant) assistant = m.text;
+  }
+  const finish = (t: string): string => {
+    const stripped = stripInjected(t).trim();
+    return stripped.length > CLOSING_MAX ? stripped.slice(0, CLOSING_MAX) : stripped;
+  };
+  return { user: finish(user), assistant: finish(assistant) };
+}
+
 export function findMatchContext(lines: string[], query: string): string {
   for (const line of lines) {
     const d = tryParseJson(line);

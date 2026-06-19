@@ -1,5 +1,6 @@
 import { C, disableColors } from './colors';
 import { type Tool, type CliArgs } from './types';
+import { resolveRepo } from './repo';
 
 const VALID_TOOLS = new Set<string>(['claude', 'codex', 'pi']);
 
@@ -79,23 +80,9 @@ export function parseArgs(argv: string[]): CliArgs {
 export function getRepoRoot(scopeHere: boolean): string {
   if (!scopeHere) return '';
 
-  try {
-    const result = Bun.spawnSync(['git', 'rev-parse', '--show-toplevel']);
-    let root = new TextDecoder().decode(result.stdout).trim();
-    if (!root) return process.cwd();
-
-    try {
-      const parentGit = `${root}/../.git`;
-      const content = require('fs').readFileSync(parentGit, 'utf-8');
-      if (content.includes('gitdir') && content.includes('.bare')) {
-        root = require('path').resolve(root, '..');
-      }
-    } catch {
-      // not a bare repo worktree
-    }
-
-    return root;
-  } catch {
-    return process.cwd();
-  }
+  // Delegate to the git-common-dir based resolver. Its `container` is the tree
+  // holding all worktrees (bare or normal), replacing the old `../.git`+`.bare`
+  // string match. Fall back to the cwd when not in a git repo.
+  const repo = resolveRepo(process.cwd());
+  return repo ? repo.container : process.cwd();
 }

@@ -13,6 +13,7 @@ import {
   firstTimestamp,
   messageCount,
 } from './parser';
+import { cwdUnder } from './repo';
 
 const home = homedir();
 const CLAUDE_DIR = join(home, '.claude/projects');
@@ -40,7 +41,8 @@ async function processSession(
 
   const cwd = getCwdFromSession(lines, tool);
   if (!cwd) return null;
-  if (!searchAll && !cwd.startsWith(repoRoot)) return null;
+  // Boundary-aware: a sibling sharing a prefix (e.g. `dotfiles-v2`) is not under `repoRoot`.
+  if (!searchAll && !cwdUnder(cwd, repoRoot)) return null;
   if (cwd.includes('.claude/worktrees') || cwd.includes('/.bare')) return null;
 
   const sessionId = basename(filePath).replace('.jsonl', '');
@@ -107,6 +109,11 @@ async function scanDir(
       return [];
     }
     for (const dirname of dirs) {
+      // Cheap loose pre-filter on the encoded slug — intentionally permissive so it
+      // never skips a real descendant/worktree dir (the slug separator is ambiguous
+      // here). The precise, boundary-aware cwd check in processSession (`cwdUnder`)
+      // is what actually excludes siblings like `dotfiles-v2`; this is only an
+      // optimization to avoid opening clearly-unrelated project dirs.
       if (!searchAll && !dirname.startsWith(prefix)) continue;
       const dirpath = join(sessionDir, dirname);
       const glob = new Bun.Glob('*.jsonl');
