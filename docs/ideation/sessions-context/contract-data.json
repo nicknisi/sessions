@@ -1,0 +1,199 @@
+{
+  "projectName": "sessions context",
+  "slug": "sessions-context",
+  "date": "2026-06-19",
+  "status": "Approved",
+  "approvedOn": "2026-06-19",
+  "approvedBy": "Nick Nisi",
+  "supersedes": null,
+  "gates": {
+    "dimensions": [
+      {
+        "key": "problem",
+        "label": "Problem Clarity",
+        "status": "ready",
+        "evidence": "Problem statement names who (anyone resuming AI coding work on a repo), what (prior decisions, dead-ends, and open threads evaporate so context is re-explained), and the gap — `sessions` indexes history (cache.ts) but only retrieves and never re-injects."
+      },
+      {
+        "key": "goals",
+        "label": "Goal Definition",
+        "status": "ready",
+        "evidence": "Four observable goals: a two-tier primer across all three tools and all worktrees, two surfaces sharing one extractor, a synthesis skill, and holding the no-LLM/no-network/no-new-deps moat."
+      },
+      {
+        "key": "criteria",
+        "label": "Success Criteria",
+        "status": "ready",
+        "evidence": "Nine criteria — eight carry runnable `bun test` / `grep` / `git diff` checks; the agent-synthesized-prose criterion is explicitly tagged a judgment call rather than given a fake check."
+      },
+      {
+        "key": "scope",
+        "label": "Scope Boundaries",
+        "status": "ready",
+        "evidence": "MVP×9 nested in Full×3 nested in Stretch×2, with an explicit out-of-scope list (in-binary LLM, team/cloud layer, in-code decision detection) and a future axis."
+      },
+      {
+        "key": "consistency",
+        "label": "Consistency",
+        "status": "ready",
+        "evidence": "All four design forks resolved 2026-06-19 (all-3-tools file extraction, index-time precompute + SCHEMA_VERSION bump, aggregate-worktrees default, no validation gate); precompute satisfies the zero-file-read criterion and zod is already a dependency, so 'no new deps' holds."
+      }
+    ]
+  },
+  "problem": [
+    "Every new AI coding session on a repo starts from zero. Prior decisions, dead-ends, and half-finished threads from past Claude Code / Codex / Pi sessions evaporate, so you re-explain context you already worked out. `sessions` already indexes that history (SQLite + FTS5 in cache.ts) but only does retrieval — search, resume, usage reports — and stops short of feeding context back into the next session.",
+    "This adds the missing re-injection layer: a repo-scoped 'context primer' surfacing what past-you decided, tried, and left open. To preserve the static-binary, no-LLM, no-network architecture (the project's actual moat), synthesis stays in the consuming agent via a skill; the binary only does deterministic extraction and ships the structured material."
+  ],
+  "goals": [
+    "Produce a repo-scoped, two-tier context primer (recent sessions in detail + older sessions as dated headlines) from the existing index, across all three tools and across every worktree of a bare-repo project (aggregated by default, each branch-labeled).",
+    "Expose it on two surfaces sharing one extractor: a `get_context_primer` MCP tool (for in-agent synthesis) and a `sessions context` CLI command (for paste/pipe).",
+    "Ship a `context` skill that turns the structured data into a prose primer covering prior decisions, what was tried, and open threads.",
+    "Hold the line on the static-binary moat: no LLM call, no network, no new runtime dependencies."
+  ],
+  "successCriteria": [
+    {
+      "criterion": "Running `sessions context` in a repo with history prints a two-tier markdown primer — recent tier with intent / files / opening / closing (both roles) / meta per session, older tier as dated headline lines — bounded by a size cap.",
+      "check": "bun test src/context.test.ts -t \"two-tier\" — exits 0 (asserts recent + headline tiers present and total output within the cap)"
+    },
+    {
+      "criterion": "`get_context_primer` returns the same primer as zod-schema-validated JSON via the MCP server, following house style (JSON.stringify output, plain-string empty case).",
+      "check": "bun test src/context.test.ts -t \"mcp\" — exits 0 (MCP handler output parses and matches the CLI extractor's structured data)"
+    },
+    {
+      "criterion": "`extractFiles` correctly pulls edited file paths from Claude, Codex, and Pi session logs; one passing case per tool format (Claude Edit/Write/MultiEdit/NotebookEdit, Codex apply_patch/function-call, Pi).",
+      "check": "bun test src/extract-files.test.ts — exits 0 (per-tool cases)"
+    },
+    {
+      "criterion": "Given the tool output, the `context` skill produces a primer that names prior decisions and flags the most-recent session's unfinished state as the open thread. Judgment call — agent-synthesized prose, verified by human review of a sample primer, not a mechanical test."
+    },
+    {
+      "criterion": "Run from any worktree of a bare-repo project, the primer aggregates sessions across all worktrees (each branch-labeled); resolution uses `git rev-parse --git-common-dir` and a boundary-aware cwd match so a sibling project like `dotfiles-v2` is never captured under `dotfiles`.",
+      "check": "bun test src/context.test.ts -t \"worktree\" — exits 0 (fixture asserts cross-worktree aggregation with branch labels AND that a sibling `…-v2` cwd is excluded)"
+    },
+    {
+      "criterion": "A repo with no sessions yields a graceful empty-state message rather than an error or stack trace.",
+      "check": "bun test src/context.test.ts -t \"empty-state\" — exits 0 (empty-roots fixture returns the empty-state string with exit code 0)"
+    },
+    {
+      "criterion": "After a SCHEMA_VERSION bump (2→3), `indexFile` stores `files_touched` and truncated closing messages (both roles) as columns, and `getContextPrimer` reads only those indexed columns — no per-invocation source-file reads.",
+      "check": "bun test src/context.test.ts -t \"indexed-columns\" — exits 0 (asserts columns populated after refreshIndex, and an fs-read spy records zero source-file opens during getContextPrimer)"
+    },
+    {
+      "criterion": "No new runtime dependency, no network call, and no LLM call is introduced — the static-binary moat holds.",
+      "check": "git diff --stat package.json shows no added `dependencies`; grep -rnE 'fetch\\(|https?://|anthropic|openai' src/context.ts src/extract-files.ts — no matches"
+    },
+    {
+      "criterion": "The full quality gate passes — both the four CI jobs and the local test suite.",
+      "check": "bun test — exits 0; bun run typecheck — exits 0; bun run lint — exits 0; bun run format:check — exits 0; bun run build — exits 0 (the last four mirror CI's lint/format/typecheck/compile jobs; `bun test` is a local-only gate since CI does not run tests)"
+    }
+  ],
+  "scope": {
+    "mvp": [
+      {
+        "item": "getContextPrimer(repoRoot, opts) two-tier extractor",
+        "reason": "Recent N detailed + older headlines, repo-scoped via cwd prefix, reusing the queryDateRange pattern in cache.ts (created_at + tool + cwd LIKE filtering)."
+      },
+      {
+        "item": "Worktree-aware resolution + cross-worktree aggregation",
+        "reason": "git-common-dir resolver replacing the brittle ../.git + .bare string match (cli.ts:79); boundary-aware cwd match fixing the confirmed sibling-capture bug at scanner.ts:43 and cache.ts:285/313; per-session branch labels; default aggregates all worktrees of a bare repo. Note: the resolver + boundary fix also change the existing `sessions` search/scan path (scanner.ts, cache.ts), not just the primer — intentional, and the existing search behavior must stay green."
+      },
+      {
+        "item": "Cross-tool extractFiles for Claude, Codex, and Pi",
+        "reason": "Parse tool_use / apply_patch blocks for edited file paths — genuinely new (no tool-call parsing exists today; parser.ts drops all non-text blocks). Codex and Pi shapes are reverse-engineered from real logs — the project's top risk."
+      },
+      {
+        "item": "Index-time precompute: files_touched + closing messages (SCHEMA_VERSION 2→3)",
+        "reason": "Store extracted file lists and truncated last user + last assistant text as columns during indexFile(), so the primer is a pure indexed query with zero per-call file I/O. One-time destructive reindex (PRAGMA user_version drops/rebuilds tables); also makes the digest's file list real."
+      },
+      {
+        "item": "Per-session data: intent, files, opening, closing (both roles)",
+        "reason": "Closing captures last user AND last assistant message (stripped + truncated) — deliberately both, since last-assistant alone is often a question or tool-call, not an outcome. Served from indexed columns."
+      },
+      {
+        "item": "get_context_primer MCP tool (zod raw-shape, JSON output)",
+        "reason": "Primary re-injection surface; agent calls it and synthesizes in-context. Mirrors the existing server.tool() raw-shape + JSON.stringify pattern in mcp.ts."
+      },
+      {
+        "item": "sessions context CLI command",
+        "reason": "Renders the structured primer as markdown to stdout for paste/pipe into non-skill tools. Dispatch modeled on the `report` block in repo-root index.ts:41 (there is no src/index.ts); flags via a new src/context.ts parseContextArgs mirroring parseReportArgs in src/report/index.ts:45."
+      },
+      {
+        "item": "context skill (SKILL.md)",
+        "reason": "Instructs the agent to synthesize prose, anchoring open threads on the most-recent closing state. Mirrors plugin/skills/recall/SKILL.md structure (frontmatter + Steps + Guidelines)."
+      },
+      {
+        "item": "Tests: per-tool extractFiles + fixture-based primer + CLI/MCP output",
+        "reason": "Mirrors parser.test.ts (pure, inline-jsonl) and report/index.test.ts (temp-dir roots injection) patterns. Run locally with `bun test` — CI does not run tests."
+      }
+    ],
+    "full": [
+      {
+        "item": "CLI flags: --limit, --days, --tool, --full, --worktree",
+        "reason": "Tune recent-tier size, window, tool filter, detail depth, and --worktree to narrow from the project-wide aggregate to the current worktree only."
+      },
+      {
+        "item": "Empty-state and headline-cap handling",
+        "reason": "Graceful no-session message; bound the headline tier (e.g. 40 most-recent) so long-lived repos stay sized."
+      },
+      {
+        "item": "Plugin packaging: embed skill + advertise in `sessions setup`",
+        "reason": "Regenerate the plugin-files embed (generate-plugin-embed) and add /context to the hardcoded setup skill list (setup.ts:198)."
+      }
+    ],
+    "stretch": [
+      {
+        "item": "Opt-in SessionStart hook for auto-injection",
+        "reason": "Wire into `sessions setup` so the primer can appear automatically at session start — the full re-injection vision, paid for on every session."
+      },
+      { "item": "--out PRIMER.md write-to-file convenience" }
+    ],
+    "outOfScope": [
+      {
+        "item": "LLM call inside the binary",
+        "reason": "Rejected — breaks the static-binary / no-runtime moat. Synthesis lives in the consuming agent."
+      },
+      {
+        "item": "Team / shared / cloud context layer",
+        "reason": "Nessie's multi-user direction; a different product, would blow up the local-CLI simplicity."
+      },
+      {
+        "item": "Deterministic decision / open-thread detection in code",
+        "reason": "That synthesis is the agent's job via the skill, not the extractor's. The binary ships structured material only."
+      }
+    ],
+    "future": [
+      "Topic-axis primer — cross-repo, organized by concept rather than repo.",
+      "Decision provenance extraction (what was decided and why).",
+      "Broader tool ingestion: Cursor, Windsurf, Aider, Gemini CLI logs.",
+      "Read-on-demand serving fallback — considered and rejected 2026-06-19 in favor of precompute; revisit if the destructive reindex proves too heavy for large corpora."
+    ]
+  },
+  "execution": {
+    "strategy": "Sequential",
+    "phases": [
+      {
+        "title": "Extraction core",
+        "risk": "high",
+        "blocking": true,
+        "specPath": "docs/ideation/sessions-context/spec-phase-1.md",
+        "notes": "Prereq: representative Codex (~/.codex/sessions) and Pi (~/.pi/agent/sessions) logs must be on hand as fixtures — their edited-file shapes exist nowhere in the codebase and must be reverse-engineered from real logs. Work: new types (ContextPrimer/ContextSession/ContextHeadline); cross-tool extractFiles (Claude tool_use + reverse-engineered Codex/Pi) in a new src/extract-files.ts (do NOT edit the vendored report/parsers/*); last-user + last-assistant closing-text stripping & truncation; SCHEMA_VERSION 2→3 storing files_touched + closing messages at index time (destructive reindex); git-common-dir repo resolver + boundary-aware cwd fix (scanner.ts:43, cache.ts:285/313) — must keep existing search tests green; branch-labeled two-tier getContextPrimer pure-SQL query in cache.ts. Pure-function + fixture tests. Rated high: Codex/Pi reverse-engineering and the destructive schema migration both land here."
+      },
+      {
+        "title": "Surfaces + skill",
+        "risk": "low",
+        "blocking": false,
+        "prereqs": ["Extraction core"],
+        "specPath": "docs/ideation/sessions-context/spec-phase-2.md",
+        "notes": "get_context_primer MCP tool, sessions context CLI subcommand + markdown renderer + flags + help text, context SKILL.md, plugin embed regen + setup advertisement. CLI/MCP output tests."
+      },
+      {
+        "title": "SessionStart auto-injection hook",
+        "risk": "medium",
+        "blocking": false,
+        "prereqs": ["Surfaces + skill"],
+        "specPath": "docs/ideation/sessions-context/spec-phase-3.md",
+        "notes": "Stretch. Opt-in SessionStart hook wired into `sessions setup --hooks`; idempotent settings-merge in hooks.ts; reuses `sessions context --hook` (tight defaults, never-throw). Default off, removable via `sessions uninstall`. Gated on confirming the Claude Code SessionStart hook contract (the phase's key unknown); Codex/Cursor support deferred until their hook schemas are verified."
+      }
+    ]
+  }
+}
