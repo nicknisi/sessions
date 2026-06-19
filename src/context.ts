@@ -13,7 +13,11 @@ export interface ContextArgs {
   full: boolean;
   worktreeOnly: boolean;
   out?: string;
+  hook: boolean; // SessionStart-hook mode: tight defaults, never-throw, empty-on-nothing
 }
+
+/** Recent-tier size used by `--hook` mode: a small primer, not a transcript. */
+export const HOOK_LIMIT = 3;
 
 function die(msg: string): never {
   process.stderr.write(`error: ${msg}\n`);
@@ -38,6 +42,7 @@ Options:
   --full           Widen per-session detail
   --worktree       Restrict to the current worktree (default: all worktrees)
   --out <path>     Write the primer to a file instead of stdout
+  --hook           SessionStart-hook mode: tiny primer, exit 0 on anything
   -h, --help       Show this help
 `);
   process.exit(0);
@@ -50,7 +55,10 @@ export function parseContextArgs(argv: string[]): ContextArgs {
     tool: '',
     full: false,
     worktreeOnly: false,
+    hook: false,
   };
+
+  let limitExplicit = false;
 
   let i = 0;
   while (i < argv.length) {
@@ -63,6 +71,7 @@ export function parseContextArgs(argv: string[]): ContextArgs {
         const v = Number(argv[++i]);
         if (!Number.isInteger(v) || v <= 0) die('--limit must be a positive integer');
         args.limit = v;
+        limitExplicit = true;
         break;
       }
       case '--days': {
@@ -92,11 +101,17 @@ export function parseContextArgs(argv: string[]): ContextArgs {
         args.out = argv[++i];
         if (!args.out) die('--out requires a path');
         break;
+      case '--hook':
+        args.hook = true;
+        break;
       default:
         die(`unknown option: ${a}`);
     }
     i++;
   }
+
+  // Hook mode is a tiny primer by default; an explicit --limit still wins.
+  if (args.hook && !limitExplicit) args.limit = HOOK_LIMIT;
 
   return args;
 }
@@ -143,6 +158,13 @@ export function renderMarkdown(primer: ContextPrimer, full: boolean): string {
 }
 
 export async function runContext(args: ContextArgs): Promise<void> {
+  // Hook mode runs at session start: it must never error or block. On no repo,
+  // no history, or any failure it degrades to injecting nothing (exit 0).
+  if (args.hook) {
+    await runContextHook(args);
+    return;
+  }
+
   const repo = resolveRepo(process.cwd());
   if (!repo) {
     process.stderr.write('Not inside a git repository.\n');
@@ -167,5 +189,32 @@ export async function runContext(args: ContextArgs): Promise<void> {
     }
   } else {
     process.stdout.write(md.endsWith('\n') ? md : md + '\n');
+  }
+}
+
+/**
+ * SessionStart-hook mode. Bounded, fail-safe primer for injection at session
+ * start. Prints a tiny markdown primer when there is repo history; prints
+ * nothing (and never throws) otherwise. Always exits 0 so the hook can never
+ * block or error a session start.
+ */
+async function runContextHook(args: ContextArgs): Promise<void> {
+  try {
+    const repo = resolveRepo(process.cwd());
+    if (!repo) return; // not a git repo → inject nothing
+
+    const primer = await getContextPrimer(repo, {
+      limit: args.limit,
+      days: args.days,
+      tool: args.tool,
+      worktreeOnly: args.worktreeOnly,
+    });
+
+    if (primer.isEmpty) return; // no history → inject nothing
+
+    // Never widen detail in hook mode — keep the injected block small.
+    process.stdout.write(renderMarkdown(primer, false));
+  } catch {
+    // Any failure at session start degrades to injecting nothing.
   }
 }

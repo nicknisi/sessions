@@ -3,6 +3,7 @@ import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { C } from './colors';
 import { PLUGIN_FILES } from './plugin-files';
+import { enableSessionHook, disableSessionHook } from './hooks';
 
 const home = homedir();
 const SESSIONS_DIR = join(home, '.local', 'share', 'sessions');
@@ -153,7 +154,33 @@ function unregisterClaudePlugin(): void {
   runClaude('marketplace', 'remove', MARKETPLACE_NAME);
 }
 
-export function runSetup(): void {
+export interface SetupOptions {
+  /** Explicitly enable the SessionStart auto-injection hook (default: off). */
+  hooks?: boolean;
+}
+
+/**
+ * Decide whether to enable the SessionStart hook. Default is OFF: auto-injection
+ * costs tokens on every session, so it is never enabled silently.
+ *  - `--hooks` → enable.
+ *  - no flag + TTY → ask once (default no).
+ *  - no flag + non-TTY → leave off.
+ */
+function shouldEnableHook(opts: SetupOptions): boolean {
+  if (opts.hooks) return true;
+  if (!process.stdin.isTTY) return false;
+
+  process.stderr.write(
+    `\n  ${C.bold}Auto-inject a context primer at session start?${C.reset}\n` +
+      `  ${C.dim}Runs \`sessions context --hook\` on every Claude Code session start.${C.reset}\n` +
+      `  ${C.dim}Costs a small number of tokens each session. Reversible via \`sessions uninstall\`.${C.reset}\n` +
+      `  ${C.dim}Enable? [y/N] ${C.reset}`,
+  );
+  const answer = (prompt('') ?? '').trim().toLowerCase();
+  return answer === 'y' || answer === 'yes';
+}
+
+export function runSetup(opts: SetupOptions = {}): void {
   const w = (s: string) => process.stderr.write(s);
 
   w(`\n${C.bold}sessions setup${C.reset}\n\n`);
@@ -195,6 +222,18 @@ export function runSetup(): void {
     }
   }
 
+  // SessionStart auto-injection hook — opt-in, Claude Code only for now.
+  const claudeDetected = detected.some((t) => t.name === 'Claude Code');
+  if (claudeDetected && shouldEnableHook(opts)) {
+    const res = enableSessionHook('claude');
+    if (res.changed) {
+      w(`  ${C.green}✓${C.reset} SessionStart auto-injection enabled for ${C.dim}Claude Code${C.reset}\n`);
+    } else {
+      w(`  ${C.dim}ℹ${C.reset} SessionStart auto-injection already enabled for ${C.dim}Claude Code${C.reset}\n`);
+    }
+    w(`  ${C.dim}  Disable any time with \`sessions uninstall\`.${C.reset}\n`);
+  }
+
   w(`\n  ${C.bold}Skills available:${C.reset}\n`);
   w(`    ${C.cyan}/context${C.reset}           Context primer for the current repo\n`);
   w(`    ${C.cyan}/weekly-summary${C.reset}    Summarize your past week's AI sessions\n`);
@@ -225,6 +264,11 @@ export function runUninstall(): void {
     if (tool.name === 'Claude Code') {
       unregisterClaudePlugin();
       w(`  ${C.green}✓${C.reset} Removed plugin from ${C.dim}${tool.name}${C.reset}\n`);
+
+      const res = disableSessionHook('claude');
+      if (res.changed) {
+        w(`  ${C.green}✓${C.reset} Removed SessionStart auto-injection from ${C.dim}${tool.name}${C.reset}\n`);
+      }
     }
   }
 

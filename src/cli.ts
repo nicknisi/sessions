@@ -31,7 +31,9 @@ ${C.bold}Commands:${C.reset}
                    (default html); --stdout prints JSON; --here scopes to the
                    current project; --from/--to/--days/--month limit the period
   setup            Install plugin and configure MCP for detected tools
-  uninstall        Remove plugin and MCP config from all tools
+                   --hooks opts in to SessionStart auto-injection (off by
+                   default); without it, an interactive prompt asks when on a TTY
+  uninstall        Remove plugin, MCP config, and the SessionStart hook
   cleanup          Uninstall plugin + clear search index (full reset)
 
 ${C.bold}Search:${C.reset}

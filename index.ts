@@ -28,7 +28,7 @@ if (Bun.argv.includes('--mcp')) {
 
 if (Bun.argv.includes('setup')) {
   const { runSetup } = await import('./src/setup');
-  runSetup();
+  runSetup({ hooks: Bun.argv.includes('--hooks') });
   process.exit(0);
 }
 
