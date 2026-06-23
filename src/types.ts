@@ -62,3 +62,30 @@ export interface CliArgs {
   searchQuery: string;
   scopeHere: boolean;
 }
+
+export interface ContextSession {
+  sessionId: string;
+  tool: Tool;
+  branch: string;
+  date: string;
+  messageCount: number;
+  intent: string; // first_prompt
+  files: string[]; // parsed files_touched
+  opening: string; // first_prompt (verbatim opener)
+  closing: { user: string; assistant: string };
+}
+
+export interface ContextHeadline {
+  date: string;
+  tool: Tool;
+  branch: string;
+  intent: string;
+}
+
+export interface ContextPrimer {
+  repoLabel: string; // basename(container)
+  toolFilter: Tool | '';
+  recent: ContextSession[];
+  headlines: ContextHeadline[];
+  isEmpty: boolean;
+}

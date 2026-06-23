@@ -28,7 +28,7 @@ if (Bun.argv.includes('--mcp')) {
 
 if (Bun.argv.includes('setup')) {
   const { runSetup } = await import('./src/setup');
-  runSetup();
+  runSetup({ hooks: Bun.argv.includes('--hooks') });
   process.exit(0);
 }
 
@@ -51,6 +51,13 @@ if (Bun.argv.includes('report')) {
     const opener = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
     Bun.spawnSync([opener, res.htmlPath]);
   }
+  process.exit(0);
+}
+
+if (Bun.argv.includes('context')) {
+  const i = Bun.argv.indexOf('context');
+  const { parseContextArgs, runContext } = await import('./src/context.ts');
+  await runContext(parseContextArgs(Bun.argv.slice(i + 1)));
   process.exit(0);
 }
 

@@ -11,6 +11,9 @@ import {
   type DigestDay,
   type DigestSessionDetail,
   type SessionMetrics,
+  type ContextPrimer,
+  type ContextSession,
+  type ContextHeadline,
 } from './types';
 import {
   getCwdFromSession,
@@ -20,17 +23,27 @@ import {
   customTitle,
   firstTimestamp,
   messageCount,
+  closingMessages,
+  sessionBranch,
 } from './parser';
+import { extractFiles } from './extract-files';
+import { type RepoInfo, globPrefix, branchLabel } from './repo';
+import { isTrivia, blendedScore, type ScorableSession } from './significance';
 
-const CACHE_DIR = join(homedir(), '.cache', 'sessions');
+// Source/cache locations default to the real home dirs but honor env overrides so
+// tests can point the index at hermetic temp fixtures (SESSIONS_* env vars).
+const home = homedir();
+const CACHE_DIR = process.env.SESSIONS_CACHE_DIR || join(home, '.cache', 'sessions');
 const DB_PATH = join(CACHE_DIR, 'index.db');
 
-const home = homedir();
-const CLAUDE_DIR = join(home, '.claude/projects');
-const PI_DIR = join(home, '.pi/agent/sessions');
-const CODEX_DIR = join(home, '.codex/sessions');
+const CLAUDE_DIR = process.env.SESSIONS_CLAUDE_DIR || join(home, '.claude/projects');
+const PI_DIR = process.env.SESSIONS_PI_DIR || join(home, '.pi/agent/sessions');
+const CODEX_DIR = process.env.SESSIONS_CODEX_DIR || join(home, '.codex/sessions');
 
-const SCHEMA_VERSION = 2;
+// Bump 3 -> 4: adds the `branch` column and recomputes intent / closing_user /
+// closing_assistant from genuine turns. The getDb path drops + rebuilds tables on
+// a user_version mismatch, so this triggers a one-time destructive reindex.
+const SCHEMA_VERSION = 4;
 let _db: Database | null = null;
 
 export function clearCache(): void {
@@ -71,7 +84,11 @@ function getDb(): Database {
       created_at TEXT NOT NULL DEFAULT '?',
       first_prompt TEXT NOT NULL,
       custom_title TEXT NOT NULL DEFAULT '',
-      message_count INTEGER NOT NULL DEFAULT 0
+      message_count INTEGER NOT NULL DEFAULT 0,
+      files_touched TEXT NOT NULL DEFAULT '[]',
+      closing_user TEXT NOT NULL DEFAULT '',
+      closing_assistant TEXT NOT NULL DEFAULT '',
+      branch TEXT NOT NULL DEFAULT ''
     )
   `);
   db.run(`
@@ -201,13 +218,33 @@ function indexFile(db: Database, filePath: string, tool: Tool): boolean {
   const subagentContent = tool === 'claude' ? collectSubagentContent(filePath) : '';
   const fullContent = subagentContent ? userContent + '\n' + subagentContent : userContent;
 
+  const filesTouched = JSON.stringify(extractFiles(lines, tool));
+  const closing = closingMessages(lines, tool);
+  const branch = sessionBranch(lines, tool);
+
   if (existing) {
     db.run('DELETE FROM session_fts WHERE file_path = ?', [filePath]);
   }
   db.run(
-    `INSERT OR REPLACE INTO sessions (file_path, mtime, size, cwd, tool, session_id, date, created_at, first_prompt, custom_title, message_count)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [filePath, stat.mtimeMs, stat.size, cwd, tool, sessionId, date, createdAt, prompt, title, msgCount],
+    `INSERT OR REPLACE INTO sessions (file_path, mtime, size, cwd, tool, session_id, date, created_at, first_prompt, custom_title, message_count, files_touched, closing_user, closing_assistant, branch)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      filePath,
+      stat.mtimeMs,
+      stat.size,
+      cwd,
+      tool,
+      sessionId,
+      date,
+      createdAt,
+      prompt,
+      title,
+      msgCount,
+      filesTouched,
+      closing.user,
+      closing.assistant,
+      branch,
+    ],
   );
   db.run('INSERT INTO session_fts (file_path, user_content) VALUES (?, ?)', [filePath, fullContent]);
   return true;
@@ -282,8 +319,10 @@ export async function searchSessions(
       params.push(toolFilter);
     }
     if (project) {
-      conditions.push('s.cwd LIKE ?');
-      params.push(project + '%');
+      // Boundary-aware: the project root itself or a descendant, never a sibling
+      // sharing a prefix (e.g. `dotfiles-v2` must not match `dotfiles`).
+      conditions.push('(s.cwd = ? OR s.cwd GLOB ?)');
+      params.push(project, globPrefix(project));
     }
     params.push(limit);
 
@@ -310,8 +349,8 @@ export async function searchSessions(
       params.push(toolFilter);
     }
     if (project) {
-      conditions.push('cwd LIKE ?');
-      params.push(project + '%');
+      conditions.push('(cwd = ? OR cwd GLOB ?)');
+      params.push(project, globPrefix(project));
     }
     params.push(limit);
 
@@ -367,8 +406,8 @@ function queryDateRange(
     params.push(toolFilter);
   }
   if (project) {
-    conditions.push('cwd LIKE ?');
-    params.push(project + '%');
+    conditions.push('(cwd = ? OR cwd GLOB ?)');
+    params.push(project, globPrefix(project));
   }
 
   const where = 'WHERE ' + conditions.join(' AND ');
@@ -571,4 +610,129 @@ export async function getSessionMetrics(
     dailyActivity,
     activeHours,
   };
+}
+
+export interface ContextOptions {
+  limit?: number; // recent-tier size (default 10)
+  days?: number; // optional window (last N days)
+  tool?: Tool | ''; // optional tool filter
+  worktreeOnly?: boolean; // restrict to current worktree (default false → aggregate)
+  headlineCap?: number; // older-tier cap (default 40)
+}
+
+interface ContextRow {
+  cwd: string;
+  tool: string;
+  session_id: string;
+  date: string;
+  created_at: string;
+  first_prompt: string;
+  custom_title: string;
+  message_count: number;
+  files_touched: string;
+  closing_user: string;
+  closing_assistant: string;
+  branch: string;
+}
+
+function parseFiles(json: string): string[] {
+  try {
+    const parsed = JSON.parse(json);
+    return Array.isArray(parsed) ? (parsed as string[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Repo-scoped, two-tier, worktree-aggregated context primer assembled entirely
+ * from indexed columns + the RepoInfo branch map. Reads zero session source
+ * files (everything comes from the `sessions` table and the one `git worktree
+ * list` call already made in resolveRepo).
+ */
+export async function getContextPrimer(repo: RepoInfo, opts: ContextOptions): Promise<ContextPrimer> {
+  const db = getDb();
+  await refreshIndex();
+
+  const limit = opts.limit ?? 10;
+  const headlineCap = opts.headlineCap ?? 40;
+  const toolFilter = opts.tool ?? '';
+  const root = opts.worktreeOnly ? repo.currentWorktree : repo.container;
+
+  // Boundary-aware scope: the container (or current worktree) itself or any
+  // descendant — captures every worktree under it while excluding `…-v2` siblings.
+  const conditions: string[] = ['(cwd = ? OR cwd GLOB ?)'];
+  const params: (string | number)[] = [root, globPrefix(root)];
+
+  if (toolFilter) {
+    conditions.push('tool = ?');
+    params.push(toolFilter);
+  }
+  if (opts.days && opts.days > 0) {
+    const cutoff = new Date(Date.now() - opts.days * 86_400_000).toISOString().slice(0, 10);
+    conditions.push('created_at >= ?');
+    params.push(cutoff);
+  }
+
+  const where = 'WHERE ' + conditions.join(' AND ');
+  const rows = db
+    .query<ContextRow, any[]>(
+      `SELECT cwd, tool, session_id, date, created_at, first_prompt, custom_title, message_count,
+              files_touched, closing_user, closing_assistant, branch
+       FROM sessions ${where}
+       ORDER BY created_at DESC, date DESC`,
+    )
+    .all(...params);
+
+  const repoLabel = basename(repo.container);
+
+  if (rows.length === 0) {
+    return { repoLabel, toolFilter, recent: [], headlines: [], isEmpty: true };
+  }
+
+  // Rank the detail tier by recency-weighted significance instead of raw recency,
+  // keeping trivial sessions out of it. All inputs are already-selected columns.
+  const now = Date.now();
+  const scored = rows.map((r) => {
+    const s: ScorableSession = {
+      messageCount: r.message_count,
+      filesTouchedCount: parseFiles(r.files_touched).length,
+      closingText: `${r.closing_user} ${r.closing_assistant}`,
+      createdAt: r.created_at !== '?' ? r.created_at : r.date,
+    };
+    return { row: r, trivia: isTrivia(s), score: blendedScore(s, now) };
+  });
+
+  const byScore = (a: { score: number }, b: { score: number }): number => b.score - a.score;
+  const substantive = scored.filter((x) => !x.trivia).sort(byScore);
+  // Fallback: an all-trivial repo still shows something rather than an empty
+  // detail tier — trivia only loses its slot when real work competes for it.
+  const pool = substantive.length > 0 ? substantive : [...scored].sort(byScore);
+  const recentRows = pool.slice(0, limit).map((x) => x.row);
+
+  // Headlines = every row not promoted to the detail tier, kept in the SQL
+  // recency order (created_at DESC), capped. Demoted trivia lands here.
+  const detailSet = new Set(recentRows);
+  const headlineRows = rows.filter((r) => !detailSet.has(r)).slice(0, headlineCap);
+
+  const recent: ContextSession[] = recentRows.map((r) => ({
+    sessionId: r.session_id,
+    tool: r.tool as Tool,
+    branch: r.branch || branchLabel(r.cwd, repo.branches),
+    date: r.date,
+    messageCount: r.message_count,
+    intent: r.custom_title || r.first_prompt,
+    files: parseFiles(r.files_touched),
+    opening: r.first_prompt,
+    closing: { user: r.closing_user, assistant: r.closing_assistant },
+  }));
+
+  const headlines: ContextHeadline[] = headlineRows.map((r) => ({
+    date: r.date,
+    tool: r.tool as Tool,
+    branch: r.branch || branchLabel(r.cwd, repo.branches),
+    intent: r.custom_title || r.first_prompt,
+  }));
+
+  return { repoLabel, toolFilter, recent, headlines, isEmpty: false };
 }

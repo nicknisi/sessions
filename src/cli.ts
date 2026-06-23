@@ -1,5 +1,6 @@
 import { C, disableColors } from './colors';
 import { type Tool, type CliArgs } from './types';
+import { resolveRepo } from './repo';
 
 const VALID_TOOLS = new Set<string>(['claude', 'codex', 'pi']);
 
@@ -22,12 +23,17 @@ ${C.bold}Options:${C.reset}
   -h, --help       Show this help
 
 ${C.bold}Commands:${C.reset}
+  context          Print a context primer for the current repo (markdown)
+                   --full widens detail; --limit/--days/--tool filter; --worktree
+                   narrows to the current worktree; --out <path> writes to a file
   report           Generate a usage report (HTML dashboard, opens in browser)
                    --out <path> saves instead of opening; --format json|html|both
                    (default html); --stdout prints JSON; --here scopes to the
                    current project; --from/--to/--days/--month limit the period
   setup            Install plugin and configure MCP for detected tools
-  uninstall        Remove plugin and MCP config from all tools
+                   --hooks opts in to SessionStart auto-injection (off by
+                   default); without it, an interactive prompt asks when on a TTY
+  uninstall        Remove plugin, MCP config, and the SessionStart hook
   cleanup          Uninstall plugin + clear search index (full reset)
 
 ${C.bold}Search:${C.reset}
@@ -79,23 +85,9 @@ export function parseArgs(argv: string[]): CliArgs {
 export function getRepoRoot(scopeHere: boolean): string {
   if (!scopeHere) return '';
 
-  try {
-    const result = Bun.spawnSync(['git', 'rev-parse', '--show-toplevel']);
-    let root = new TextDecoder().decode(result.stdout).trim();
-    if (!root) return process.cwd();
-
-    try {
-      const parentGit = `${root}/../.git`;
-      const content = require('fs').readFileSync(parentGit, 'utf-8');
-      if (content.includes('gitdir') && content.includes('.bare')) {
-        root = require('path').resolve(root, '..');
-      }
-    } catch {
-      // not a bare repo worktree
-    }
-
-    return root;
-  } catch {
-    return process.cwd();
-  }
+  // Delegate to the git-common-dir based resolver. Its `container` is the tree
+  // holding all worktrees (bare or normal), replacing the old `../.git`+`.bare`
+  // string match. Fall back to the cwd when not in a git repo.
+  const repo = resolveRepo(process.cwd());
+  return repo ? repo.container : process.cwd();
 }

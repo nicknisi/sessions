@@ -9,6 +9,8 @@ import {
   contentMatches,
   findMatchContext,
   getCwdFromSession,
+  sessionBranch,
+  closingMessages,
 } from './parser';
 
 function jsonl(...objs: Record<string, unknown>[]): string[] {
@@ -240,5 +242,108 @@ describe('findMatchContext', () => {
   test('returns empty string when no match', () => {
     const lines = jsonl({ type: 'user', message: { content: [{ type: 'text', text: 'hello' }] } });
     expect(findMatchContext(lines, 'nonexistent')).toBe('');
+  });
+});
+
+describe('sessionBranch', () => {
+  test('claude: returns the last non-empty gitBranch (where the session ended)', () => {
+    const lines = jsonl(
+      { type: 'user', gitBranch: 'main', message: { content: 'a' } },
+      { type: 'assistant', gitBranch: 'main', message: { content: [{ type: 'text', text: 'b' }] } },
+      { type: 'user', gitBranch: 'report-redesign', message: { content: 'c' } },
+    );
+    expect(sessionBranch(lines, 'claude')).toBe('report-redesign');
+  });
+
+  test('claude: empty when no line carries gitBranch', () => {
+    const lines = jsonl({ type: 'user', message: { content: 'a' } });
+    expect(sessionBranch(lines, 'claude')).toBe('');
+  });
+
+  test('codex: reads session_meta.payload.git.branch', () => {
+    const lines = jsonl({ type: 'session_meta', payload: { cwd: '/tmp', git: { branch: 'feature/x' } } });
+    expect(sessionBranch(lines, 'codex')).toBe('feature/x');
+  });
+
+  test('pi: always empty (no git metadata)', () => {
+    const lines = jsonl({ type: 'session', cwd: '/tmp' });
+    expect(sessionBranch(lines, 'pi')).toBe('');
+  });
+});
+
+describe('firstPrompt genuine-turn intent', () => {
+  test('skips a skill-injection first turn and returns the first real prompt', () => {
+    const lines = jsonl(
+      {
+        type: 'user',
+        message: { content: [{ type: 'text', text: 'Base directory for this skill: /x\n\n# Defuddle\nUse it.' }] },
+      },
+      { type: 'user', message: { content: [{ type: 'text', text: 'Refactor the parser' }] } },
+    );
+    expect(firstPrompt(lines, 'claude')).toBe('Refactor the parser');
+  });
+
+  test('respects promptSource: ignores a non-typed turn, takes the typed one', () => {
+    const lines = jsonl(
+      { type: 'user', promptSource: null, message: { content: [{ type: 'text', text: 'injected junk' }] } },
+      { type: 'user', promptSource: 'typed', message: { content: [{ type: 'text', text: 'the real ask' }] } },
+    );
+    expect(firstPrompt(lines, 'claude')).toBe('the real ask');
+  });
+});
+
+describe('closingMessages user side', () => {
+  test('closing.user is the last genuine typed turn, not a trailing skill load', () => {
+    const lines = jsonl(
+      { type: 'user', promptSource: 'typed', message: { content: [{ type: 'text', text: 'commit and PR it' }] } },
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'PR is up: https://x/pull/16' }] } },
+      {
+        type: 'user',
+        promptSource: null,
+        message: { content: [{ type: 'text', text: 'Base directory for this skill: /y' }] },
+      },
+    );
+    expect(closingMessages(lines, 'claude').user).toBe('commit and PR it');
+  });
+
+  test('old logs (no promptSource): heuristic still drops a skill-injection turn', () => {
+    const lines = jsonl(
+      { type: 'user', message: { content: [{ type: 'text', text: 'fix the bug' }] } },
+      { type: 'user', message: { content: [{ type: 'text', text: 'Base directory for this skill: /z' }] } },
+    );
+    expect(closingMessages(lines, 'claude').user).toBe('fix the bug');
+  });
+});
+
+describe('closingMessages assistant side', () => {
+  test('strips ★ Insight fence markers but keeps the body and outcome', () => {
+    const assistantText = [
+      'Done. Shipped it.',
+      '',
+      '★ Insight ─────────────────────────────────────',
+      'The index is the moat.',
+      '─────────────────────────────────────────────────',
+    ].join('\n');
+    const lines = jsonl(
+      { type: 'user', promptSource: 'typed', message: { content: [{ type: 'text', text: 'ship it' }] } },
+      { type: 'assistant', message: { content: [{ type: 'text', text: assistantText }] } },
+    );
+    const a = closingMessages(lines, 'claude').assistant;
+    expect(a).toContain('Done. Shipped it.');
+    expect(a).toContain('The index is the moat.');
+    expect(a).not.toContain('★');
+    expect(a).not.toMatch(/─{5,}/);
+  });
+
+  test('keeps a genuine markdown rule and a bare "Insight" line (no false-positive strip)', () => {
+    const assistantText = ['Two options:', '-----', 'Insight', 'pick the first.'].join('\n');
+    const lines = jsonl(
+      { type: 'user', promptSource: 'typed', message: { content: [{ type: 'text', text: 'advise' }] } },
+      { type: 'assistant', message: { content: [{ type: 'text', text: assistantText }] } },
+    );
+    const a = closingMessages(lines, 'claude').assistant;
+    expect(a).toContain('-----'); // ASCII rule is not the box-drawing fence
+    expect(a).toContain('Insight'); // bare heading, no ★ marker
+    expect(a).toContain('pick the first.');
   });
 });

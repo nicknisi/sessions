@@ -1,8 +1,9 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { searchSessions, getActivityDigest, getSessionMetrics } from './cache';
+import { searchSessions, getActivityDigest, getSessionMetrics, getContextPrimer } from './cache';
 import { getSessionMessages } from './parser';
+import { resolveRepo } from './repo';
 import { type SessionResult } from './types';
 
 const server = new McpServer({
@@ -126,6 +127,28 @@ server.tool(
     return {
       content: [{ type: 'text' as const, text: JSON.stringify(metrics, null, 2) }],
     };
+  },
+);
+
+server.tool(
+  'get_context_primer',
+  'Get a repo-scoped context primer (recent sessions in detail + older headlines) for re-injecting prior work into a new session. Synthesize the JSON into prose.',
+  {
+    cwd: z.string().optional().describe('Repo path to scope to. Defaults to the server process cwd.'),
+    limit: z.number().optional().describe('Recent-tier size (default 10).'),
+    days: z.number().optional().describe('Only include sessions from the last N days.'),
+    tool: z.enum(['claude', 'codex', 'pi']).optional().describe('Filter to one tool.'),
+    worktree: z
+      .boolean()
+      .optional()
+      .describe('Restrict to the current worktree only (default: aggregate all worktrees).'),
+  },
+  async ({ cwd, limit, days, tool, worktree }) => {
+    const repo = resolveRepo(cwd ?? process.cwd());
+    if (!repo) return { content: [{ type: 'text' as const, text: 'Not inside a git repository.' }] };
+    const primer = await getContextPrimer(repo, { limit, days, tool: tool ?? '', worktreeOnly: worktree });
+    if (primer.isEmpty) return { content: [{ type: 'text' as const, text: 'No past sessions found for this repo.' }] };
+    return { content: [{ type: 'text' as const, text: JSON.stringify(primer, null, 2) }] };
   },
 );
 

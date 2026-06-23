@@ -56,18 +56,18 @@ sessions report              # Generate a usage report (JSON + HTML dashboard)
 
 ### Options
 
-| Flag / Command  | Description                                                                           |
-| --------------- | ------------------------------------------------------------------------------------- |
-| `report`        | Generate a usage report — JSON + HTML dashboard (see [Usage reports](#usage-reports)) |
-| `setup`         | Install plugin and configure MCP for detected tools                                   |
-| `uninstall`     | Remove plugin and MCP config from all tools                                           |
-| `cleanup`       | Full reset: uninstall plugin + clear search index                                     |
-| `--here`        | Scope to the current git repo (default: all projects)                                 |
-| `--tool <name>` | Filter by tool: `claude`, `codex`, or `pi`                                            |
-| `--mcp`         | Start as an MCP server (stdio transport)                                              |
-| `--clear-cache` | Remove the search index (rebuilds on next use)                                        |
-| `--no-color`    | Disable colored output                                                                |
-| `-h`, `--help`  | Show help                                                                             |
+| Flag / Command  | Description                                                                              |
+| --------------- | ---------------------------------------------------------------------------------------- |
+| `report`        | Generate a usage report — JSON + HTML dashboard (see [Usage reports](#usage-reports))    |
+| `setup`         | Install plugin and configure MCP for detected tools (`--hooks` opts into auto-injection) |
+| `uninstall`     | Remove plugin, MCP config, and the SessionStart hook from all tools                      |
+| `cleanup`       | Full reset: uninstall plugin + clear search index                                        |
+| `--here`        | Scope to the current git repo (default: all projects)                                    |
+| `--tool <name>` | Filter by tool: `claude`, `codex`, or `pi`                                               |
+| `--mcp`         | Start as an MCP server (stdio transport)                                                 |
+| `--clear-cache` | Remove the search index (rebuilds on next use)                                           |
+| `--no-color`    | Disable colored output                                                                   |
+| `-h`, `--help`  | Show help                                                                                |
 
 ### Browsing
 
@@ -187,6 +187,31 @@ sessions setup
 After upgrading sessions (e.g., `brew upgrade sessions`), run `sessions setup` again to update the skills to the latest version.
 
 To remove everything: `sessions uninstall`
+
+### Auto-injecting context at session start (opt-in)
+
+By default, the context primer is available on demand (the `/context` skill, the
+`sessions context` command, or the `get_context_primer` MCP tool). You can also
+have it injected **automatically** at the start of every Claude Code session via
+a [SessionStart hook](https://docs.claude.com/en/docs/claude-code/hooks):
+
+```bash
+sessions setup --hooks    # enable auto-injection (Claude Code)
+```
+
+Run without `--hooks` and `setup` will ask interactively (when on a TTY); it is
+**off by default** because it costs a small number of tokens on every session.
+The hook runs `sessions context --hook` — a tiny primer (the 3 most recent
+sessions for the current repo). In a fresh repo with no history, or outside a
+git repo, it injects nothing and never blocks session start.
+
+To turn it off, run `sessions uninstall` (which also removes the plugin and MCP
+config). The hook lives in `~/.claude/settings.json` under `hooks.SessionStart`;
+enabling and disabling preserve any other hooks you have configured.
+
+> Codex and Cursor are not yet supported — their session-start hook contracts
+> are still being confirmed. The hook also requires `sessions` to be on your
+> `PATH` at session start.
 
 ## Skills
 

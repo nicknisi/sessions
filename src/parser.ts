@@ -4,6 +4,8 @@ interface JsonLine {
   type?: string;
   cwd?: string;
   timestamp?: string;
+  gitBranch?: string;
+  promptSource?: string | null;
   message?: Record<string, unknown> | string;
   payload?: Record<string, unknown>;
 }
@@ -33,6 +35,35 @@ export function getCwdFromSession(lines: string[], tool: Tool): string {
     }
   }
   return '';
+}
+
+/**
+ * The git branch a session ran on, read from the logs (not the current worktree).
+ * Claude writes `gitBranch` on every line, so the last non-empty one is "where
+ * you left off". Codex records its starting branch once in `session_meta`. Pi
+ * carries no git metadata, so it returns ''.
+ */
+export function sessionBranch(lines: string[], tool: Tool): string {
+  if (tool === 'codex') {
+    for (const line of lines) {
+      const d = tryParseJson(line);
+      if (d?.type !== 'session_meta') continue;
+      const git = (d.payload as Record<string, unknown> | undefined)?.git as Record<string, unknown> | undefined;
+      const b = git?.branch;
+      if (typeof b === 'string' && b) return b;
+    }
+    return '';
+  }
+  if (tool === 'claude') {
+    let branch = '';
+    for (const line of lines) {
+      const d = tryParseJson(line);
+      const b = d?.gitBranch;
+      if (typeof b === 'string' && b) branch = b; // keep the last non-empty
+    }
+    return branch;
+  }
+  return ''; // pi: no git metadata in logs
 }
 
 function clean(text: string): string {
@@ -89,45 +120,41 @@ function isUserMessage(d: JsonLine): boolean {
   return false;
 }
 
-export function firstPrompt(lines: string[], tool: Tool): string {
+/** Claude prepends this exact line to every skill body it injects as a user turn. */
+const SKILL_INJECTION_PREAMBLE = /^Base directory for this skill:/;
+
+/**
+ * Whether a user-role line is a genuine human turn — not a tool result, a
+ * system-injected turn, or a skill body injected as a user message.
+ * Claude lines carry `promptSource`: when the field is present, only `typed`
+ * and `queued` count (a present-but-null value, as tool results and skill loads
+ * have, is rejected). Older logs and pi/codex have no `promptSource`, so fall
+ * back to a heuristic: non-empty text that isn't a skill-injection preamble.
+ */
+function isGenuineUserTurn(d: JsonLine, strippedText: string): boolean {
+  if ('promptSource' in d) {
+    return d.promptSource === 'typed' || d.promptSource === 'queued';
+  }
+  if (!strippedText) return false;
+  if (SKILL_INJECTION_PREAMBLE.test(strippedText)) return false;
+  return true;
+}
+
+/** Genuine human user turns, in order, as stripped (not length-clamped) text. */
+export function genuineUserTexts(lines: string[], _tool: Tool): string[] {
+  const out: string[] = [];
   for (const line of lines) {
     const d = tryParseJson(line);
-    if (!d) continue;
-
-    if (tool === 'claude' && d.type === 'user') {
-      const msg = d.message;
-      if (!msg || typeof msg !== 'object') continue;
-      const content = (msg as Record<string, unknown>).content;
-      if (Array.isArray(content)) {
-        for (const x of content) {
-          if (typeof x === 'object' && x !== null && (x as Record<string, string>).type === 'text') {
-            return clean(stripInjected((x as Record<string, string>).text ?? ''));
-          }
-        }
-      } else if (typeof content === 'string') {
-        return clean(stripInjected(content));
-      }
-    } else if ((tool === 'pi' || tool === 'codex') && d.type === 'message') {
-      const msg = d.message;
-      if (typeof msg !== 'object' || msg === null) continue;
-      if ((msg as Record<string, unknown>).role !== 'user') continue;
-      const content = (msg as Record<string, unknown>).content;
-      if (Array.isArray(content)) {
-        for (const x of content) {
-          if (
-            typeof x === 'object' &&
-            x !== null &&
-            ((x as Record<string, string>).type === 'text' || (x as Record<string, string>).type === 'input_text')
-          ) {
-            return clean(stripInjected((x as Record<string, string>).text ?? ''));
-          }
-        }
-      } else if (typeof content === 'string') {
-        return clean(stripInjected(content));
-      }
-    }
+    if (!d || !isUserMessage(d)) continue;
+    const text = extractUserText(d).trim(); // extractUserText already stripInjected
+    if (text && isGenuineUserTurn(d, text)) out.push(text);
   }
-  return '';
+  return out;
+}
+
+export function firstPrompt(lines: string[], tool: Tool): string {
+  const genuine = genuineUserTexts(lines, tool);
+  return genuine.length ? clean(genuine[0]!) : '';
 }
 
 export function customTitle(lines: string[]): string {
@@ -250,6 +277,48 @@ export function getSessionMessages(lines: string[]): SessionMessage[] {
     }
   }
   return messages;
+}
+
+/** Max length of each stored closing message (bounds the indexed columns). */
+export const CLOSING_MAX = 500;
+
+/**
+ * Remove output-style "★ Insight" marker lines and their `──` fence lines while
+ * keeping the body text, then collapse the blank runs they leave behind. This is
+ * markup cleanup, not outcome detection — the body (often the useful part) stays.
+ */
+function stripInsightFences(text: string): string {
+  // Match only the literal output-style markup: a `★ Insight` marker line and
+  // box-drawing `─` fence lines. Requiring the star and the `─` char (not ASCII
+  // `-`) avoids eating a genuine markdown `-----` rule or a bare "Insight" line.
+  const kept = text.split('\n').filter((l) => !/^\s*★\s*Insight\s*─*\s*$/.test(l) && !/^\s*─{5,}\s*$/.test(l));
+  return kept
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+/**
+ * Last user message and last assistant message from a session, stripped of
+ * injected tags and truncated to CLOSING_MAX. Both roles are returned so the
+ * synthesis layer (Phase 2) can decide what the open thread is — the last
+ * assistant turn alone is often a question or tool call, not an outcome.
+ */
+export function closingMessages(lines: string[], tool: Tool): { user: string; assistant: string } {
+  const genuineUsers = genuineUserTexts(lines, tool);
+  const user = genuineUsers.length ? genuineUsers[genuineUsers.length - 1]! : '';
+
+  const messages = getSessionMessages(lines);
+  let assistant = '';
+  for (let i = messages.length - 1; i >= 0 && !assistant; i--) {
+    if (messages[i]!.role === 'assistant') assistant = messages[i]!.text;
+  }
+
+  const finish = (t: string): string => {
+    const stripped = stripInjected(t).trim();
+    return stripped.length > CLOSING_MAX ? stripped.slice(0, CLOSING_MAX) : stripped;
+  };
+  return { user: finish(user), assistant: finish(stripInsightFences(assistant)) };
 }
 
 export function findMatchContext(lines: string[], query: string): string {

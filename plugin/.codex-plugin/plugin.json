@@ -9,7 +9,7 @@
   "homepage": "https://github.com/nicknisi/sessions",
   "repository": "https://github.com/nicknisi/sessions",
   "license": "MIT",
-  "keywords": ["sessions", "weekly-summary", "standup", "recall", "metrics", "activity", "digest"],
+  "keywords": ["sessions", "context", "weekly-summary", "standup", "recall", "metrics", "activity", "digest"],
   "skills": "./skills/",
   "interface": {
     "displayName": "Sessions",
