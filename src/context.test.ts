@@ -180,6 +180,31 @@ describe('branch', () => {
   });
 });
 
+describe('significance', () => {
+  test('a trivial session is demoted out of the detail tier into headlines', async () => {
+    const cwd = join(fixtureRoot, 'proj-sig');
+    // Trivial and most recent: 1 message, no edits, no artifact.
+    writeClaudeSession({ cwd, firstPrompt: 'you here?', createdAt: '2026-06-23T10:00:00.000Z' });
+    // Substantive but older: real edits + a PR URL in the closing.
+    writeClaudeSession({
+      cwd,
+      firstPrompt: 'build the report redesign',
+      edits: [`${cwd}/a.ts`, `${cwd}/b.ts`, `${cwd}/c.ts`],
+      closingUser: 'commit and PR it',
+      closingAssistant: 'PR is up: https://github.com/x/y/pull/16',
+      createdAt: '2026-06-20T10:00:00.000Z',
+    });
+
+    const primer = await cache.getContextPrimer(fakeRepo(cwd, {}), {});
+    const recentIntents = primer.recent.map((s) => s.intent);
+    const headlineIntents = primer.headlines.map((h) => h.intent);
+
+    expect(recentIntents).toContain('build the report redesign'); // substantive leads the detail tier
+    expect(recentIntents).not.toContain('you here?'); // trivia kept out despite being newest
+    expect(headlineIntents).toContain('you here?'); // demoted, not dropped
+  });
+});
+
 describe('empty-state', () => {
   test('a repo with no sessions yields isEmpty true and empty tiers', async () => {
     const empty = join(fixtureRoot, 'no-sessions-here');

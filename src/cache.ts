@@ -28,6 +28,7 @@ import {
 } from './parser';
 import { extractFiles } from './extract-files';
 import { type RepoInfo, globPrefix, branchLabel } from './repo';
+import { isTrivia, blendedScore, type ScorableSession } from './significance';
 
 // Source/cache locations default to the real home dirs but honor env overrides so
 // tests can point the index at hermetic temp fixtures (SESSIONS_* env vars).
@@ -689,8 +690,30 @@ export async function getContextPrimer(repo: RepoInfo, opts: ContextOptions): Pr
     return { repoLabel, toolFilter, recent: [], headlines: [], isEmpty: true };
   }
 
-  const recentRows = rows.slice(0, limit);
-  const headlineRows = rows.slice(limit, limit + headlineCap);
+  // Rank the detail tier by recency-weighted significance instead of raw recency,
+  // keeping trivial sessions out of it. All inputs are already-selected columns.
+  const now = Date.now();
+  const scored = rows.map((r) => {
+    const s: ScorableSession = {
+      messageCount: r.message_count,
+      filesTouchedCount: parseFiles(r.files_touched).length,
+      closingText: `${r.closing_user} ${r.closing_assistant}`,
+      createdAt: r.created_at !== '?' ? r.created_at : r.date,
+    };
+    return { row: r, trivia: isTrivia(s), score: blendedScore(s, now) };
+  });
+
+  const byScore = (a: { score: number }, b: { score: number }): number => b.score - a.score;
+  const substantive = scored.filter((x) => !x.trivia).sort(byScore);
+  // Fallback: an all-trivial repo still shows something rather than an empty
+  // detail tier — trivia only loses its slot when real work competes for it.
+  const pool = substantive.length > 0 ? substantive : [...scored].sort(byScore);
+  const recentRows = pool.slice(0, limit).map((x) => x.row);
+
+  // Headlines = every row not promoted to the detail tier, kept in the SQL
+  // recency order (created_at DESC), capped. Demoted trivia lands here.
+  const detailSet = new Set(recentRows);
+  const headlineRows = rows.filter((r) => !detailSet.has(r)).slice(0, headlineCap);
 
   const recent: ContextSession[] = recentRows.map((r) => ({
     sessionId: r.session_id,
