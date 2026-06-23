@@ -109,6 +109,10 @@ describe('indexed-columns', () => {
   });
 });
 
+// Note: these fixtures are 1-message sessions, so all are trivia. The detail
+// tier is drawn via the significance fallback (no substantive sessions), and
+// since equal significance makes blended score monotonic in recency, the order
+// collapses back to created_at DESC — which is what these assertions expect.
 describe('two-tier', () => {
   test('with 12 sessions and limit 10, recent has 10 and headlines has 2', async () => {
     const cwd = join(fixtureRoot, 'proj-tier');

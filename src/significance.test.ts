@@ -37,6 +37,9 @@ describe('score', () => {
     );
     expect(significanceScore({ ...base, closingText: "I'll open a PR next" })).toBeCloseTo(noArtifact);
     expect(hasArtifact("I'll open a PR next")).toBe(false);
+    // A bare (un-delimited) hex run is deliberately NOT an artifact — the regex
+    // requires backticks/parens/URL so prose hashes and file paths don't false-positive.
+    expect(hasArtifact('shipped in 0f459d3')).toBe(false);
   });
 });
 
