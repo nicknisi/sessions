@@ -10,6 +10,7 @@ import {
   findMatchContext,
   getCwdFromSession,
   sessionBranch,
+  closingMessages,
 } from './parser';
 
 function jsonl(...objs: Record<string, unknown>[]): string[] {
@@ -267,5 +268,42 @@ describe('sessionBranch', () => {
   test('pi: always empty (no git metadata)', () => {
     const lines = jsonl({ type: 'session', cwd: '/tmp' });
     expect(sessionBranch(lines, 'pi')).toBe('');
+  });
+});
+
+describe('firstPrompt genuine-turn intent', () => {
+  test('skips a skill-injection first turn and returns the first real prompt', () => {
+    const lines = jsonl(
+      { type: 'user', message: { content: [{ type: 'text', text: 'Base directory for this skill: /x\n\n# Defuddle\nUse it.' }] } },
+      { type: 'user', message: { content: [{ type: 'text', text: 'Refactor the parser' }] } },
+    );
+    expect(firstPrompt(lines, 'claude')).toBe('Refactor the parser');
+  });
+
+  test('respects promptSource: ignores a non-typed turn, takes the typed one', () => {
+    const lines = jsonl(
+      { type: 'user', promptSource: null, message: { content: [{ type: 'text', text: 'injected junk' }] } },
+      { type: 'user', promptSource: 'typed', message: { content: [{ type: 'text', text: 'the real ask' }] } },
+    );
+    expect(firstPrompt(lines, 'claude')).toBe('the real ask');
+  });
+});
+
+describe('closingMessages user side', () => {
+  test('closing.user is the last genuine typed turn, not a trailing skill load', () => {
+    const lines = jsonl(
+      { type: 'user', promptSource: 'typed', message: { content: [{ type: 'text', text: 'commit and PR it' }] } },
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'PR is up: https://x/pull/16' }] } },
+      { type: 'user', promptSource: null, message: { content: [{ type: 'text', text: 'Base directory for this skill: /y' }] } },
+    );
+    expect(closingMessages(lines, 'claude').user).toBe('commit and PR it');
+  });
+
+  test('old logs (no promptSource): heuristic still drops a skill-injection turn', () => {
+    const lines = jsonl(
+      { type: 'user', message: { content: [{ type: 'text', text: 'fix the bug' }] } },
+      { type: 'user', message: { content: [{ type: 'text', text: 'Base directory for this skill: /z' }] } },
+    );
+    expect(closingMessages(lines, 'claude').user).toBe('fix the bug');
   });
 });
