@@ -38,6 +38,7 @@ function writeClaudeSession(opts: {
   closingUser?: string;
   closingAssistant?: string;
   createdAt?: string;
+  gitBranch?: string;
 }): string {
   const slug = opts.cwd.replaceAll('/', '-');
   const projDir = join(claudeDir, slug);
@@ -45,7 +46,8 @@ function writeClaudeSession(opts: {
   const id = `sess-${seq++}`;
   const ts = opts.createdAt ?? '2026-06-19T10:00:00.000Z';
   const lines: string[] = [];
-  lines.push(JSON.stringify({ type: 'user', cwd: opts.cwd, timestamp: ts, message: { content: opts.firstPrompt } }));
+  const gb = opts.gitBranch ? { gitBranch: opts.gitBranch } : {};
+  lines.push(JSON.stringify({ type: 'user', cwd: opts.cwd, timestamp: ts, ...gb, message: { content: opts.firstPrompt } }));
   for (const f of opts.edits ?? []) {
     lines.push(
       JSON.stringify({
@@ -156,6 +158,23 @@ describe('worktree aggregation', () => {
     const primer = await cache.getContextPrimer(repo, { worktreeOnly: true });
     const intents = primer.recent.map((s) => s.intent);
     expect(intents).toEqual(['narrow feature']);
+  });
+});
+
+describe('branch', () => {
+  test('the indexed branch (from logs) wins over the worktree-derived label', async () => {
+    const cwd = join(fixtureRoot, 'proj-branch');
+    writeClaudeSession({ cwd, firstPrompt: 'do work', gitBranch: 'report-redesign' });
+    // fakeRepo maps cwd -> 'feat/current' — what the buggy branchLabel would return.
+    const primer = await cache.getContextPrimer(fakeRepo(cwd, { [cwd]: 'feat/current' }), {});
+    expect(primer.recent[0]!.branch).toBe('report-redesign');
+  });
+
+  test('falls back to branchLabel when the session carries no branch', async () => {
+    const cwd = join(fixtureRoot, 'proj-nobranch');
+    writeClaudeSession({ cwd, firstPrompt: 'do work' });
+    const primer = await cache.getContextPrimer(fakeRepo(cwd, { [cwd]: 'mapped-branch' }), {});
+    expect(primer.recent[0]!.branch).toBe('mapped-branch');
   });
 });
 

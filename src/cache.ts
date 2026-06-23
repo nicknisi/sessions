@@ -24,6 +24,7 @@ import {
   firstTimestamp,
   messageCount,
   closingMessages,
+  sessionBranch,
 } from './parser';
 import { extractFiles } from './extract-files';
 import { type RepoInfo, globPrefix, branchLabel } from './repo';
@@ -38,10 +39,10 @@ const CLAUDE_DIR = process.env.SESSIONS_CLAUDE_DIR || join(home, '.claude/projec
 const PI_DIR = process.env.SESSIONS_PI_DIR || join(home, '.pi/agent/sessions');
 const CODEX_DIR = process.env.SESSIONS_CODEX_DIR || join(home, '.codex/sessions');
 
-// Bump 2 -> 3: adds files_touched / closing_user / closing_assistant. The getDb
-// path drops + rebuilds tables on a user_version mismatch, so this triggers a
-// one-time destructive reindex (~5s) on first run after upgrade.
-const SCHEMA_VERSION = 3;
+// Bump 3 -> 4: adds the `branch` column and recomputes intent / closing_user /
+// closing_assistant from genuine turns. The getDb path drops + rebuilds tables on
+// a user_version mismatch, so this triggers a one-time destructive reindex.
+const SCHEMA_VERSION = 4;
 let _db: Database | null = null;
 
 export function clearCache(): void {
@@ -85,7 +86,8 @@ function getDb(): Database {
       message_count INTEGER NOT NULL DEFAULT 0,
       files_touched TEXT NOT NULL DEFAULT '[]',
       closing_user TEXT NOT NULL DEFAULT '',
-      closing_assistant TEXT NOT NULL DEFAULT ''
+      closing_assistant TEXT NOT NULL DEFAULT '',
+      branch TEXT NOT NULL DEFAULT ''
     )
   `);
   db.run(`
@@ -217,13 +219,14 @@ function indexFile(db: Database, filePath: string, tool: Tool): boolean {
 
   const filesTouched = JSON.stringify(extractFiles(lines, tool));
   const closing = closingMessages(lines, tool);
+  const branch = sessionBranch(lines, tool);
 
   if (existing) {
     db.run('DELETE FROM session_fts WHERE file_path = ?', [filePath]);
   }
   db.run(
-    `INSERT OR REPLACE INTO sessions (file_path, mtime, size, cwd, tool, session_id, date, created_at, first_prompt, custom_title, message_count, files_touched, closing_user, closing_assistant)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT OR REPLACE INTO sessions (file_path, mtime, size, cwd, tool, session_id, date, created_at, first_prompt, custom_title, message_count, files_touched, closing_user, closing_assistant, branch)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       filePath,
       stat.mtimeMs,
@@ -239,6 +242,7 @@ function indexFile(db: Database, filePath: string, tool: Tool): boolean {
       filesTouched,
       closing.user,
       closing.assistant,
+      branch,
     ],
   );
   db.run('INSERT INTO session_fts (file_path, user_content) VALUES (?, ?)', [filePath, fullContent]);
@@ -627,6 +631,7 @@ interface ContextRow {
   files_touched: string;
   closing_user: string;
   closing_assistant: string;
+  branch: string;
 }
 
 function parseFiles(json: string): string[] {
@@ -672,7 +677,7 @@ export async function getContextPrimer(repo: RepoInfo, opts: ContextOptions): Pr
   const rows = db
     .query<ContextRow, any[]>(
       `SELECT cwd, tool, session_id, date, created_at, first_prompt, custom_title, message_count,
-              files_touched, closing_user, closing_assistant
+              files_touched, closing_user, closing_assistant, branch
        FROM sessions ${where}
        ORDER BY created_at DESC, date DESC`,
     )
@@ -690,7 +695,7 @@ export async function getContextPrimer(repo: RepoInfo, opts: ContextOptions): Pr
   const recent: ContextSession[] = recentRows.map((r) => ({
     sessionId: r.session_id,
     tool: r.tool as Tool,
-    branch: branchLabel(r.cwd, repo.branches),
+    branch: r.branch || branchLabel(r.cwd, repo.branches),
     date: r.date,
     messageCount: r.message_count,
     intent: r.custom_title || r.first_prompt,
@@ -702,7 +707,7 @@ export async function getContextPrimer(repo: RepoInfo, opts: ContextOptions): Pr
   const headlines: ContextHeadline[] = headlineRows.map((r) => ({
     date: r.date,
     tool: r.tool as Tool,
-    branch: branchLabel(r.cwd, repo.branches),
+    branch: r.branch || branchLabel(r.cwd, repo.branches),
     intent: r.custom_title || r.first_prompt,
   }));
 
