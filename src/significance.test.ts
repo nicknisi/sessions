@@ -32,7 +32,9 @@ describe('score', () => {
     expect(significanceScore({ ...base, closingText: 'PR is up: https://github.com/x/y/pull/16' })).toBeCloseTo(
       noArtifact + ARTIFACT_BONUS,
     );
-    expect(significanceScore({ ...base, closingText: 'shipped in `0f459d3`' })).toBeCloseTo(noArtifact + ARTIFACT_BONUS);
+    expect(significanceScore({ ...base, closingText: 'shipped in `0f459d3`' })).toBeCloseTo(
+      noArtifact + ARTIFACT_BONUS,
+    );
     expect(significanceScore({ ...base, closingText: "I'll open a PR next" })).toBeCloseTo(noArtifact);
     expect(hasArtifact("I'll open a PR next")).toBe(false);
   });
