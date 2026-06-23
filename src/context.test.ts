@@ -47,7 +47,9 @@ function writeClaudeSession(opts: {
   const ts = opts.createdAt ?? '2026-06-19T10:00:00.000Z';
   const lines: string[] = [];
   const gb = opts.gitBranch ? { gitBranch: opts.gitBranch } : {};
-  lines.push(JSON.stringify({ type: 'user', cwd: opts.cwd, timestamp: ts, ...gb, message: { content: opts.firstPrompt } }));
+  lines.push(
+    JSON.stringify({ type: 'user', cwd: opts.cwd, timestamp: ts, ...gb, message: { content: opts.firstPrompt } }),
+  );
   for (const f of opts.edits ?? []) {
     lines.push(
       JSON.stringify({

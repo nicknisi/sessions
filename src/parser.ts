@@ -288,10 +288,11 @@ export const CLOSING_MAX = 500;
  * markup cleanup, not outcome detection — the body (often the useful part) stays.
  */
 function stripInsightFences(text: string): string {
-  const kept = text
-    .split('\n')
-    .filter((l) => !/^\s*★?\s*Insight\s*[─-]*\s*$/.test(l) && !/^\s*[─-]{5,}\s*$/.test(l));
-  return kept.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  const kept = text.split('\n').filter((l) => !/^\s*★?\s*Insight\s*[─-]*\s*$/.test(l) && !/^\s*[─-]{5,}\s*$/.test(l));
+  return kept
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
 /**

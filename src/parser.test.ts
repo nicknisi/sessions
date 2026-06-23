@@ -274,7 +274,10 @@ describe('sessionBranch', () => {
 describe('firstPrompt genuine-turn intent', () => {
   test('skips a skill-injection first turn and returns the first real prompt', () => {
     const lines = jsonl(
-      { type: 'user', message: { content: [{ type: 'text', text: 'Base directory for this skill: /x\n\n# Defuddle\nUse it.' }] } },
+      {
+        type: 'user',
+        message: { content: [{ type: 'text', text: 'Base directory for this skill: /x\n\n# Defuddle\nUse it.' }] },
+      },
       { type: 'user', message: { content: [{ type: 'text', text: 'Refactor the parser' }] } },
     );
     expect(firstPrompt(lines, 'claude')).toBe('Refactor the parser');
@@ -294,7 +297,11 @@ describe('closingMessages user side', () => {
     const lines = jsonl(
       { type: 'user', promptSource: 'typed', message: { content: [{ type: 'text', text: 'commit and PR it' }] } },
       { type: 'assistant', message: { content: [{ type: 'text', text: 'PR is up: https://x/pull/16' }] } },
-      { type: 'user', promptSource: null, message: { content: [{ type: 'text', text: 'Base directory for this skill: /y' }] } },
+      {
+        type: 'user',
+        promptSource: null,
+        message: { content: [{ type: 'text', text: 'Base directory for this skill: /y' }] },
+      },
     );
     expect(closingMessages(lines, 'claude').user).toBe('commit and PR it');
   });
