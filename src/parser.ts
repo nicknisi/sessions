@@ -283,6 +283,18 @@ export function getSessionMessages(lines: string[]): SessionMessage[] {
 export const CLOSING_MAX = 500;
 
 /**
+ * Remove output-style "★ Insight" marker lines and their `──` fence lines while
+ * keeping the body text, then collapse the blank runs they leave behind. This is
+ * markup cleanup, not outcome detection — the body (often the useful part) stays.
+ */
+function stripInsightFences(text: string): string {
+  const kept = text
+    .split('\n')
+    .filter((l) => !/^\s*★?\s*Insight\s*[─-]*\s*$/.test(l) && !/^\s*[─-]{5,}\s*$/.test(l));
+  return kept.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+/**
  * Last user message and last assistant message from a session, stripped of
  * injected tags and truncated to CLOSING_MAX. Both roles are returned so the
  * synthesis layer (Phase 2) can decide what the open thread is — the last
@@ -302,7 +314,7 @@ export function closingMessages(lines: string[], tool: Tool): { user: string; as
     const stripped = stripInjected(t).trim();
     return stripped.length > CLOSING_MAX ? stripped.slice(0, CLOSING_MAX) : stripped;
   };
-  return { user: finish(user), assistant: finish(assistant) };
+  return { user: finish(user), assistant: finish(stripInsightFences(assistant)) };
 }
 
 export function findMatchContext(lines: string[], query: string): string {

@@ -307,3 +307,24 @@ describe('closingMessages user side', () => {
     expect(closingMessages(lines, 'claude').user).toBe('fix the bug');
   });
 });
+
+describe('closingMessages assistant side', () => {
+  test('strips ★ Insight fence markers but keeps the body and outcome', () => {
+    const assistantText = [
+      'Done. Shipped it.',
+      '',
+      '★ Insight ─────────────────────────────────────',
+      'The index is the moat.',
+      '─────────────────────────────────────────────────',
+    ].join('\n');
+    const lines = jsonl(
+      { type: 'user', promptSource: 'typed', message: { content: [{ type: 'text', text: 'ship it' }] } },
+      { type: 'assistant', message: { content: [{ type: 'text', text: assistantText }] } },
+    );
+    const a = closingMessages(lines, 'claude').assistant;
+    expect(a).toContain('Done. Shipped it.');
+    expect(a).toContain('The index is the moat.');
+    expect(a).not.toContain('★');
+    expect(a).not.toMatch(/─{5,}/);
+  });
+});
