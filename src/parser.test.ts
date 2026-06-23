@@ -9,6 +9,7 @@ import {
   contentMatches,
   findMatchContext,
   getCwdFromSession,
+  sessionBranch,
 } from './parser';
 
 function jsonl(...objs: Record<string, unknown>[]): string[] {
@@ -240,5 +241,31 @@ describe('findMatchContext', () => {
   test('returns empty string when no match', () => {
     const lines = jsonl({ type: 'user', message: { content: [{ type: 'text', text: 'hello' }] } });
     expect(findMatchContext(lines, 'nonexistent')).toBe('');
+  });
+});
+
+describe('sessionBranch', () => {
+  test('claude: returns the last non-empty gitBranch (where the session ended)', () => {
+    const lines = jsonl(
+      { type: 'user', gitBranch: 'main', message: { content: 'a' } },
+      { type: 'assistant', gitBranch: 'main', message: { content: [{ type: 'text', text: 'b' }] } },
+      { type: 'user', gitBranch: 'report-redesign', message: { content: 'c' } },
+    );
+    expect(sessionBranch(lines, 'claude')).toBe('report-redesign');
+  });
+
+  test('claude: empty when no line carries gitBranch', () => {
+    const lines = jsonl({ type: 'user', message: { content: 'a' } });
+    expect(sessionBranch(lines, 'claude')).toBe('');
+  });
+
+  test('codex: reads session_meta.payload.git.branch', () => {
+    const lines = jsonl({ type: 'session_meta', payload: { cwd: '/tmp', git: { branch: 'feature/x' } } });
+    expect(sessionBranch(lines, 'codex')).toBe('feature/x');
+  });
+
+  test('pi: always empty (no git metadata)', () => {
+    const lines = jsonl({ type: 'session', cwd: '/tmp' });
+    expect(sessionBranch(lines, 'pi')).toBe('');
   });
 });

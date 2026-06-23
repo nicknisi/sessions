@@ -4,6 +4,8 @@ interface JsonLine {
   type?: string;
   cwd?: string;
   timestamp?: string;
+  gitBranch?: string;
+  promptSource?: string | null;
   message?: Record<string, unknown> | string;
   payload?: Record<string, unknown>;
 }
@@ -33,6 +35,35 @@ export function getCwdFromSession(lines: string[], tool: Tool): string {
     }
   }
   return '';
+}
+
+/**
+ * The git branch a session ran on, read from the logs (not the current worktree).
+ * Claude writes `gitBranch` on every line, so the last non-empty one is "where
+ * you left off". Codex records its starting branch once in `session_meta`. Pi
+ * carries no git metadata, so it returns ''.
+ */
+export function sessionBranch(lines: string[], tool: Tool): string {
+  if (tool === 'codex') {
+    for (const line of lines) {
+      const d = tryParseJson(line);
+      if (d?.type !== 'session_meta') continue;
+      const git = (d.payload as Record<string, unknown> | undefined)?.git as Record<string, unknown> | undefined;
+      const b = git?.branch;
+      if (typeof b === 'string' && b) return b;
+    }
+    return '';
+  }
+  if (tool === 'claude') {
+    let branch = '';
+    for (const line of lines) {
+      const d = tryParseJson(line);
+      const b = d?.gitBranch;
+      if (typeof b === 'string' && b) branch = b; // keep the last non-empty
+    }
+    return branch;
+  }
+  return ''; // pi: no git metadata in logs
 }
 
 function clean(text: string): string {
