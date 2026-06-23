@@ -334,4 +334,16 @@ describe('closingMessages assistant side', () => {
     expect(a).not.toContain('★');
     expect(a).not.toMatch(/─{5,}/);
   });
+
+  test('keeps a genuine markdown rule and a bare "Insight" line (no false-positive strip)', () => {
+    const assistantText = ['Two options:', '-----', 'Insight', 'pick the first.'].join('\n');
+    const lines = jsonl(
+      { type: 'user', promptSource: 'typed', message: { content: [{ type: 'text', text: 'advise' }] } },
+      { type: 'assistant', message: { content: [{ type: 'text', text: assistantText }] } },
+    );
+    const a = closingMessages(lines, 'claude').assistant;
+    expect(a).toContain('-----'); // ASCII rule is not the box-drawing fence
+    expect(a).toContain('Insight'); // bare heading, no ★ marker
+    expect(a).toContain('pick the first.');
+  });
 });
