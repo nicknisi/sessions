@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.9.0](https://github.com/nicknisi/sessions/compare/v1.8.0...v1.9.0) (2026-06-25)
+
+
+### Features
+
+* **context:** repo-scoped context primer via MCP tool, CLI, and skill ([#19](https://github.com/nicknisi/sessions/issues/19)) ([1a2e69b](https://github.com/nicknisi/sessions/commit/1a2e69b468e6ca8c2b4e1f4d2a1547bfd1272e85))
+* **report:** accurate LiteLLM-based cost pricing (matches ccusage within ~1%) ([#21](https://github.com/nicknisi/sessions/issues/21)) ([a2f156b](https://github.com/nicknisi/sessions/commit/a2f156bc2d07731953aaf9b053f6ea1fc8a55491))
+
 ## [1.8.0](https://github.com/nicknisi/sessions/compare/v1.7.0...v1.8.0) (2026-06-11)
 
 
