@@ -43,10 +43,11 @@ describe('aggregate (report mode)', () => {
 
   test('summary totals', () => {
     // Claude totalTokens = 1000+500+200 = 1700 (cacheRead excluded).
-    // Claude cost = (1000*15 + 500*75 + 10000*1.5 + 200*18.75)/1e6 = 0.07125 -> 0.07
+    // Claude cost (per-token claude-opus-4-6: in 5e-6, out 25e-6, cacheRead 0.5e-6, cacheWrite 6.25e-6)
+    //   = 1000*5e-6 + 500*25e-6 + 10000*0.5e-6 + 200*6.25e-6 = 0.02375 -> 0.02
     // Pi totalTokens = 3000, cost passthrough 0.12.
     expect(data.summary.totalTokens).toBe(4700);
-    expect(data.summary.totalCostUSD).toBe(0.19);
+    expect(data.summary.totalCostUSD).toBe(0.14);
     expect(data.summary.sessions).toBe(2);
     expect(data.summary.messages).toBe(2);
     expect(data.summary.activeDays).toBe(2);
@@ -60,7 +61,7 @@ describe('aggregate (report mode)', () => {
     expect(data.daily.length).toBe(2);
     expect(data.daily[0]!.date).toBe('2026-06-01');
     expect(data.daily[0]!.tokens).toBe(1700);
-    expect(data.daily[0]!.costUSD).toBe(0.07);
+    expect(data.daily[0]!.costUSD).toBe(0.02);
     expect(data.daily[0]!.hourCounts[14]).toBe(1);
     expect(data.daily[1]!.date).toBe('2026-06-02');
     expect(data.daily[1]!.costUSD).toBe(0.12);
@@ -68,7 +69,7 @@ describe('aggregate (report mode)', () => {
 
   test('breakdowns + insights', () => {
     const tool = data.byTool.find((t) => t.id === 'claude-code')!;
-    expect(tool.costUSD).toBe(0.07);
+    expect(tool.costUSD).toBe(0.02);
     const pi = data.byTool.find((t) => t.id === 'pi')!;
     expect(pi.costUSD).toBe(0.12);
     expect(data.insights.hourCounts[9]).toBe(1);

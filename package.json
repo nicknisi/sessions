@@ -11,7 +11,8 @@
   "scripts": {
     "dev": "bun run index.ts",
     "generate-plugin-embed": "bun scripts/generate-plugin-embed.ts",
-    "build": "bun run generate-plugin-embed && bun build --compile --minify index.ts --outfile dist/sessions",
+    "generate-pricing-embed": "bun scripts/generate-pricing-embed.ts",
+    "build": "bun run generate-plugin-embed && bun run generate-pricing-embed && bun build --compile --minify index.ts --outfile dist/sessions",
     "lint": "oxlint",
     "format": "oxfmt .",
     "format:check": "oxfmt --check .",

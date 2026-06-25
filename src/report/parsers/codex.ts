@@ -1,4 +1,5 @@
-// VENDORED VERBATIM from tokenmaxing/src/parsers/codex.ts — do not edit logic here; keep in sync. Public contract: schemaVersion 2.
+// Sessions-owned (forked from tokenmaxing's parser). Codex's input_tokens are cache-inclusive and
+// output_tokens already include reasoning; correct both so totals reflect actual billing (and match ccusage).
 import type { UsageEvent } from './types.ts';
 import { walkJsonl, readJsonlLines } from './util.ts';
 
@@ -72,8 +73,10 @@ export async function parseCodex(root: string): Promise<UsageEvent[]> {
         sessionId: meta.id,
         projectPath: meta.cwd,
         tokens: {
-          input: u.input_tokens ?? 0,
-          output: (u.output_tokens ?? 0) + (u.reasoning_output_tokens ?? 0),
+          // input_tokens is inclusive of cached_input_tokens; subtract so cache reads aren't double-counted.
+          input: Math.max(0, (u.input_tokens ?? 0) - (u.cached_input_tokens ?? 0)),
+          // output_tokens already includes reasoning_output_tokens; don't add it again.
+          output: u.output_tokens ?? 0,
           cacheRead: u.cached_input_tokens ?? 0,
           cacheWrite: 0,
         },

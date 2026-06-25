@@ -1,4 +1,4 @@
-import type { UsageReport, ToolBreakdown, ModelBreakdown, ProjectBreakdown } from './schema.ts';
+import type { UsageReport, ToolBreakdown, ModelBreakdown, ProjectBreakdown, PricingWarning } from './schema.ts';
 
 const esc = (s: string): string =>
   s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -149,6 +149,10 @@ h1{font-size:clamp(2.2rem,6vw,3.4rem);font-weight:900;text-transform:uppercase;l
 .statgrid .cell+.cell{padding-left:18px;border-left:3px solid var(--rule);}
 .statgrid .n{font-size:2.1rem;font-weight:900;letter-spacing:-0.02em;font-variant-numeric:tabular-nums;line-height:1.1;}
 .statgrid .l{font-family:var(--mono);font-size:11px;color:var(--muted);}
+.pricewarn{border:1px solid var(--accent-text);border-left-width:4px;border-radius:4px;padding:12px 16px;margin:22px 0 0;font-size:13px;color:var(--ink);background:color-mix(in oklch,var(--accent) 8%,transparent);}
+.pricewarn .hd{font-family:var(--mono);font-weight:700;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--accent-text);margin-bottom:6px;}
+.pricewarn .models{font-family:var(--mono);font-size:12px;word-break:break-all;}
+.pricewarn .models .m+.m::before{content:", ";color:var(--muted);}
 .note{font-size:1.1rem;font-weight:500;margin:26px 0 0;max-width:64ch;color:var(--muted);}
 .note strong{color:var(--accent-text);font-weight:800;white-space:nowrap;}
 .note b{color:var(--ink);font-weight:800;white-space:nowrap;}
@@ -190,6 +194,15 @@ dd.querySelectorAll('.opt').forEach(function(el){el.addEventListener('click',fun
 document.addEventListener('click',function(e){if(dd.hasAttribute('open')&&!dd.contains(e.target))dd.removeAttribute('open');});
 document.addEventListener('keydown',function(e){if(e.key==='Escape')dd.removeAttribute('open');});
 console.log('sessions report \\u2014 generated locally from your own session logs. No telemetry.');})();`;
+
+// A loud, URL-free banner naming every model that had tokens but no pricing
+// match, so an unpriced model is visible rather than silently counted as $0.
+function warningBanner(warnings: PricingWarning[]): string {
+  if (warnings.length === 0) return '';
+  const n = warnings.length;
+  const models = warnings.map((w) => `<span class="m">${esc(w.model)}</span>`).join('');
+  return `<div class="pricewarn" role="alert"><div class="hd">${n} model${n === 1 ? '' : 's'} had no pricing — cost may be understated</div><div class="models">${models}</div></div>`;
+}
 
 export function renderHtml(data: UsageReport): string {
   const s = data.summary;
@@ -257,6 +270,7 @@ export function renderHtml(data: UsageReport): string {
 <h1>AI Usage Report</h1>
 <div class="period">${esc(periodLabel(data.period.from, data.period.to))}</div>
 </header>
+${warningBanner(data.warnings)}
 <div class="heroline">
 <p class="label">Total cost</p>
 <div class="big"><span class="cur">$</span>${esc(cost.slice(1))}</div>

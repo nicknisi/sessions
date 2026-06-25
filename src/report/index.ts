@@ -6,6 +6,8 @@ import { gatherEvents, defaultRoots, type ReportRoots } from './extract.ts';
 import { aggregate } from './aggregate.ts';
 import { renderHtml } from './html.ts';
 import { toUsageReport } from './schema.ts';
+import { drainPricingWarnings, resetPricingWarnings, mergeRuntimePricing } from './pricing.ts';
+import { loadRuntimePricing } from './pricing-cache.ts';
 import { resolvePeriod, type PeriodPreset } from './period.ts';
 import { resolveProject } from './project.ts';
 import { localDate } from './parsers/util.ts';
@@ -27,6 +29,8 @@ export interface ReportOptions {
   now?: string;
   here?: boolean;
   cwd?: string;
+  offline?: boolean;
+  refreshPricing?: boolean;
 }
 
 export interface ReportResult {
@@ -81,6 +85,12 @@ export function parseReportArgs(argv: string[]): ReportOptions {
         break;
       case '--here':
         opts.here = true;
+        break;
+      case '--offline':
+        opts.offline = true;
+        break;
+      case '--refresh-pricing':
+        opts.refreshPricing = true;
         break;
       case '--tool': {
         const v = argv[++i] ?? '';
@@ -146,11 +156,33 @@ export async function runReport(opts: ReportOptions): Promise<ReportResult> {
     process.stderr.write(`warning: no usage events in range${scope}; report is empty\n`);
   }
 
+  // Refresh pricing at runtime so costs reflect current LiteLLM rates without a
+  // recompile. Must run before aggregate(), since computeCost reads the module
+  // pricing map during aggregation. --offline skips the network entirely;
+  // failures degrade gracefully (loadRuntimePricing returns null → embedded floor).
+  if (!opts.offline) {
+    const live = await loadRuntimePricing({ force: opts.refreshPricing });
+    if (live) mergeRuntimePricing(live);
+  }
+
+  // Clear any pricing warnings from a prior run so the collector reflects only
+  // this aggregation (computeCost accumulates as a side effect during aggregate).
+  resetPricingWarnings();
   const data = aggregate({ events: inRange, prs: [], now, tz, exclude: new Set<string>(), priorDaily: [] });
   const report = toUsageReport(data);
   // The internal aggregate always reports "to today"; reflect the requested
   // window instead so an explicit range (e.g. --month 2026-05) reads correctly.
   report.period = { from: from ?? data.period.from, to: to ?? data.period.to };
+
+  // Drain unpriced-model warnings into the report and surface them loudly. A
+  // model with tokens but no price match is never silently zeroed.
+  report.warnings = drainPricingWarnings();
+  if (report.warnings.length > 0) {
+    const models = report.warnings.map((w) => w.model).join(', ');
+    process.stderr.write(
+      `warning: ${report.warnings.length} model(s) had no pricing — cost may be understated: ${models}\n`,
+    );
+  }
   const json = JSON.stringify(report, null, 2);
   const result: ReportResult = { json };
 

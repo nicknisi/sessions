@@ -69,6 +69,22 @@ describe('parseReportArgs', () => {
     expect(parseReportArgs([]).here).toBeUndefined();
   });
 
+  test('parses --offline and --refresh-pricing', () => {
+    expect(parseReportArgs(['--offline']).offline).toBe(true);
+    expect(parseReportArgs(['--refresh-pricing']).refreshPricing).toBe(true);
+    const o = parseReportArgs([]);
+    expect(o.offline).toBeUndefined();
+    expect(o.refreshPricing).toBeUndefined();
+  });
+
+  test('unknown flag still dies', () => {
+    // parseReportArgs calls process.exit(1) on an unknown option; run it in a
+    // child process so the assertion survives.
+    const r = Bun.spawnSync(['bun', '-e', "require('./src/report/index.ts').parseReportArgs(['--nope'])"]);
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr.toString()).toContain('unknown option');
+  });
+
   test('parses period presets', () => {
     expect(parseReportArgs(['--this-month']).preset).toBe('this-month');
     expect(parseReportArgs(['--today']).preset).toBe('today');
@@ -86,6 +102,7 @@ describe('runReport', () => {
       stdout: false,
       roots,
       now: '2026-06-06T00:00:00Z',
+      offline: true,
     });
     expect(res.jsonPath).toBeUndefined();
     expect(res.htmlPath).toContain('sessions-report-');
@@ -101,6 +118,7 @@ describe('runReport', () => {
       stdout: false,
       roots,
       now: '2026-06-06T00:00:00Z',
+      offline: true,
     });
     expect(res.jsonPath).toContain('sessions-report-');
     expect(join(res.jsonPath!, '..')).toBe(join(res.htmlPath!, '..'));
@@ -118,6 +136,7 @@ describe('runReport', () => {
       stdout: false,
       roots,
       now: '2026-06-06T00:00:00Z',
+      offline: true,
     });
     expect(res.jsonPath).toBe(join(outDir, 'usage-report.json'));
     expect(res.htmlPath).toBe(join(outDir, 'report.html'));
@@ -143,6 +162,7 @@ describe('runReport', () => {
       now: '2026-06-06T00:00:00Z',
       from: '2026-05-01',
       to: '2026-05-31',
+      offline: true,
     });
     const report = JSON.parse(readFileSync(res.jsonPath!, 'utf8'));
     expect(report.period).toEqual({ from: '2026-05-01', to: '2026-05-31' });
@@ -157,6 +177,7 @@ describe('runReport', () => {
     roots: hereRoots,
     now: '2026-06-06T00:00:00Z',
     here: true,
+    offline: true,
   };
 
   test('--here keeps only events from the cwd project, dropping other and unknown projects', async () => {

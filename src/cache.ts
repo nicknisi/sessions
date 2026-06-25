@@ -33,7 +33,15 @@ import { isTrivia, blendedScore, type ScorableSession } from './significance';
 // Source/cache locations default to the real home dirs but honor env overrides so
 // tests can point the index at hermetic temp fixtures (SESSIONS_* env vars).
 const home = homedir();
-const CACHE_DIR = process.env.SESSIONS_CACHE_DIR || join(home, '.cache', 'sessions');
+
+// Resolve the sessions cache directory, honoring SESSIONS_CACHE_DIR so tests (and
+// the runtime pricing cache) stay hermetic under the same env override. Exported
+// so the pricing cache lives alongside index.db without hardcoding ~/.cache/sessions.
+export function getCacheDir(): string {
+  return process.env.SESSIONS_CACHE_DIR || join(home, '.cache', 'sessions');
+}
+
+const CACHE_DIR = getCacheDir();
 const DB_PATH = join(CACHE_DIR, 'index.db');
 
 const CLAUDE_DIR = process.env.SESSIONS_CLAUDE_DIR || join(home, '.claude/projects');

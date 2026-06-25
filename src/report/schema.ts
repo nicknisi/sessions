@@ -43,8 +43,16 @@ export interface UsageInsights {
   weekdayCounts: number[]; // length 7, 0 = Sunday
 }
 
+// A logged model that had tokens but no pricing match. Surfaced loudly
+// (CLI stderr + this JSON field + HTML notice) — never a silent $0.
+export interface PricingWarning {
+  model: string;
+  tokens: number;
+}
+
 export interface UsageReport {
   generator: 'sessions';
+  // Kept at 1: `warnings` is an additive field, so this remains non-breaking.
   version: 1;
   generatedAt: string; // ISO UTC
   period: { from: string; to: string };
@@ -55,6 +63,7 @@ export interface UsageReport {
   byProject: ProjectBreakdown[];
   daily: DailyEntry[];
   insights: UsageInsights;
+  warnings: PricingWarning[]; // unpriced models with tokens; [] when all priced
 }
 
 // Map the internal aggregation result to the sessions-owned public schema,
@@ -83,5 +92,8 @@ export function toUsageReport(data: TokenmaxingData): UsageReport {
       hourCounts: data.insights.hourCounts,
       weekdayCounts: data.insights.weekdayCounts,
     },
+    // Kept pure: runReport overwrites this with drainPricingWarnings() after
+    // aggregation. toUsageReport itself prices nothing, so it starts empty.
+    warnings: [],
   };
 }
