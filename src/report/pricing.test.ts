@@ -6,6 +6,8 @@ import {
   computeCost,
   drainPricingWarnings,
   resetPricingWarnings,
+  resetPricing,
+  mergeRuntimePricing,
   parseLiteLLMPricing,
   type UsageCounts,
 } from './pricing.ts';
@@ -20,6 +22,8 @@ const counts = (over: Partial<UsageCounts> = {}): UsageCounts => ({
 
 beforeEach(() => {
   resetPricingWarnings();
+  // Drop any runtime layer a prior test merged so find() reads only the base map.
+  resetPricing();
 });
 
 describe('find() matching', () => {
@@ -193,5 +197,29 @@ describe('parseLiteLLMPricing', () => {
   test('malformed JSON yields an empty map (never throws)', () => {
     expect(Object.keys(parseLiteLLMPricing('not json at all {'))).toHaveLength(0);
     expect(Object.keys(parseLiteLLMPricing('{}'))).toHaveLength(0);
+  });
+});
+
+describe('mergeRuntimePricing / resetPricing', () => {
+  test('runtime records win over the embedded snapshot + overrides', () => {
+    const before = find('claude-opus-4-8')!;
+    expect(before.inputPerToken).toBe(5e-6);
+    mergeRuntimePricing({ 'claude-opus-4-8': { inputPerToken: 9e-6, outputPerToken: 99e-6 } });
+    const after = find('claude-opus-4-8')!;
+    expect(after.inputPerToken).toBe(9e-6);
+    expect(after.outputPerToken).toBe(99e-6);
+  });
+
+  test('merge adds brand-new models that were not in the base map', () => {
+    expect(find('totally-new-model-9')).toBeUndefined();
+    mergeRuntimePricing({ 'totally-new-model-9': { inputPerToken: 1e-6, outputPerToken: 2e-6 } });
+    expect(find('totally-new-model-9')).toBeDefined();
+  });
+
+  test('resetPricing drops the runtime layer and restores the base map', () => {
+    mergeRuntimePricing({ 'claude-opus-4-8': { inputPerToken: 9e-6, outputPerToken: 99e-6 } });
+    expect(find('claude-opus-4-8')!.inputPerToken).toBe(9e-6);
+    resetPricing();
+    expect(find('claude-opus-4-8')!.inputPerToken).toBe(5e-6);
   });
 });

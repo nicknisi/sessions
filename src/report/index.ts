@@ -6,7 +6,8 @@ import { gatherEvents, defaultRoots, type ReportRoots } from './extract.ts';
 import { aggregate } from './aggregate.ts';
 import { renderHtml } from './html.ts';
 import { toUsageReport } from './schema.ts';
-import { drainPricingWarnings, resetPricingWarnings } from './pricing.ts';
+import { drainPricingWarnings, resetPricingWarnings, mergeRuntimePricing } from './pricing.ts';
+import { loadRuntimePricing } from './pricing-cache.ts';
 import { resolvePeriod, type PeriodPreset } from './period.ts';
 import { resolveProject } from './project.ts';
 import { localDate } from './parsers/util.ts';
@@ -28,6 +29,8 @@ export interface ReportOptions {
   now?: string;
   here?: boolean;
   cwd?: string;
+  offline?: boolean;
+  refreshPricing?: boolean;
 }
 
 export interface ReportResult {
@@ -82,6 +85,12 @@ export function parseReportArgs(argv: string[]): ReportOptions {
         break;
       case '--here':
         opts.here = true;
+        break;
+      case '--offline':
+        opts.offline = true;
+        break;
+      case '--refresh-pricing':
+        opts.refreshPricing = true;
         break;
       case '--tool': {
         const v = argv[++i] ?? '';
@@ -145,6 +154,15 @@ export async function runReport(opts: ReportOptions): Promise<ReportResult> {
   if (inRange.length === 0) {
     const scope = hereProject ? ` for project ${hereProject}` : '';
     process.stderr.write(`warning: no usage events in range${scope}; report is empty\n`);
+  }
+
+  // Refresh pricing at runtime so costs reflect current LiteLLM rates without a
+  // recompile. Must run before aggregate(), since computeCost reads the module
+  // pricing map during aggregation. --offline skips the network entirely;
+  // failures degrade gracefully (loadRuntimePricing returns null → embedded floor).
+  if (!opts.offline) {
+    const live = await loadRuntimePricing({ force: opts.refreshPricing });
+    if (live) mergeRuntimePricing(live);
   }
 
   // Clear any pricing warnings from a prior run so the collector reflects only

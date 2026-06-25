@@ -116,8 +116,23 @@ export const BUILTIN_OVERRIDES: Record<string, ModelPricing> = {
 };
 
 // Embedded snapshot is the base; BUILTIN_OVERRIDES fills/overrides entries the
-// snapshot lacks. (Phase 2 will merge a live fetch over the top — live wins.)
-const PRICING_MAP: Record<string, ModelPricing> = { ...GENERATED_PRICING, ...BUILTIN_OVERRIDES };
+// snapshot lacks. A runtime live fetch (Phase 2) is merged over the top via
+// mergeRuntimePricing — live wins over snapshot + overrides.
+const baseMap = (): Record<string, ModelPricing> => ({ ...GENERATED_PRICING, ...BUILTIN_OVERRIDES });
+const PRICING_MAP: Record<string, ModelPricing> = baseMap();
+
+// Overlay runtime-fetched records onto the in-memory map (live wins). Mutates the
+// shared map in place since find()/computeCost read the module singleton.
+export function mergeRuntimePricing(records: Record<string, ModelPricing>): void {
+  Object.assign(PRICING_MAP, records);
+}
+
+// Restore the map to the embedded snapshot + overrides, dropping any runtime
+// layer. Tests call this in beforeEach so a merged fetch never leaks across cases.
+export function resetPricing(): void {
+  for (const key of Object.keys(PRICING_MAP)) delete PRICING_MAP[key];
+  Object.assign(PRICING_MAP, baseMap());
+}
 
 // ---------------------------------------------------------------------------
 // LiteLLM parsing — shared with the build-time generator (and Phase 2).
