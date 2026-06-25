@@ -48,10 +48,12 @@ const CLAUDE_DIR = process.env.SESSIONS_CLAUDE_DIR || join(home, '.claude/projec
 const PI_DIR = process.env.SESSIONS_PI_DIR || join(home, '.pi/agent/sessions');
 const CODEX_DIR = process.env.SESSIONS_CODEX_DIR || join(home, '.codex/sessions');
 
-// Bump 3 -> 4: adds the `branch` column and recomputes intent / closing_user /
-// closing_assistant from genuine turns. The getDb path drops + rebuilds tables on
-// a user_version mismatch, so this triggers a one-time destructive reindex.
-const SCHEMA_VERSION = 4;
+// Bump 4 -> 5: the FTS index gains an `assistant_content` column and a porter
+// stemming tokenizer, and search now ranks by bm25 relevance instead of recency.
+// The new column + tokenizer change the virtual table shape, so the getDb path
+// drops + rebuilds tables on a user_version mismatch — a one-time destructive
+// reindex that re-extracts assistant text from every session.
+const SCHEMA_VERSION = 5;
 let _db: Database | null = null;
 
 export function clearCache(): void {
@@ -99,10 +101,16 @@ function getDb(): Database {
       branch TEXT NOT NULL DEFAULT ''
     )
   `);
+  // `user_content` and `assistant_content` are separate columns so search can rank
+  // and snippet each independently (a match in the model's own diagnosis is just as
+  // findable as one in the prompt). `porter unicode61` adds stemming on top of the
+  // default unicode tokenizer so e.g. "refactoring" matches an indexed "refactor".
   db.run(`
     CREATE VIRTUAL TABLE IF NOT EXISTS session_fts USING fts5(
       file_path UNINDEXED,
-      user_content
+      user_content,
+      assistant_content,
+      tokenize = 'porter unicode61'
     )
   `);
   _db = db;
@@ -222,6 +230,10 @@ function indexFile(db: Database, filePath: string, tool: Tool): boolean {
     .filter((m) => m.role === 'user')
     .map((m) => m.text)
     .join('\n');
+  const assistantContent = messages
+    .filter((m) => m.role === 'assistant')
+    .map((m) => m.text)
+    .join('\n');
 
   const subagentContent = tool === 'claude' ? collectSubagentContent(filePath) : '';
   const fullContent = subagentContent ? userContent + '\n' + subagentContent : userContent;
@@ -254,7 +266,11 @@ function indexFile(db: Database, filePath: string, tool: Tool): boolean {
       branch,
     ],
   );
-  db.run('INSERT INTO session_fts (file_path, user_content) VALUES (?, ?)', [filePath, fullContent]);
+  db.run('INSERT INTO session_fts (file_path, user_content, assistant_content) VALUES (?, ?, ?)', [
+    filePath,
+    fullContent,
+    assistantContent,
+  ]);
   return true;
 }
 
@@ -313,12 +329,20 @@ export async function searchSessions(
 
   let rows: SessionRow[];
 
-  if (query) {
-    const ftsQuery = query
-      .replace(/['"]/g, '')
-      .split(/\s+/)
-      .map((w) => `"${w}"`)
-      .join(' ');
+  // Split the free-text query into individual quoted terms joined with OR. OR recall
+  // (any term may match) paired with bm25() ranking surfaces the sessions matching the
+  // most — and rarest — terms first, instead of the old strict-AND that returned
+  // nothing unless every word was present. This matters most for the LLM/MCP caller,
+  // which issues long natural-language queries. Quoting each term keeps FTS5 operators
+  // in user input literal. An all-whitespace/quotes query yields no terms → recent list.
+  const ftsTerms = query
+    .replace(/['"]/g, '')
+    .split(/\s+/)
+    .filter((w) => w.length > 0)
+    .map((w) => `"${w}"`);
+  const ftsQuery = ftsTerms.join(' OR ');
+
+  if (ftsQuery) {
     const conditions: string[] = [];
     const params: (string | number)[] = [ftsQuery];
 
@@ -339,12 +363,12 @@ export async function searchSessions(
       .query<SessionRow, any[]>(`
       SELECT s.file_path, s.cwd, s.tool, s.session_id, s.date, s.created_at, s.first_prompt,
              s.custom_title, s.message_count,
-             snippet(session_fts, 1, '', '', '…', 32) as snippet
+             snippet(session_fts, -1, '', '', '…', 32) as snippet
       FROM session_fts f
       JOIN sessions s ON s.file_path = f.file_path
       WHERE f.session_fts MATCH ?
       ${extra}
-      ORDER BY s.date DESC
+      ORDER BY bm25(session_fts)
       LIMIT ?
     `)
       .all(...params);

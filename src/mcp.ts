@@ -15,7 +15,12 @@ server.tool(
   'search_sessions',
   'Search across AI coding sessions from Claude Code, Codex, and Pi. Returns matching sessions with snippets.',
   {
-    query: z.string().optional().describe('Text to search for in user messages. Omit to list recent sessions.'),
+    query: z
+      .string()
+      .optional()
+      .describe(
+        'Text to search across session messages (both yours and the assistant replies). Natural-language queries work — results are ranked by relevance and any term may match. Omit to list recent sessions.',
+      ),
     tool: z.enum(['claude', 'codex', 'pi']).optional().describe('Filter to a specific tool'),
     project: z.string().optional().describe('Filter to sessions from this project directory path'),
     limit: z.number().optional().default(20).describe('Max results to return (default 20)'),

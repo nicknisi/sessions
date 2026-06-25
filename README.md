@@ -262,6 +262,8 @@ The `get_activity_digest` tool supports a `detail` parameter: `"compact"` (defau
 
 The MCP server maintains a SQLite + FTS5 index at `~/.cache/sessions/index.db` for fast full-text search across all sessions. The index is built automatically on first use (~5s for thousands of sessions) and updated incrementally on subsequent calls by checking file modification times — only new or changed sessions are re-indexed.
 
+Search covers both your messages and the assistant's replies, uses porter stemming (so `refactor` matches `refactoring`), and ranks results by relevance (BM25) rather than recency. A multi-word query matches sessions containing _any_ of the terms, with the closest matches ranked first — so natural-language queries degrade gracefully instead of requiring every word to be present.
+
 To clear the index and force a full rebuild:
 
 ```sh
