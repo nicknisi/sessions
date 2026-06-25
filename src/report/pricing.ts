@@ -28,7 +28,8 @@ export interface UsageCounts {
   input: number;
   output: number;
   cacheRead: number;
-  cacheWrite: number;
+  cacheWrite: number; // total cache-creation tokens (5m + 1h)
+  cacheWrite1h?: number; // subset of cacheWrite billed at the 1h rate (input×2)
 }
 
 export interface PricingWarning {
@@ -305,10 +306,16 @@ export function computeCost(modelId: string, usage: UsageCounts): number {
   }
   const cacheRead = p.cacheReadPerToken ?? p.inputPerToken * 0.1;
   const cacheWrite = p.cacheWritePerToken ?? p.inputPerToken * 1.25;
+  // 1h cache-creation is billed at input × 2 (ccusage CACHE_CREATE_1H_INPUT_MULTIPLIER);
+  // the remainder (5m / default) uses the standard cache_create rate.
+  const write1h = usage.cacheWrite1h ?? 0;
+  const write5m = Math.max(0, usage.cacheWrite - write1h);
+  const write1hAbove = p.inputPerTokenAbove200k !== undefined ? p.inputPerTokenAbove200k * 2 : undefined;
   return (
     tiered(usage.input, p.inputPerToken, p.inputPerTokenAbove200k) +
     tiered(usage.output, p.outputPerToken, p.outputPerTokenAbove200k) +
     tiered(usage.cacheRead, cacheRead, p.cacheReadPerTokenAbove200k) +
-    tiered(usage.cacheWrite, cacheWrite, p.cacheWritePerTokenAbove200k)
+    tiered(write5m, cacheWrite, p.cacheWritePerTokenAbove200k) +
+    tiered(write1h, p.inputPerToken * 2, write1hAbove)
   );
 }

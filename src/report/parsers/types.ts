@@ -1,4 +1,4 @@
-// VENDORED VERBATIM from tokenmaxing/src/parsers/types.ts — do not edit logic here; keep in sync. Public contract: schemaVersion 2.
+// Sessions-owned (forked from tokenmaxing). Adds cacheWrite1h so the 1-hour cache-creation premium can be priced.
 import type { ToolId, ProviderId } from '../types.ts';
 
 // Unified intermediate emitted by every parser; aggregate.ts consumes these.
@@ -14,7 +14,8 @@ export interface UsageEvent {
     input: number;
     output: number;
     cacheRead: number;
-    cacheWrite: number;
+    cacheWrite: number; // total cache-creation tokens (5m + 1h)
+    cacheWrite1h?: number; // subset of cacheWrite written to the 1h cache (billed at input×2)
   };
   costUSD?: number; // only set when source pre-computes (Pi); otherwise computed downstream
 }

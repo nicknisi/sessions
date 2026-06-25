@@ -105,6 +105,15 @@ describe('computeCost arithmetic', () => {
     expect(cost).toBeCloseTo(expected, 12);
   });
 
+  test('1h cache-creation is priced at input×2 (5m stays at the cache_create rate)', () => {
+    // opus-4-8: input 5e-6 → 1h rate 10e-6; cacheWrite (5m) rate 6.25e-6.
+    const all1h = computeCost('claude-opus-4-8', counts({ cacheWrite: 1000, cacheWrite1h: 1000 }));
+    const all5m = computeCost('claude-opus-4-8', counts({ cacheWrite: 1000, cacheWrite1h: 0 }));
+    expect(all1h).toBeCloseTo(1000 * 10e-6, 12);
+    expect(all5m).toBeCloseTo(1000 * 6.25e-6, 12);
+    expect(all1h).toBeGreaterThan(all5m);
+  });
+
   test('cache defaults applied when rates omitted (read = input*0.1, write = input*1.25)', () => {
     const map = parseLiteLLMPricing(
       JSON.stringify({
