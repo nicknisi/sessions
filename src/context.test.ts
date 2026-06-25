@@ -220,6 +220,62 @@ describe('empty-state', () => {
   });
 });
 
+describe('searchSessions', () => {
+  test('ranks by bm25 relevance, not recency — the stronger match wins even when older', async () => {
+    const cwd = join(fixtureRoot, 'search-rank');
+    // Older, but matches BOTH query terms (including the rare "plonkish").
+    const strong = writeClaudeSession({
+      cwd,
+      firstPrompt: 'quokkavar plonkish',
+      createdAt: '2026-06-01T10:00:00.000Z',
+    });
+    // Newer, but matches only the common term — under the old `ORDER BY date DESC`
+    // this would have come first purely by recency.
+    const weak = writeClaudeSession({ cwd, firstPrompt: 'quokkavar zzfiller', createdAt: '2026-06-20T10:00:00.000Z' });
+
+    const results = await cache.searchSessions('quokkavar plonkish', '', cwd, 20);
+    const ids = results.map((r) => r.sessionId);
+    expect(ids).toContain(strong);
+    expect(ids).toContain(weak);
+    expect(ids[0]).toBe(strong); // relevance beats recency
+  });
+
+  test('OR recall: a multi-word query still matches when only some terms are present', async () => {
+    const cwd = join(fixtureRoot, 'search-or');
+    const id = writeClaudeSession({ cwd, firstPrompt: 'fix the rate limiter on the api' });
+    // Neither "yesterday" nor "afternoon" appears — the old strict-AND returned nothing.
+    const results = await cache.searchSessions('rate limiter yesterday afternoon', '', cwd, 20);
+    expect(results.map((r) => r.sessionId)).toContain(id);
+  });
+
+  test('porter stemming connects inflected forms ("refactor" matches "refactoring")', async () => {
+    const cwd = join(fixtureRoot, 'search-stem');
+    const id = writeClaudeSession({ cwd, firstPrompt: 'refactoring the authentication layer' });
+    const results = await cache.searchSessions('refactor', '', cwd, 20);
+    expect(results.map((r) => r.sessionId)).toContain(id);
+  });
+
+  test('assistant message text is searchable (a term only in the reply is found)', async () => {
+    const cwd = join(fixtureRoot, 'search-asst');
+    const id = writeClaudeSession({
+      cwd,
+      firstPrompt: 'why does the build keep failing',
+      closingAssistant: 'the root cause was a quibblefrotz race in the scheduler',
+    });
+    const results = await cache.searchSessions('quibblefrotz', '', cwd, 20);
+    expect(results.map((r) => r.sessionId)).toContain(id);
+    // and the snippet is drawn from the matching (assistant) column
+    expect(results.find((r) => r.sessionId === id)!.displayText).toContain('quibblefrotz');
+  });
+
+  test('a term that appears nowhere returns no matches', async () => {
+    const cwd = join(fixtureRoot, 'search-empty');
+    writeClaudeSession({ cwd, firstPrompt: 'ordinary session about ordinary things' });
+    const results = await cache.searchSessions('zzztotallyabsentzzz', '', cwd, 20);
+    expect(results).toHaveLength(0);
+  });
+});
+
 const ctx = await import('./context');
 
 describe('cli', () => {
