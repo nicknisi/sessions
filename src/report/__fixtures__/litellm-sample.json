@@ -1,0 +1,66 @@
+{
+  "sample_spec": {
+    "max_input_tokens": "max input tokens, if the provider specifies it",
+    "litellm_provider": "one of https://docs.litellm.ai/docs/providers"
+  },
+  "claude-opus-4-5": {
+    "max_input_tokens": 200000,
+    "input_cost_per_token": 0.000005,
+    "output_cost_per_token": 0.000025,
+    "cache_creation_input_token_cost": 0.00000625,
+    "cache_read_input_token_cost": 0.0000005,
+    "litellm_provider": "anthropic",
+    "mode": "chat"
+  },
+  "claude-sonnet-4-6": {
+    "max_input_tokens": 200000,
+    "input_cost_per_token": 0.000003,
+    "output_cost_per_token": 0.000015,
+    "cache_creation_input_token_cost": 0.00000375,
+    "cache_read_input_token_cost": 0.0000003,
+    "litellm_provider": "anthropic",
+    "mode": "chat"
+  },
+  "claude-sonnet-4": {
+    "max_input_tokens": 200000,
+    "input_cost_per_token": 0.000003,
+    "output_cost_per_token": 0.000015,
+    "cache_creation_input_token_cost": 0.00000375,
+    "cache_read_input_token_cost": 0.0000003,
+    "input_cost_per_token_above_200k_tokens": 0.000006,
+    "output_cost_per_token_above_200k_tokens": 0.0000225,
+    "cache_creation_input_token_cost_above_200k_tokens": 0.0000075,
+    "cache_read_input_token_cost_above_200k_tokens": 0.0000006,
+    "litellm_provider": "anthropic",
+    "mode": "chat"
+  },
+  "gpt-5-codex": {
+    "max_input_tokens": 400000,
+    "input_cost_per_token": 0.00000175,
+    "output_cost_per_token": 0.000014,
+    "cache_read_input_token_cost": 0.000000175,
+    "litellm_provider": "openai",
+    "mode": "chat"
+  },
+  "moonshotai/Kimi-K2.5": {
+    "max_input_tokens": 262144,
+    "input_cost_per_token": 0.0000006,
+    "output_cost_per_token": 0.000003,
+    "cache_read_input_token_cost": 0.0000001,
+    "litellm_provider": "moonshotai",
+    "mode": "chat"
+  },
+  "some-mistral-model": {
+    "max_input_tokens": 32000,
+    "input_cost_per_token": 0.000002,
+    "output_cost_per_token": 0.000006,
+    "litellm_provider": "mistral",
+    "mode": "chat"
+  },
+  "embedding-no-output": {
+    "max_input_tokens": 8192,
+    "input_cost_per_token": 0.0000001,
+    "litellm_provider": "openai",
+    "mode": "embedding"
+  }
+}
