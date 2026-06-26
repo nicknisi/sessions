@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.10.0](https://github.com/nicknisi/sessions/compare/v1.9.0...v1.10.0) (2026-06-25)
+
+
+### Features
+
+* **search:** rank by relevance, add stemming, OR recall, and index assistant text ([#22](https://github.com/nicknisi/sessions/issues/22)) ([5ea4705](https://github.com/nicknisi/sessions/commit/5ea4705b5a1252caaf6bc656b0d04de9c32fcd59))
+
 ## [1.9.0](https://github.com/nicknisi/sessions/compare/v1.8.0...v1.9.0) (2026-06-25)
 
 
