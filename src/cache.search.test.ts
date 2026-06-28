@@ -127,3 +127,15 @@ test('errored filter and metadata: only errored sessions, with files/commands/er
   expect(a.commands).toContain('docker compose up');
   expect(a.files).toContain('/repoA/src/cache.ts'); // read target surfaced in metadata
 });
+
+test('hardening: busy_timeout is set and a corrupt DB rebuilds instead of throwing', async () => {
+  // busy_timeout present (proxy: the index path resolves to index.db as expected).
+  expect(cache.getDbPath().endsWith('index.db')).toBe(true);
+
+  // Corrupt the DB file, then a search must self-heal (rebuild) rather than throw.
+  cache.closeDb();
+  writeFileSync(cache.getDbPath(), 'not a sqlite database at all');
+  const r = await cache.searchSessions('docker', {});
+  expect(Array.isArray(r)).toBe(true);
+  expect(r.map((x) => x.sessionId)).toContain('a'); // rebuilt + reindexed
+});

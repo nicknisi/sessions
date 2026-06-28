@@ -93,12 +93,16 @@ export function closeDb(): void {
   _db = null;
 }
 
-function getDb(): Database {
-  if (_db) return _db;
-  mkdirSync(getCacheDir(), { recursive: true });
+// Open (or create) the index DB and bring it to the v6 schema, resolving the path
+// lazily so hermetic tests honoring SESSIONS_CACHE_DIR get their own file. busy_timeout
+// makes a statement wait for a contended write lock (e.g. a concurrent refreshIndex)
+// instead of erroring with SQLITE_BUSY immediately. This does NOT assign the `_db`
+// singleton — getDb owns that, so it can retry openDb after discarding a corrupt file.
+function openDb(): Database {
   const db = new Database(getDbPath());
   db.run('PRAGMA journal_mode=WAL');
   db.run('PRAGMA synchronous=NORMAL');
+  db.run('PRAGMA busy_timeout=5000');
 
   const row = db.query<{ user_version: number }, []>('PRAGMA user_version').get();
   if (!row || row.user_version !== SCHEMA_VERSION) {
@@ -147,8 +151,42 @@ function getDb(): Database {
       tokenize = 'porter unicode61'
     )
   `);
-  _db = db;
   return db;
+}
+
+// Best-effort removal of the index file and its WAL/SHM sidecars (lazily-resolved)
+// so a corrupt index can be rebuilt from scratch. Each unlink is independent — a
+// missing sidecar must not stop us deleting the others.
+function removeDbFiles(): void {
+  const dbPath = getDbPath();
+  for (const f of [dbPath, dbPath + '-wal', dbPath + '-shm']) {
+    try {
+      require('node:fs').unlinkSync(f);
+    } catch {}
+  }
+}
+
+// A corrupt or non-database index file surfaces as a SQLiteError on the first
+// PRAGMA/CREATE in openDb (e.g. "file is not a database" / "database disk image is
+// malformed"). Match SQLite's wording case-insensitively so getDb can self-heal.
+function isCorruption(e: unknown): boolean {
+  const msg = e instanceof Error ? e.message.toLowerCase() : String(e).toLowerCase();
+  return msg.includes('malformed') || msg.includes('corrupt') || msg.includes('not a database');
+}
+
+function getDb(): Database {
+  if (_db) return _db;
+  mkdirSync(getCacheDir(), { recursive: true });
+  try {
+    _db = openDb();
+  } catch (e) {
+    if (!isCorruption(e)) throw e;
+    // The index is a disposable, rebuildable cache of the session files — so a
+    // corrupt one is safe to delete and recreate. refreshIndex repopulates on use.
+    removeDbFiles();
+    _db = openDb();
+  }
+  return _db;
 }
 
 interface FileEntry {
