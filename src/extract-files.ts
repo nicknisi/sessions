@@ -86,3 +86,42 @@ export function extractFiles(lines: string[], tool: Tool): string[] {
 
   return out;
 }
+
+/** Claude: read-only tool_use targets (Read/Grep/Glob), kept separate from edits. */
+const CLAUDE_READ_TOOLS = new Set(['Read', 'Grep', 'Glob']);
+
+function extractClaudeRead(lines: string[], push: (p: string) => void): void {
+  for (const line of lines) {
+    const d = tryParse(line);
+    if (!d || d.type !== 'assistant') continue;
+    const msg = d.message;
+    if (!msg || typeof msg !== 'object') continue;
+    const content = (msg as Record<string, unknown>).content;
+    if (!Array.isArray(content)) continue;
+    for (const block of content) {
+      if (!block || typeof block !== 'object') continue;
+      const b = block as Record<string, unknown>;
+      if (b.type !== 'tool_use' || typeof b.name !== 'string' || !CLAUDE_READ_TOOLS.has(b.name)) continue;
+      const input = b.input as Record<string, unknown> | undefined;
+      const path = input?.file_path ?? input?.path ?? input?.pattern;
+      if (typeof path === 'string' && path) push(path);
+    }
+  }
+}
+
+/**
+ * Read/searched (not edited) file targets, for the searchable `paths` column.
+ * Codex/Pi read-target shapes need fixtures to confirm — deliberate no-op until
+ * then, mirroring the edited-files Pi no-op.
+ */
+export function extractFilesRead(lines: string[], tool: Tool): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  const push = (path: string): void => {
+    if (seen.has(path) || out.length >= MAX_FILES) return;
+    seen.add(path);
+    out.push(path);
+  };
+  if (tool === 'claude') extractClaudeRead(lines, push);
+  return out;
+}
