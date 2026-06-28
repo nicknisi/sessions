@@ -26,7 +26,7 @@ server.tool(
     limit: z.number().optional().default(20).describe('Max results to return (default 20)'),
   },
   async ({ query, tool, project, limit }) => {
-    const results = await searchSessions(query ?? '', tool ?? '', project ?? '', limit);
+    const results = await searchSessions(query ?? '', { tool: tool ?? '', project: project ?? '', limit });
 
     if (results.length === 0) {
       return { content: [{ type: 'text' as const, text: 'No sessions found.' }] };

@@ -245,7 +245,7 @@ describe('searchSessions', () => {
     // this would have come first purely by recency.
     const weak = writeClaudeSession({ cwd, firstPrompt: 'quokkavar zzfiller', createdAt: '2026-06-20T10:00:00.000Z' });
 
-    const results = await cache.searchSessions('quokkavar plonkish', '', cwd, 20);
+    const results = await cache.searchSessions('quokkavar plonkish', { project: cwd, limit: 20 });
     const ids = results.map((r) => r.sessionId);
     expect(ids).toContain(strong);
     expect(ids).toContain(weak);
@@ -256,14 +256,14 @@ describe('searchSessions', () => {
     const cwd = join(fixtureRoot, 'search-or');
     const id = writeClaudeSession({ cwd, firstPrompt: 'fix the rate limiter on the api' });
     // Neither "yesterday" nor "afternoon" appears — the old strict-AND returned nothing.
-    const results = await cache.searchSessions('rate limiter yesterday afternoon', '', cwd, 20);
+    const results = await cache.searchSessions('rate limiter yesterday afternoon', { project: cwd, limit: 20 });
     expect(results.map((r) => r.sessionId)).toContain(id);
   });
 
   test('porter stemming connects inflected forms ("refactor" matches "refactoring")', async () => {
     const cwd = join(fixtureRoot, 'search-stem');
     const id = writeClaudeSession({ cwd, firstPrompt: 'refactoring the authentication layer' });
-    const results = await cache.searchSessions('refactor', '', cwd, 20);
+    const results = await cache.searchSessions('refactor', { project: cwd, limit: 20 });
     expect(results.map((r) => r.sessionId)).toContain(id);
   });
 
@@ -274,7 +274,7 @@ describe('searchSessions', () => {
       firstPrompt: 'why does the build keep failing',
       closingAssistant: 'the root cause was a quibblefrotz race in the scheduler',
     });
-    const results = await cache.searchSessions('quibblefrotz', '', cwd, 20);
+    const results = await cache.searchSessions('quibblefrotz', { project: cwd, limit: 20 });
     expect(results.map((r) => r.sessionId)).toContain(id);
     // and the snippet is drawn from the matching (assistant) column
     expect(results.find((r) => r.sessionId === id)!.displayText).toContain('quibblefrotz');
@@ -283,7 +283,7 @@ describe('searchSessions', () => {
   test('a term that appears nowhere returns no matches', async () => {
     const cwd = join(fixtureRoot, 'search-empty');
     writeClaudeSession({ cwd, firstPrompt: 'ordinary session about ordinary things' });
-    const results = await cache.searchSessions('zzztotallyabsentzzz', '', cwd, 20);
+    const results = await cache.searchSessions('zzztotallyabsentzzz', { project: cwd, limit: 20 });
     expect(results).toHaveLength(0);
   });
 });

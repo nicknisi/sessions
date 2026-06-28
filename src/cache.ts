@@ -356,14 +356,20 @@ export async function refreshIndex(): Promise<{ total: number; updated: number }
   return { total: files.length, updated };
 }
 
-export async function searchSessions(
-  query: string,
-  toolFilter: Tool | '',
-  project: string,
-  limit: number,
-): Promise<SessionResult[]> {
+export interface SearchOptions {
+  tool?: Tool | '';
+  project?: string;
+  errored?: boolean;
+  limit?: number;
+}
+
+export async function searchSessions(query: string, opts: SearchOptions = {}): Promise<SessionResult[]> {
   const db = getDb();
   await refreshIndex();
+
+  const toolFilter = opts.tool ?? '';
+  const project = opts.project ?? '';
+  const limit = opts.limit ?? 50;
 
   interface SessionRow {
     file_path: string;
@@ -375,6 +381,10 @@ export async function searchSessions(
     first_prompt: string;
     custom_title: string;
     message_count: number;
+    files_touched: string;
+    files_read: string;
+    commands: string;
+    errored: number;
     snippet: string | null;
   }
 
@@ -393,6 +403,11 @@ export async function searchSessions(
     .map((w) => `"${w}"`);
   const ftsQuery = ftsTerms.join(' OR ');
 
+  // bm25 weights map to session_fts columns in declaration order:
+  // file_path, headline, user_content, assistant_content, commands, paths, context_text, thinking.
+  // Favor headline/commands/paths; de-emphasize verbose thinking so it adds recall without dominating.
+  const RANK = 'bm25(session_fts, 0.0, 10.0, 3.0, 2.0, 6.0, 5.0, 2.0, 0.5)';
+
   if (ftsQuery) {
     const conditions: string[] = [];
     const params: (string | number)[] = [ftsQuery];
@@ -407,19 +422,20 @@ export async function searchSessions(
       conditions.push('(s.cwd = ? OR s.cwd GLOB ?)');
       params.push(project, globPrefix(project));
     }
+    if (opts.errored) conditions.push('s.errored = 1');
     params.push(limit);
 
     const extra = conditions.length > 0 ? 'AND ' + conditions.join(' AND ') : '';
     rows = db
       .query<SessionRow, any[]>(`
       SELECT s.file_path, s.cwd, s.tool, s.session_id, s.date, s.created_at, s.first_prompt,
-             s.custom_title, s.message_count,
+             s.custom_title, s.message_count, s.files_touched, s.files_read, s.commands, s.errored,
              snippet(session_fts, -1, '', '', '…', 32) as snippet
       FROM session_fts f
       JOIN sessions s ON s.file_path = f.file_path
       WHERE f.session_fts MATCH ?
       ${extra}
-      ORDER BY bm25(session_fts)
+      ORDER BY ${RANK}
       LIMIT ?
     `)
       .all(...params);
@@ -435,13 +451,14 @@ export async function searchSessions(
       conditions.push('(cwd = ? OR cwd GLOB ?)');
       params.push(project, globPrefix(project));
     }
+    if (opts.errored) conditions.push('errored = 1');
     params.push(limit);
 
     const where = conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : '';
     rows = db
       .query<SessionRow, any[]>(`
       SELECT file_path, cwd, tool, session_id, date, created_at, first_prompt,
-             custom_title, message_count, NULL as snippet
+             custom_title, message_count, files_touched, files_read, commands, errored, NULL as snippet
       FROM sessions ${where}
       ORDER BY date DESC LIMIT ?
     `)
@@ -459,6 +476,11 @@ export async function searchSessions(
     messageCount: r.message_count,
     filePath: r.file_path,
     exists: existsSync(r.cwd),
+    // `files` is the union of edited + read files so it answers "what files did this
+    // session involve" (a Read-only target is still surfaced).
+    files: [...parseFiles(r.files_touched), ...parseFiles(r.files_read)],
+    commands: parseFiles(r.commands),
+    errored: r.errored === 1,
   }));
 }
 

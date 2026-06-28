@@ -66,6 +66,9 @@ async function processSession(
       messageCount: msgCount,
       filePath,
       exists: existsSync(cwd),
+      files: [],
+      commands: [],
+      errored: false,
     };
   }
 
@@ -81,6 +84,9 @@ async function processSession(
     messageCount: msgCount,
     filePath,
     exists: existsSync(cwd),
+    files: [],
+    commands: [],
+    errored: false,
   };
 }
 

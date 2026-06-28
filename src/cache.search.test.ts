@@ -69,6 +69,21 @@ beforeAll(async () => {
     },
   ]);
 
+  // Session B: clean (no error), its only "docker" mention is in thinking.
+  writeClaude(process.env.SESSIONS_CLAUDE_DIR!, 'b', '/repoB', [
+    {
+      type: 'user',
+      timestamp: '2026-06-02T10:00:00Z',
+      message: { role: 'user', content: [{ type: 'text', text: 'thoughts' }] },
+      promptSource: 'typed',
+    },
+    {
+      type: 'assistant',
+      timestamp: '2026-06-02T10:01:00Z',
+      message: { role: 'assistant', content: [{ type: 'thinking', thinking: 'maybe docker later' }] },
+    },
+  ]);
+
   cache = await import('./cache');
   cache.closeDb(); // drop any connection a prior test file opened on the shared module
   await cache.refreshIndex();
@@ -85,11 +100,30 @@ afterAll(() => {
 });
 
 test('indexes new content: a command query finds the session that ran it', async () => {
-  const r = await cache.searchSessions('docker', '', '', 50);
+  const r = await cache.searchSessions('docker', {});
   expect(r.map((x) => x.sessionId)).toContain('a');
 });
 
 test('commands and paths are findable: a file-path query matches a Read target', async () => {
-  const r = await cache.searchSessions('cache.ts', '', '', 50);
+  const r = await cache.searchSessions('cache.ts', {});
   expect(r.map((x) => x.sessionId)).toContain('a');
+});
+
+test('ranking: a command hit outranks a thinking-only hit for the same term', async () => {
+  const r = await cache.searchSessions('docker', {});
+  const aIdx = r.findIndex((x) => x.sessionId === 'a');
+  const bIdx = r.findIndex((x) => x.sessionId === 'b');
+  expect(aIdx).toBeGreaterThanOrEqual(0);
+  expect(bIdx).toBeGreaterThanOrEqual(0);
+  expect(aIdx).toBeLessThan(bIdx); // A (command) ranked above B (thinking)
+});
+
+test('errored filter and metadata: only errored sessions, with files/commands/errored populated', async () => {
+  const r = await cache.searchSessions('', { errored: true });
+  expect(r.map((x) => x.sessionId)).toContain('a');
+  expect(r.map((x) => x.sessionId)).not.toContain('b');
+  const a = r.find((x) => x.sessionId === 'a')!;
+  expect(a.errored).toBe(true);
+  expect(a.commands).toContain('docker compose up');
+  expect(a.files).toContain('/repoA/src/cache.ts'); // read target surfaced in metadata
 });
