@@ -1,15 +1,8 @@
 import type { Tool } from './types';
+import { tryParse } from './extract-util';
 
 /** Upper bound on stored edited-file paths per session (bounds the indexed column). */
 export const MAX_FILES = 50;
-
-function tryParse(line: string): Record<string, unknown> | null {
-  try {
-    return JSON.parse(line);
-  } catch {
-    return null;
-  }
-}
 
 /** Claude: assistant `message.content[]` tool_use blocks for the file-editing tools. */
 const CLAUDE_EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);

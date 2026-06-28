@@ -1,14 +1,7 @@
 import type { Tool } from './types';
+import { tryParse } from './extract-util';
 
 export const MAX_THINKING_LEN = 20_000;
-
-function tryParse(line: string): Record<string, unknown> | null {
-  try {
-    return JSON.parse(line) as Record<string, unknown>;
-  } catch {
-    return null;
-  }
-}
 
 function collect(lines: string[]): string {
   const parts: string[] = [];

@@ -1,15 +1,8 @@
 import type { Tool } from './types';
+import { tryParse } from './extract-util';
 
 /** Upper bound on stored distinct commands per session (bounds the indexed column). */
 export const MAX_COMMANDS = 100;
-
-function tryParse(line: string): Record<string, unknown> | null {
-  try {
-    return JSON.parse(line) as Record<string, unknown>;
-  } catch {
-    return null;
-  }
-}
 
 // Claude: assistant `message.content[]` tool_use named `Bash` → `input.command`.
 function extractClaude(lines: string[], push: (c: string) => void): void {

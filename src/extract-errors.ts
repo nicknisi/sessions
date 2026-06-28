@@ -1,4 +1,5 @@
 import type { Tool } from './types';
+import { tryParse } from './extract-util';
 
 export const MAX_ERROR_MESSAGES = 20;
 export const MAX_ERROR_LEN = 300;
@@ -7,14 +8,6 @@ export interface SessionErrors {
   errored: boolean;
   count: number;
   messages: string[];
-}
-
-function tryParse(line: string): Record<string, unknown> | null {
-  try {
-    return JSON.parse(line) as Record<string, unknown>;
-  } catch {
-    return null;
-  }
 }
 
 function textOf(content: unknown): string {
