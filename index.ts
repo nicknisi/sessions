@@ -1,5 +1,5 @@
 import { basename } from 'node:path';
-import { parseArgs, getRepoRoot } from './src/cli';
+import { parseArgs, getRepoRoot, toSearchOptions } from './src/cli';
 import { C } from './src/colors';
 import { scanSessions } from './src/scanner';
 import { formatLine } from './src/display';
@@ -71,7 +71,6 @@ if (args.searchQuery) {
 }
 
 const { searchSessions } = await import('./src/cache');
-const { toSearchOptions } = await import('./src/cli');
 const { query, opts } = toSearchOptions(args, repoRoot);
 let results;
 try {

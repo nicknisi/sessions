@@ -3,8 +3,8 @@ import type { SessionResult, Tool } from './types';
 
 /** The exact resume affordance both the CLI (clipboard) and the MCP (returned field) use. */
 export function buildResumeCommand(tool: Tool, cwd: string, sessionId: string): string {
-  if (tool === 'claude') return `cd ${cwd} && claude --resume ${sessionId}`;
-  return `cd ${cwd}`; // pi, codex: no direct session resume
+  if (tool === 'claude') return `cd "${cwd}" && claude --resume ${sessionId}`;
+  return `cd "${cwd}"`; // pi, codex: no direct session resume
 }
 
 export interface FormattedResult {

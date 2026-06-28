@@ -4,9 +4,9 @@ import { buildResumeCommand, formatResult } from './search-format';
 import type { SessionResult } from './types';
 
 test('buildResumeCommand: claude resumes, pi/codex cd only', () => {
-  expect(buildResumeCommand('claude', '/r', 'abc')).toBe('cd /r && claude --resume abc');
-  expect(buildResumeCommand('pi', '/r', 'abc')).toBe('cd /r');
-  expect(buildResumeCommand('codex', '/r', 'abc')).toBe('cd /r');
+  expect(buildResumeCommand('claude', '/r', 'abc')).toBe('cd "/r" && claude --resume abc');
+  expect(buildResumeCommand('pi', '/r', 'abc')).toBe('cd "/r"');
+  expect(buildResumeCommand('codex', '/r', 'abc')).toBe('cd "/r"');
 });
 
 test('formatResult: shapes a SessionResult for callers, including resumeCommand', () => {
@@ -39,6 +39,6 @@ test('formatResult: shapes a SessionResult for callers, including resumeCommand'
     errored: true,
     exists: true,
     filePath: '/f.jsonl',
-    resumeCommand: 'cd /r && claude --resume abc',
+    resumeCommand: 'cd "/r" && claude --resume abc',
   });
 });

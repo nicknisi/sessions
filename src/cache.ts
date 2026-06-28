@@ -100,9 +100,9 @@ export function closeDb(): void {
 // singleton — getDb owns that, so it can retry openDb after discarding a corrupt file.
 function openDb(): Database {
   const db = new Database(getDbPath());
+  db.run('PRAGMA busy_timeout=5000');
   db.run('PRAGMA journal_mode=WAL');
   db.run('PRAGMA synchronous=NORMAL');
-  db.run('PRAGMA busy_timeout=5000');
 
   const row = db.query<{ user_version: number }, []>('PRAGMA user_version').get();
   if (!row || row.user_version !== SCHEMA_VERSION) {
@@ -516,7 +516,7 @@ export async function searchSessions(query: string, opts: SearchOptions = {}): P
     exists: existsSync(r.cwd),
     // `files` is the union of edited + read files so it answers "what files did this
     // session involve" (a Read-only target is still surfaced).
-    files: [...parseFiles(r.files_touched), ...parseFiles(r.files_read)],
+    files: [...new Set([...parseFiles(r.files_touched), ...parseFiles(r.files_read)])],
     commands: parseFiles(r.commands),
     errored: r.errored === 1,
   }));
