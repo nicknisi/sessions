@@ -26,7 +26,10 @@ import {
   closingMessages,
   sessionBranch,
 } from './parser';
-import { extractFiles } from './extract-files';
+import { extractFiles, extractFilesRead } from './extract-files';
+import { extractCommands } from './extract-commands';
+import { extractErrors } from './extract-errors';
+import { extractThinking } from './extract-thinking';
 import { type RepoInfo, globPrefix, branchLabel } from './repo';
 import { isTrivia, blendedScore, type ScorableSession } from './significance';
 
@@ -41,23 +44,35 @@ export function getCacheDir(): string {
   return process.env.SESSIONS_CACHE_DIR || join(home, '.cache', 'sessions');
 }
 
-const CACHE_DIR = getCacheDir();
-const DB_PATH = join(CACHE_DIR, 'index.db');
+// The index.db path under the cache dir. Exported because the test harness (and
+// Task 10) reference it directly. Resolved lazily — not frozen at import — so a
+// test that mutates SESSIONS_* on the shared module instance is honored.
+export function getDbPath(): string {
+  return join(getCacheDir(), 'index.db');
+}
 
-const CLAUDE_DIR = process.env.SESSIONS_CLAUDE_DIR || join(home, '.claude/projects');
-const PI_DIR = process.env.SESSIONS_PI_DIR || join(home, '.pi/agent/sessions');
-const CODEX_DIR = process.env.SESSIONS_CODEX_DIR || join(home, '.codex/sessions');
+// Source-session roots, resolved lazily for the same hermetic-test reason. Real
+// runs have a stable env, so production behavior is unchanged by the laziness.
+function getClaudeDir(): string {
+  return process.env.SESSIONS_CLAUDE_DIR || join(home, '.claude/projects');
+}
+function getPiDir(): string {
+  return process.env.SESSIONS_PI_DIR || join(home, '.pi/agent/sessions');
+}
+function getCodexDir(): string {
+  return process.env.SESSIONS_CODEX_DIR || join(home, '.codex/sessions');
+}
 
-// Bump 4 -> 5: the FTS index gains an `assistant_content` column and a porter
-// stemming tokenizer, and search now ranks by bm25 relevance instead of recency.
-// The new column + tokenizer change the virtual table shape, so the getDb path
-// drops + rebuilds tables on a user_version mismatch — a one-time destructive
-// reindex that re-extracts assistant text from every session.
-const SCHEMA_VERSION = 5;
+// Bump 5 -> 6: the FTS index gains headline/commands/paths/context_text/thinking
+// columns and the sessions table gains files_read/commands/errored/error_count, so
+// search can match (and weight) commands, file paths, errors, and reasoning. The
+// virtual-table shape changes, so getDb drops + rebuilds on a user_version mismatch.
+const SCHEMA_VERSION = 6;
 let _db: Database | null = null;
 
 export function clearCache(): void {
-  const files = [DB_PATH, DB_PATH + '-wal', DB_PATH + '-shm'];
+  const dbPath = getDbPath();
+  const files = [dbPath, dbPath + '-wal', dbPath + '-shm'];
   let cleared = false;
   for (const f of files) {
     try {
@@ -68,10 +83,20 @@ export function clearCache(): void {
   process.stderr.write(cleared ? 'Cache cleared. It will rebuild on next use.\n' : 'No cache to clear.\n');
 }
 
+// Close and drop the cached connection so the next getDb() reopens against the
+// current getDbPath(). Lets hermetic tests reset shared-module state between files
+// (and release the handle before deleting a temp dir). Idempotent and never throws.
+export function closeDb(): void {
+  try {
+    _db?.close();
+  } catch {}
+  _db = null;
+}
+
 function getDb(): Database {
   if (_db) return _db;
-  mkdirSync(CACHE_DIR, { recursive: true });
-  const db = new Database(DB_PATH);
+  mkdirSync(getCacheDir(), { recursive: true });
+  const db = new Database(getDbPath());
   db.run('PRAGMA journal_mode=WAL');
   db.run('PRAGMA synchronous=NORMAL');
 
@@ -96,6 +121,10 @@ function getDb(): Database {
       custom_title TEXT NOT NULL DEFAULT '',
       message_count INTEGER NOT NULL DEFAULT 0,
       files_touched TEXT NOT NULL DEFAULT '[]',
+      files_read TEXT NOT NULL DEFAULT '[]',
+      commands TEXT NOT NULL DEFAULT '[]',
+      errored INTEGER NOT NULL DEFAULT 0,
+      error_count INTEGER NOT NULL DEFAULT 0,
       closing_user TEXT NOT NULL DEFAULT '',
       closing_assistant TEXT NOT NULL DEFAULT '',
       branch TEXT NOT NULL DEFAULT ''
@@ -108,8 +137,13 @@ function getDb(): Database {
   db.run(`
     CREATE VIRTUAL TABLE IF NOT EXISTS session_fts USING fts5(
       file_path UNINDEXED,
+      headline,
       user_content,
       assistant_content,
+      commands,
+      paths,
+      context_text,
+      thinking,
       tokenize = 'porter unicode61'
     )
   `);
@@ -124,16 +158,19 @@ interface FileEntry {
 
 async function discoverFiles(): Promise<FileEntry[]> {
   const entries: FileEntry[] = [];
+  const claudeDir = getClaudeDir();
+  const piDir = getPiDir();
+  const codexDir = getCodexDir();
 
-  if (existsSync(CLAUDE_DIR)) {
+  if (existsSync(claudeDir)) {
     let dirs: string[];
     try {
-      dirs = await readdir(CLAUDE_DIR);
+      dirs = await readdir(claudeDir);
     } catch {
       dirs = [];
     }
     for (const dirname of dirs) {
-      const dirpath = join(CLAUDE_DIR, dirname);
+      const dirpath = join(claudeDir, dirname);
       const glob = new Bun.Glob('*.jsonl');
       for await (const p of glob.scan(dirpath)) {
         entries.push({ path: join(dirpath, p), tool: 'claude' });
@@ -141,15 +178,15 @@ async function discoverFiles(): Promise<FileEntry[]> {
     }
   }
 
-  if (existsSync(PI_DIR)) {
+  if (existsSync(piDir)) {
     let dirs: string[];
     try {
-      dirs = await readdir(PI_DIR);
+      dirs = await readdir(piDir);
     } catch {
       dirs = [];
     }
     for (const dirname of dirs) {
-      const dirpath = join(PI_DIR, dirname);
+      const dirpath = join(piDir, dirname);
       const glob = new Bun.Glob('*.jsonl');
       for await (const p of glob.scan(dirpath)) {
         entries.push({ path: join(dirpath, p), tool: 'pi' });
@@ -157,10 +194,10 @@ async function discoverFiles(): Promise<FileEntry[]> {
     }
   }
 
-  if (existsSync(CODEX_DIR)) {
+  if (existsSync(codexDir)) {
     const glob = new Bun.Glob('**/*.jsonl');
-    for await (const p of glob.scan(CODEX_DIR)) {
-      entries.push({ path: join(CODEX_DIR, p), tool: 'codex' });
+    for await (const p of glob.scan(codexDir)) {
+      entries.push({ path: join(codexDir, p), tool: 'codex' });
     }
   }
 
@@ -238,7 +275,18 @@ function indexFile(db: Database, filePath: string, tool: Tool): boolean {
   const subagentContent = tool === 'claude' ? collectSubagentContent(filePath) : '';
   const fullContent = subagentContent ? userContent + '\n' + subagentContent : userContent;
 
-  const filesTouched = JSON.stringify(extractFiles(lines, tool));
+  const filesTouchedArr = extractFiles(lines, tool);
+  const filesTouched = JSON.stringify(filesTouchedArr);
+  const filesReadArr = extractFilesRead(lines, tool);
+  const filesRead = JSON.stringify(filesReadArr);
+  const commandsArr = extractCommands(lines, tool);
+  const commands = JSON.stringify(commandsArr);
+  const errors = extractErrors(lines, tool);
+  const thinking = extractThinking(lines, tool);
+  const headline = `${prompt}\n${title}`;
+  const pathsText = [...filesTouchedArr, ...filesReadArr].join('\n');
+  const commandsText = commandsArr.join('\n');
+  const contextText = errors.messages.join('\n');
   const closing = closingMessages(lines, tool);
   const branch = sessionBranch(lines, tool);
 
@@ -246,8 +294,8 @@ function indexFile(db: Database, filePath: string, tool: Tool): boolean {
     db.run('DELETE FROM session_fts WHERE file_path = ?', [filePath]);
   }
   db.run(
-    `INSERT OR REPLACE INTO sessions (file_path, mtime, size, cwd, tool, session_id, date, created_at, first_prompt, custom_title, message_count, files_touched, closing_user, closing_assistant, branch)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT OR REPLACE INTO sessions (file_path, mtime, size, cwd, tool, session_id, date, created_at, first_prompt, custom_title, message_count, files_touched, files_read, commands, errored, error_count, closing_user, closing_assistant, branch)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       filePath,
       stat.mtimeMs,
@@ -261,16 +309,19 @@ function indexFile(db: Database, filePath: string, tool: Tool): boolean {
       title,
       msgCount,
       filesTouched,
+      filesRead,
+      commands,
+      errors.errored ? 1 : 0,
+      errors.count,
       closing.user,
       closing.assistant,
       branch,
     ],
   );
-  db.run('INSERT INTO session_fts (file_path, user_content, assistant_content) VALUES (?, ?, ?)', [
-    filePath,
-    fullContent,
-    assistantContent,
-  ]);
+  db.run(
+    'INSERT INTO session_fts (file_path, headline, user_content, assistant_content, commands, paths, context_text, thinking) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    [filePath, headline, fullContent, assistantContent, commandsText, pathsText, contextText, thinking],
+  );
   return true;
 }
 

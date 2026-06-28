@@ -1,12 +1,12 @@
-import { describe, test, expect, afterAll, spyOn } from 'bun:test';
+import { describe, test, expect, beforeEach, afterAll, spyOn } from 'bun:test';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { RepoInfo } from './repo';
 import type { ContextPrimer } from './types';
 
-// Point the index at hermetic temp dirs BEFORE importing the cache module, since
-// it captures these paths in module constants at import time.
+// Point the index at hermetic temp dirs. cache.ts now resolves SESSIONS_* lazily,
+// and a beforeEach re-asserts these on the shared module instance before each test.
 const fixtureRoot = realpathSync(mkdtempSync(join(tmpdir(), 'sessions-ctx-')));
 const claudeDir = join(fixtureRoot, 'claude');
 const piDir = join(fixtureRoot, 'pi');
@@ -21,7 +21,19 @@ process.env.SESSIONS_CACHE_DIR = cacheDir;
 
 const cache = await import('./cache');
 
+beforeEach(() => {
+  // The cache module instance is shared across test files in one `bun test` run, so
+  // re-assert this fixture's env and drop any connection another file opened. Each
+  // query below then reopens against this fixture's index.db — order-independent.
+  process.env.SESSIONS_CLAUDE_DIR = claudeDir;
+  process.env.SESSIONS_PI_DIR = piDir;
+  process.env.SESSIONS_CODEX_DIR = codexDir;
+  process.env.SESSIONS_CACHE_DIR = cacheDir;
+  cache.closeDb();
+});
+
 afterAll(() => {
+  cache.closeDb(); // release the handle before deleting the fixture dir
   rmSync(fixtureRoot, { recursive: true, force: true });
 });
 
