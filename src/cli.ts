@@ -1,5 +1,6 @@
 import { C, disableColors } from './colors';
 import { type Tool, type CliArgs } from './types';
+import type { SearchOptions } from './cache';
 import { resolveRepo } from './repo';
 
 const VALID_TOOLS = new Set<string>(['claude', 'codex', 'pi']);
@@ -18,6 +19,7 @@ ${C.bold}Usage:${C.reset}
 ${C.bold}Options:${C.reset}
   --here           Scope to current git repo (default: all projects)
   --tool <name>    Filter: claude, codex, pi
+  --errored        Only sessions that hit an error
   --mcp            Start as an MCP server (stdio transport)
   --clear-cache    Remove the search index (rebuilds on next use)
   -h, --help       Show this help
@@ -50,7 +52,7 @@ function die(msg: string): never {
 }
 
 export function parseArgs(argv: string[]): CliArgs {
-  const args: CliArgs = { toolFilter: '', searchQuery: '', scopeHere: false };
+  const args: CliArgs = { toolFilter: '', searchQuery: '', scopeHere: false, errored: false };
 
   let i = 0;
   while (i < argv.length) {
@@ -68,6 +70,9 @@ export function parseArgs(argv: string[]): CliArgs {
         break;
       case '--here':
         args.scopeHere = true;
+        break;
+      case '--errored':
+        args.errored = true;
         break;
       case '--no-color':
         disableColors();
@@ -90,4 +95,12 @@ export function getRepoRoot(scopeHere: boolean): string {
   // string match. Fall back to the cwd when not in a git repo.
   const repo = resolveRepo(process.cwd());
   return repo ? repo.container : process.cwd();
+}
+
+/** The single mapping from CLI args to a searchSessions() call (keeps the CLI a thin shell). */
+export function toSearchOptions(args: CliArgs, repoRoot: string): { query: string; opts: SearchOptions } {
+  return {
+    query: args.searchQuery,
+    opts: { tool: args.toolFilter, project: repoRoot, errored: args.errored, limit: 1000 },
+  };
 }

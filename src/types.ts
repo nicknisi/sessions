@@ -64,6 +64,7 @@ export interface CliArgs {
   toolFilter: Tool | '';
   searchQuery: string;
   scopeHere: boolean;
+  errored: boolean;
 }
 
 export interface ContextSession {

@@ -32,7 +32,9 @@ export function formatLine(r: SessionResult, cols: number): string {
   const maxPrompt = Math.max(20, cols - 50);
   const truncated = prompt.length > maxPrompt ? prompt.slice(0, maxPrompt - 1) + '…' : prompt;
 
-  const display = `${dot} ${C.bold}${dirName}${C.reset}  ${toolBadge}  ${C.dim}${rel}${C.reset}  ${msgs ? msgs + '  ' : ''}${truncated}`;
+  const warn = r.errored ? `${C.red}⚠${C.reset} ` : '';
+
+  const display = `${dot} ${C.bold}${dirName}${C.reset}  ${toolBadge}  ${C.dim}${rel}${C.reset}  ${msgs ? msgs + '  ' : ''}${warn}${truncated}`;
 
   // tab-separated: cwd, tool, sessionId, exists, prompt, display
   return `${r.cwd}\t${r.tool}\t${r.sessionId}\t${r.exists ? 'exists' : 'deleted'}\t${prompt}\t${display}`;
