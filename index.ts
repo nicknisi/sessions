@@ -1,10 +1,12 @@
 import { basename } from 'node:path';
-import { parseArgs, getRepoRoot } from './src/cli';
+import { parseArgs, getRepoRoot, toSearchOptions } from './src/cli';
 import { C } from './src/colors';
 import { scanSessions } from './src/scanner';
 import { formatLine } from './src/display';
 import { selectSession } from './src/select';
 import { copyToClipboard } from './src/clipboard';
+import { buildResumeCommand } from './src/search-format';
+import type { Tool } from './src/types';
 
 if (Bun.argv.includes('--clear-cache')) {
   const { clearCache } = await import('./src/cache');
@@ -68,7 +70,14 @@ if (args.searchQuery) {
   process.stderr.write(`${C.dim}  searching sessions...${C.reset}`);
 }
 
-const results = await scanSessions(repoRoot, args.toolFilter, args.searchQuery);
+const { searchSessions } = await import('./src/cache');
+const { query, opts } = toSearchOptions(args, repoRoot);
+let results;
+try {
+  results = await searchSessions(query, opts);
+} catch {
+  results = await scanSessions(repoRoot, args.toolFilter, args.searchQuery); // no-index fallback
+}
 
 if (results.length === 0) {
   if (args.searchQuery) process.stderr.write('\r\x1b[K');
@@ -99,12 +108,7 @@ if (prompt) {
 }
 process.stderr.write('\n');
 
-let resumeCmd = '';
-if (tool === 'claude') {
-  resumeCmd = `cd ${fullPath} && claude --resume ${sessionId}`;
-} else if (tool === 'pi' || tool === 'codex') {
-  resumeCmd = `cd ${fullPath}`;
-}
+const resumeCmd = buildResumeCommand(tool as Tool, fullPath, sessionId);
 
 if (exists === 'deleted') {
   process.stderr.write(`  ${C.red}○${C.reset} ${C.bold}${fullPath}${C.reset} no longer exists\n`);

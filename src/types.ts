@@ -11,6 +11,9 @@ export interface SessionResult {
   messageCount: number;
   filePath: string;
   exists: boolean;
+  files: string[];
+  commands: string[];
+  errored: boolean;
 }
 
 export interface DigestSessionDetail {
@@ -61,6 +64,7 @@ export interface CliArgs {
   toolFilter: Tool | '';
   searchQuery: string;
   scopeHere: boolean;
+  errored: boolean;
 }
 
 export interface ContextSession {

@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { extractFiles, MAX_FILES } from './extract-files';
+import { extractFiles, extractFilesRead, MAX_FILES } from './extract-files';
 
 function jsonl(...objs: Record<string, unknown>[]): string[] {
   return objs.map((o) => JSON.stringify(o));
@@ -98,4 +98,26 @@ describe('extractFiles — pi', () => {
     );
     expect(extractFiles(lines, 'pi')).toEqual([]);
   });
+});
+
+test('read: claude Read/Grep targets, separate from edited files', () => {
+  const j = (o: unknown): string => JSON.stringify(o);
+  const lines = [
+    j({
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool_use', name: 'Read', input: { file_path: '/repo/src/cache.ts' } }],
+      },
+    }),
+    j({
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool_use', name: 'Edit', input: { file_path: '/repo/src/parser.ts' } }],
+      },
+    }),
+  ];
+  expect(extractFilesRead(lines, 'claude')).toEqual(['/repo/src/cache.ts']);
+  expect(extractFiles(lines, 'claude')).toEqual(['/repo/src/parser.ts']);
 });

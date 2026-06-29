@@ -26,7 +26,10 @@ import {
   closingMessages,
   sessionBranch,
 } from './parser';
-import { extractFiles } from './extract-files';
+import { extractFiles, extractFilesRead } from './extract-files';
+import { extractCommands } from './extract-commands';
+import { extractErrors } from './extract-errors';
+import { extractThinking } from './extract-thinking';
 import { type RepoInfo, globPrefix, branchLabel } from './repo';
 import { isTrivia, blendedScore, type ScorableSession } from './significance';
 
@@ -41,23 +44,35 @@ export function getCacheDir(): string {
   return process.env.SESSIONS_CACHE_DIR || join(home, '.cache', 'sessions');
 }
 
-const CACHE_DIR = getCacheDir();
-const DB_PATH = join(CACHE_DIR, 'index.db');
+// The index.db path under the cache dir. Exported because the test harness (and
+// Task 10) reference it directly. Resolved lazily — not frozen at import — so a
+// test that mutates SESSIONS_* on the shared module instance is honored.
+export function getDbPath(): string {
+  return join(getCacheDir(), 'index.db');
+}
 
-const CLAUDE_DIR = process.env.SESSIONS_CLAUDE_DIR || join(home, '.claude/projects');
-const PI_DIR = process.env.SESSIONS_PI_DIR || join(home, '.pi/agent/sessions');
-const CODEX_DIR = process.env.SESSIONS_CODEX_DIR || join(home, '.codex/sessions');
+// Source-session roots, resolved lazily for the same hermetic-test reason. Real
+// runs have a stable env, so production behavior is unchanged by the laziness.
+function getClaudeDir(): string {
+  return process.env.SESSIONS_CLAUDE_DIR || join(home, '.claude/projects');
+}
+function getPiDir(): string {
+  return process.env.SESSIONS_PI_DIR || join(home, '.pi/agent/sessions');
+}
+function getCodexDir(): string {
+  return process.env.SESSIONS_CODEX_DIR || join(home, '.codex/sessions');
+}
 
-// Bump 4 -> 5: the FTS index gains an `assistant_content` column and a porter
-// stemming tokenizer, and search now ranks by bm25 relevance instead of recency.
-// The new column + tokenizer change the virtual table shape, so the getDb path
-// drops + rebuilds tables on a user_version mismatch — a one-time destructive
-// reindex that re-extracts assistant text from every session.
-const SCHEMA_VERSION = 5;
+// Bump 5 -> 6: the FTS index gains headline/commands/paths/context_text/thinking
+// columns and the sessions table gains files_read/commands/errored/error_count, so
+// search can match (and weight) commands, file paths, errors, and reasoning. The
+// virtual-table shape changes, so getDb drops + rebuilds on a user_version mismatch.
+const SCHEMA_VERSION = 6;
 let _db: Database | null = null;
 
 export function clearCache(): void {
-  const files = [DB_PATH, DB_PATH + '-wal', DB_PATH + '-shm'];
+  const dbPath = getDbPath();
+  const files = [dbPath, dbPath + '-wal', dbPath + '-shm'];
   let cleared = false;
   for (const f of files) {
     try {
@@ -68,10 +83,24 @@ export function clearCache(): void {
   process.stderr.write(cleared ? 'Cache cleared. It will rebuild on next use.\n' : 'No cache to clear.\n');
 }
 
-function getDb(): Database {
-  if (_db) return _db;
-  mkdirSync(CACHE_DIR, { recursive: true });
-  const db = new Database(DB_PATH);
+// Close and drop the cached connection so the next getDb() reopens against the
+// current getDbPath(). Lets hermetic tests reset shared-module state between files
+// (and release the handle before deleting a temp dir). Idempotent and never throws.
+export function closeDb(): void {
+  try {
+    _db?.close();
+  } catch {}
+  _db = null;
+}
+
+// Open (or create) the index DB and bring it to the v6 schema, resolving the path
+// lazily so hermetic tests honoring SESSIONS_CACHE_DIR get their own file. busy_timeout
+// makes a statement wait for a contended write lock (e.g. a concurrent refreshIndex)
+// instead of erroring with SQLITE_BUSY immediately. This does NOT assign the `_db`
+// singleton — getDb owns that, so it can retry openDb after discarding a corrupt file.
+function openDb(): Database {
+  const db = new Database(getDbPath());
+  db.run('PRAGMA busy_timeout=5000');
   db.run('PRAGMA journal_mode=WAL');
   db.run('PRAGMA synchronous=NORMAL');
 
@@ -96,6 +125,10 @@ function getDb(): Database {
       custom_title TEXT NOT NULL DEFAULT '',
       message_count INTEGER NOT NULL DEFAULT 0,
       files_touched TEXT NOT NULL DEFAULT '[]',
+      files_read TEXT NOT NULL DEFAULT '[]',
+      commands TEXT NOT NULL DEFAULT '[]',
+      errored INTEGER NOT NULL DEFAULT 0,
+      error_count INTEGER NOT NULL DEFAULT 0,
       closing_user TEXT NOT NULL DEFAULT '',
       closing_assistant TEXT NOT NULL DEFAULT '',
       branch TEXT NOT NULL DEFAULT ''
@@ -108,13 +141,52 @@ function getDb(): Database {
   db.run(`
     CREATE VIRTUAL TABLE IF NOT EXISTS session_fts USING fts5(
       file_path UNINDEXED,
+      headline,
       user_content,
       assistant_content,
+      commands,
+      paths,
+      context_text,
+      thinking,
       tokenize = 'porter unicode61'
     )
   `);
-  _db = db;
   return db;
+}
+
+// Best-effort removal of the index file and its WAL/SHM sidecars (lazily-resolved)
+// so a corrupt index can be rebuilt from scratch. Each unlink is independent — a
+// missing sidecar must not stop us deleting the others.
+function removeDbFiles(): void {
+  const dbPath = getDbPath();
+  for (const f of [dbPath, dbPath + '-wal', dbPath + '-shm']) {
+    try {
+      require('node:fs').unlinkSync(f);
+    } catch {}
+  }
+}
+
+// A corrupt or non-database index file surfaces as a SQLiteError on the first
+// PRAGMA/CREATE in openDb (e.g. "file is not a database" / "database disk image is
+// malformed"). Match SQLite's wording case-insensitively so getDb can self-heal.
+function isCorruption(e: unknown): boolean {
+  const msg = e instanceof Error ? e.message.toLowerCase() : String(e).toLowerCase();
+  return msg.includes('malformed') || msg.includes('corrupt') || msg.includes('not a database');
+}
+
+function getDb(): Database {
+  if (_db) return _db;
+  mkdirSync(getCacheDir(), { recursive: true });
+  try {
+    _db = openDb();
+  } catch (e) {
+    if (!isCorruption(e)) throw e;
+    // The index is a disposable, rebuildable cache of the session files — so a
+    // corrupt one is safe to delete and recreate. refreshIndex repopulates on use.
+    removeDbFiles();
+    _db = openDb();
+  }
+  return _db;
 }
 
 interface FileEntry {
@@ -124,16 +196,19 @@ interface FileEntry {
 
 async function discoverFiles(): Promise<FileEntry[]> {
   const entries: FileEntry[] = [];
+  const claudeDir = getClaudeDir();
+  const piDir = getPiDir();
+  const codexDir = getCodexDir();
 
-  if (existsSync(CLAUDE_DIR)) {
+  if (existsSync(claudeDir)) {
     let dirs: string[];
     try {
-      dirs = await readdir(CLAUDE_DIR);
+      dirs = await readdir(claudeDir);
     } catch {
       dirs = [];
     }
     for (const dirname of dirs) {
-      const dirpath = join(CLAUDE_DIR, dirname);
+      const dirpath = join(claudeDir, dirname);
       const glob = new Bun.Glob('*.jsonl');
       for await (const p of glob.scan(dirpath)) {
         entries.push({ path: join(dirpath, p), tool: 'claude' });
@@ -141,15 +216,15 @@ async function discoverFiles(): Promise<FileEntry[]> {
     }
   }
 
-  if (existsSync(PI_DIR)) {
+  if (existsSync(piDir)) {
     let dirs: string[];
     try {
-      dirs = await readdir(PI_DIR);
+      dirs = await readdir(piDir);
     } catch {
       dirs = [];
     }
     for (const dirname of dirs) {
-      const dirpath = join(PI_DIR, dirname);
+      const dirpath = join(piDir, dirname);
       const glob = new Bun.Glob('*.jsonl');
       for await (const p of glob.scan(dirpath)) {
         entries.push({ path: join(dirpath, p), tool: 'pi' });
@@ -157,10 +232,10 @@ async function discoverFiles(): Promise<FileEntry[]> {
     }
   }
 
-  if (existsSync(CODEX_DIR)) {
+  if (existsSync(codexDir)) {
     const glob = new Bun.Glob('**/*.jsonl');
-    for await (const p of glob.scan(CODEX_DIR)) {
-      entries.push({ path: join(CODEX_DIR, p), tool: 'codex' });
+    for await (const p of glob.scan(codexDir)) {
+      entries.push({ path: join(codexDir, p), tool: 'codex' });
     }
   }
 
@@ -238,7 +313,18 @@ function indexFile(db: Database, filePath: string, tool: Tool): boolean {
   const subagentContent = tool === 'claude' ? collectSubagentContent(filePath) : '';
   const fullContent = subagentContent ? userContent + '\n' + subagentContent : userContent;
 
-  const filesTouched = JSON.stringify(extractFiles(lines, tool));
+  const filesTouchedArr = extractFiles(lines, tool);
+  const filesTouched = JSON.stringify(filesTouchedArr);
+  const filesReadArr = extractFilesRead(lines, tool);
+  const filesRead = JSON.stringify(filesReadArr);
+  const commandsArr = extractCommands(lines, tool);
+  const commands = JSON.stringify(commandsArr);
+  const errors = extractErrors(lines, tool);
+  const thinking = extractThinking(lines, tool);
+  const headline = `${prompt}\n${title}`;
+  const pathsText = [...filesTouchedArr, ...filesReadArr].join('\n');
+  const commandsText = commandsArr.join('\n');
+  const contextText = errors.messages.join('\n');
   const closing = closingMessages(lines, tool);
   const branch = sessionBranch(lines, tool);
 
@@ -246,8 +332,8 @@ function indexFile(db: Database, filePath: string, tool: Tool): boolean {
     db.run('DELETE FROM session_fts WHERE file_path = ?', [filePath]);
   }
   db.run(
-    `INSERT OR REPLACE INTO sessions (file_path, mtime, size, cwd, tool, session_id, date, created_at, first_prompt, custom_title, message_count, files_touched, closing_user, closing_assistant, branch)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT OR REPLACE INTO sessions (file_path, mtime, size, cwd, tool, session_id, date, created_at, first_prompt, custom_title, message_count, files_touched, files_read, commands, errored, error_count, closing_user, closing_assistant, branch)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       filePath,
       stat.mtimeMs,
@@ -261,16 +347,19 @@ function indexFile(db: Database, filePath: string, tool: Tool): boolean {
       title,
       msgCount,
       filesTouched,
+      filesRead,
+      commands,
+      errors.errored ? 1 : 0,
+      errors.count,
       closing.user,
       closing.assistant,
       branch,
     ],
   );
-  db.run('INSERT INTO session_fts (file_path, user_content, assistant_content) VALUES (?, ?, ?)', [
-    filePath,
-    fullContent,
-    assistantContent,
-  ]);
+  db.run(
+    'INSERT INTO session_fts (file_path, headline, user_content, assistant_content, commands, paths, context_text, thinking) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    [filePath, headline, fullContent, assistantContent, commandsText, pathsText, contextText, thinking],
+  );
   return true;
 }
 
@@ -305,14 +394,20 @@ export async function refreshIndex(): Promise<{ total: number; updated: number }
   return { total: files.length, updated };
 }
 
-export async function searchSessions(
-  query: string,
-  toolFilter: Tool | '',
-  project: string,
-  limit: number,
-): Promise<SessionResult[]> {
+export interface SearchOptions {
+  tool?: Tool | '';
+  project?: string;
+  errored?: boolean;
+  limit?: number;
+}
+
+export async function searchSessions(query: string, opts: SearchOptions = {}): Promise<SessionResult[]> {
   const db = getDb();
   await refreshIndex();
+
+  const toolFilter = opts.tool ?? '';
+  const project = opts.project ?? '';
+  const limit = opts.limit ?? 50;
 
   interface SessionRow {
     file_path: string;
@@ -324,6 +419,10 @@ export async function searchSessions(
     first_prompt: string;
     custom_title: string;
     message_count: number;
+    files_touched: string;
+    files_read: string;
+    commands: string;
+    errored: number;
     snippet: string | null;
   }
 
@@ -342,6 +441,11 @@ export async function searchSessions(
     .map((w) => `"${w}"`);
   const ftsQuery = ftsTerms.join(' OR ');
 
+  // bm25 weights map to session_fts columns in declaration order:
+  // file_path, headline, user_content, assistant_content, commands, paths, context_text, thinking.
+  // Favor headline/commands/paths; de-emphasize verbose thinking so it adds recall without dominating.
+  const RANK = 'bm25(session_fts, 0.0, 10.0, 3.0, 2.0, 6.0, 5.0, 2.0, 0.5)';
+
   if (ftsQuery) {
     const conditions: string[] = [];
     const params: (string | number)[] = [ftsQuery];
@@ -356,19 +460,20 @@ export async function searchSessions(
       conditions.push('(s.cwd = ? OR s.cwd GLOB ?)');
       params.push(project, globPrefix(project));
     }
+    if (opts.errored) conditions.push('s.errored = 1');
     params.push(limit);
 
     const extra = conditions.length > 0 ? 'AND ' + conditions.join(' AND ') : '';
     rows = db
       .query<SessionRow, any[]>(`
       SELECT s.file_path, s.cwd, s.tool, s.session_id, s.date, s.created_at, s.first_prompt,
-             s.custom_title, s.message_count,
+             s.custom_title, s.message_count, s.files_touched, s.files_read, s.commands, s.errored,
              snippet(session_fts, -1, '', '', '…', 32) as snippet
       FROM session_fts f
       JOIN sessions s ON s.file_path = f.file_path
       WHERE f.session_fts MATCH ?
       ${extra}
-      ORDER BY bm25(session_fts)
+      ORDER BY ${RANK}
       LIMIT ?
     `)
       .all(...params);
@@ -384,13 +489,14 @@ export async function searchSessions(
       conditions.push('(cwd = ? OR cwd GLOB ?)');
       params.push(project, globPrefix(project));
     }
+    if (opts.errored) conditions.push('errored = 1');
     params.push(limit);
 
     const where = conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : '';
     rows = db
       .query<SessionRow, any[]>(`
       SELECT file_path, cwd, tool, session_id, date, created_at, first_prompt,
-             custom_title, message_count, NULL as snippet
+             custom_title, message_count, files_touched, files_read, commands, errored, NULL as snippet
       FROM sessions ${where}
       ORDER BY date DESC LIMIT ?
     `)
@@ -408,6 +514,11 @@ export async function searchSessions(
     messageCount: r.message_count,
     filePath: r.file_path,
     exists: existsSync(r.cwd),
+    // `files` is the union of edited + read files so it answers "what files did this
+    // session involve" (a Read-only target is still surfaced).
+    files: [...new Set([...parseFiles(r.files_touched), ...parseFiles(r.files_read)])],
+    commands: parseFiles(r.commands),
+    errored: r.errored === 1,
   }));
 }
 

@@ -1,12 +1,12 @@
-import { describe, test, expect, afterAll, spyOn } from 'bun:test';
+import { describe, test, expect, beforeEach, afterAll, spyOn } from 'bun:test';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { RepoInfo } from './repo';
 import type { ContextPrimer } from './types';
 
-// Point the index at hermetic temp dirs BEFORE importing the cache module, since
-// it captures these paths in module constants at import time.
+// Point the index at hermetic temp dirs. cache.ts now resolves SESSIONS_* lazily,
+// and a beforeEach re-asserts these on the shared module instance before each test.
 const fixtureRoot = realpathSync(mkdtempSync(join(tmpdir(), 'sessions-ctx-')));
 const claudeDir = join(fixtureRoot, 'claude');
 const piDir = join(fixtureRoot, 'pi');
@@ -21,7 +21,19 @@ process.env.SESSIONS_CACHE_DIR = cacheDir;
 
 const cache = await import('./cache');
 
+beforeEach(() => {
+  // The cache module instance is shared across test files in one `bun test` run, so
+  // re-assert this fixture's env and drop any connection another file opened. Each
+  // query below then reopens against this fixture's index.db — order-independent.
+  process.env.SESSIONS_CLAUDE_DIR = claudeDir;
+  process.env.SESSIONS_PI_DIR = piDir;
+  process.env.SESSIONS_CODEX_DIR = codexDir;
+  process.env.SESSIONS_CACHE_DIR = cacheDir;
+  cache.closeDb();
+});
+
 afterAll(() => {
+  cache.closeDb(); // release the handle before deleting the fixture dir
   rmSync(fixtureRoot, { recursive: true, force: true });
 });
 
@@ -233,7 +245,7 @@ describe('searchSessions', () => {
     // this would have come first purely by recency.
     const weak = writeClaudeSession({ cwd, firstPrompt: 'quokkavar zzfiller', createdAt: '2026-06-20T10:00:00.000Z' });
 
-    const results = await cache.searchSessions('quokkavar plonkish', '', cwd, 20);
+    const results = await cache.searchSessions('quokkavar plonkish', { project: cwd, limit: 20 });
     const ids = results.map((r) => r.sessionId);
     expect(ids).toContain(strong);
     expect(ids).toContain(weak);
@@ -244,14 +256,14 @@ describe('searchSessions', () => {
     const cwd = join(fixtureRoot, 'search-or');
     const id = writeClaudeSession({ cwd, firstPrompt: 'fix the rate limiter on the api' });
     // Neither "yesterday" nor "afternoon" appears — the old strict-AND returned nothing.
-    const results = await cache.searchSessions('rate limiter yesterday afternoon', '', cwd, 20);
+    const results = await cache.searchSessions('rate limiter yesterday afternoon', { project: cwd, limit: 20 });
     expect(results.map((r) => r.sessionId)).toContain(id);
   });
 
   test('porter stemming connects inflected forms ("refactor" matches "refactoring")', async () => {
     const cwd = join(fixtureRoot, 'search-stem');
     const id = writeClaudeSession({ cwd, firstPrompt: 'refactoring the authentication layer' });
-    const results = await cache.searchSessions('refactor', '', cwd, 20);
+    const results = await cache.searchSessions('refactor', { project: cwd, limit: 20 });
     expect(results.map((r) => r.sessionId)).toContain(id);
   });
 
@@ -262,7 +274,7 @@ describe('searchSessions', () => {
       firstPrompt: 'why does the build keep failing',
       closingAssistant: 'the root cause was a quibblefrotz race in the scheduler',
     });
-    const results = await cache.searchSessions('quibblefrotz', '', cwd, 20);
+    const results = await cache.searchSessions('quibblefrotz', { project: cwd, limit: 20 });
     expect(results.map((r) => r.sessionId)).toContain(id);
     // and the snippet is drawn from the matching (assistant) column
     expect(results.find((r) => r.sessionId === id)!.displayText).toContain('quibblefrotz');
@@ -271,7 +283,7 @@ describe('searchSessions', () => {
   test('a term that appears nowhere returns no matches', async () => {
     const cwd = join(fixtureRoot, 'search-empty');
     writeClaudeSession({ cwd, firstPrompt: 'ordinary session about ordinary things' });
-    const results = await cache.searchSessions('zzztotallyabsentzzz', '', cwd, 20);
+    const results = await cache.searchSessions('zzztotallyabsentzzz', { project: cwd, limit: 20 });
     expect(results).toHaveLength(0);
   });
 });

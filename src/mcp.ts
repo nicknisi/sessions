@@ -2,53 +2,56 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { searchSessions, getActivityDigest, getSessionMetrics, getContextPrimer } from './cache';
+import { formatResult } from './search-format';
 import { getSessionMessages } from './parser';
 import { resolveRepo } from './repo';
-import { type SessionResult } from './types';
+import { type Tool } from './types';
 
 const server = new McpServer({
   name: 'sessions',
   version: '1.2.0',
 });
 
+// Exported, testable seam: the search_sessions tool delegates to this so its behavior
+// (errored filter, per-result metadata, resumeCommand) can be unit-tested without MCP.
+export async function runSearchSessions(args: {
+  query?: string;
+  tool?: Tool;
+  project?: string;
+  errored?: boolean;
+  limit?: number;
+}): Promise<{ content: { type: 'text'; text: string }[] }> {
+  const results = await searchSessions(args.query ?? '', {
+    tool: args.tool ?? '',
+    project: args.project ?? '',
+    errored: args.errored,
+    limit: args.limit ?? 20,
+  });
+
+  if (results.length === 0) {
+    return { content: [{ type: 'text' as const, text: 'No sessions found.' }] };
+  }
+
+  const formatted = results.map(formatResult);
+  return { content: [{ type: 'text' as const, text: JSON.stringify(formatted, null, 2) }] };
+}
+
 server.tool(
   'search_sessions',
-  'Search across AI coding sessions from Claude Code, Codex, and Pi. Returns matching sessions with snippets.',
+  'Search across AI coding sessions from Claude Code, Codex, and Pi. Returns matching sessions with snippets, the files/commands involved, an errored flag, and a ready-to-run resume command.',
   {
     query: z
       .string()
       .optional()
       .describe(
-        'Text to search across session messages (both yours and the assistant replies). Natural-language queries work — results are ranked by relevance and any term may match. Omit to list recent sessions.',
+        'Text to search across session messages, commands, file paths, errors, and reasoning. Natural-language queries work — results are ranked by relevance and any term may match. Omit to list recent sessions.',
       ),
     tool: z.enum(['claude', 'codex', 'pi']).optional().describe('Filter to a specific tool'),
     project: z.string().optional().describe('Filter to sessions from this project directory path'),
+    errored: z.boolean().optional().describe('Only return sessions that hit an error'),
     limit: z.number().optional().default(20).describe('Max results to return (default 20)'),
   },
-  async ({ query, tool, project, limit }) => {
-    const results = await searchSessions(query ?? '', tool ?? '', project ?? '', limit);
-
-    if (results.length === 0) {
-      return { content: [{ type: 'text' as const, text: 'No sessions found.' }] };
-    }
-
-    const formatted = results.map((r: SessionResult) => ({
-      sessionId: r.sessionId,
-      tool: r.tool,
-      date: r.date,
-      createdAt: r.createdAt,
-      project: r.cwd,
-      title: r.customTitle || null,
-      snippet: r.displayText,
-      messageCount: r.messageCount,
-      exists: r.exists,
-      filePath: r.filePath,
-    }));
-
-    return {
-      content: [{ type: 'text' as const, text: JSON.stringify(formatted, null, 2) }],
-    };
-  },
+  async ({ query, tool, project, errored, limit }) => runSearchSessions({ query, tool, project, errored, limit }),
 );
 
 server.tool(
