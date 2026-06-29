@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.11.0](https://github.com/nicknisi/sessions/compare/v1.10.0...v1.11.0) (2026-06-29)
+
+
+### Features
+
+* **search:** richer FTS index, weighted ranking, and CLI/MCP parity ([#24](https://github.com/nicknisi/sessions/issues/24)) ([5ef686e](https://github.com/nicknisi/sessions/commit/5ef686e90c9c3cbfcd94bd46fbf9d4fae20c691a))
+
 ## [1.10.0](https://github.com/nicknisi/sessions/compare/v1.9.0...v1.10.0) (2026-06-25)
 
 
