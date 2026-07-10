@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.12.0](https://github.com/nicknisi/sessions/compare/v1.11.0...v1.12.0) (2026-07-10)
+
+
+### Features
+
+* **recall:** message-granularity search, session digest, and files filter ([#27](https://github.com/nicknisi/sessions/issues/27)) ([f431024](https://github.com/nicknisi/sessions/commit/f431024d4c85bbc0e7ec03b218e06e74e4b0a8cf))
+
 ## [1.11.0](https://github.com/nicknisi/sessions/compare/v1.10.0...v1.11.0) (2026-06-29)
 
 
