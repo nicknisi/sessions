@@ -6,6 +6,7 @@ import { formatResult } from './search-format';
 import { getSessionMessages } from './parser';
 import { buildSessionDigest } from './digest';
 import { resolveRepo } from './repo';
+import { readSessionLines } from './opencode';
 import { type Tool } from './types';
 
 const server = new McpServer(
@@ -49,7 +50,7 @@ export async function runSearchSessions(args: {
 
 server.tool(
   'search_sessions',
-  'Search across all past AI coding sessions from Claude Code, Codex, and Pi. Use proactively when the user references prior work ("didn\'t we already", "last time", "that thing we tried"), when a why-question isn\'t answered by code or git history, or before re-solving a problem that may have been solved in an earlier session. Returns matching sessions with snippets, the files/commands involved, an errored flag, and a ready-to-run resume command. Each result includes messageHits — the specific matching messages (index, role, snippet); pass a hit\'s index as the offset to get_session_messages to jump straight to the matched exchange. To answer "which sessions touched this file?", pass files (with no query) — results come back newest-first.',
+  'Search across all past AI coding sessions from Claude Code, Codex, Pi, and OpenCode. Use proactively when the user references prior work ("didn\'t we already", "last time", "that thing we tried"), when a why-question isn\'t answered by code or git history, or before re-solving a problem that may have been solved in an earlier session. Returns matching sessions with snippets, the files/commands involved, an errored flag, and a ready-to-run resume command. Each result includes messageHits — the specific matching messages (index, role, snippet); pass a hit\'s index as the offset to get_session_messages to jump straight to the matched exchange. To answer "which sessions touched this file?", pass files (with no query) — results come back newest-first.',
   {
     query: z
       .string()
@@ -57,7 +58,7 @@ server.tool(
       .describe(
         'Text to search across session messages, commands, file paths, errors, and reasoning. Natural-language queries work — results are ranked by relevance and any term may match. Omit to list recent sessions.',
       ),
-    tool: z.enum(['claude', 'codex', 'pi']).optional().describe('Filter to a specific tool'),
+    tool: z.enum(['claude', 'codex', 'pi', 'opencode']).optional().describe('Filter to a specific tool'),
     project: z.string().optional().describe('Filter to sessions from this project directory path'),
     errored: z.boolean().optional().describe('Only return sessions that hit an error'),
     files: z
@@ -84,14 +85,10 @@ export async function runGetSessionMessages(args: {
   const offset = args.offset ?? 0;
   const limit = args.limit ?? 20;
 
-  let raw: string;
-  try {
-    raw = await Bun.file(args.filePath).text();
-  } catch {
-    return { content: [{ type: 'text' as const, text: `Could not read file: ${args.filePath}` }], isError: true };
+  const lines = readSessionLines(args.filePath);
+  if (lines.length === 0) {
+    return { content: [{ type: 'text' as const, text: `Could not read session: ${args.filePath}` }], isError: true };
   }
-
-  const lines = raw.trimEnd().split('\n');
   const allMessages = getSessionMessages(lines);
   const page = allMessages.slice(offset, offset + limit);
 
@@ -111,7 +108,7 @@ server.tool(
   'get_session_messages',
   'Retrieve messages from a specific session. Returns user and assistant messages in order, paginated. Pass a messageHits[].index from search_sessions as the offset to start at the matched message.',
   {
-    filePath: z.string().describe('Path to the session JSONL file (from search_sessions results)'),
+    filePath: z.string().describe('The session filePath from search_sessions results'),
     offset: z
       .number()
       .optional()
@@ -127,14 +124,12 @@ server.tool(
 export async function runGetSessionDigest(args: {
   filePath: string;
 }): Promise<{ content: { type: 'text'; text: string }[]; isError?: boolean }> {
-  let raw: string;
-  try {
-    raw = await Bun.file(args.filePath).text();
-  } catch {
-    return { content: [{ type: 'text' as const, text: `Could not read file: ${args.filePath}` }], isError: true };
+  const lines = readSessionLines(args.filePath);
+  if (lines.length === 0) {
+    return { content: [{ type: 'text' as const, text: `Could not read session: ${args.filePath}` }], isError: true };
   }
 
-  const digest = buildSessionDigest(raw.trimEnd().split('\n'));
+  const digest = buildSessionDigest(lines);
   return { content: [{ type: 'text' as const, text: JSON.stringify(digest, null, 2) }] };
 }
 
@@ -142,7 +137,7 @@ server.tool(
   'get_session_digest',
   'The arc of one session in a single bounded call (~2k tokens): every genuine user turn paired with the final assistant reply of its exchange. Prefer this over paging get_session_messages when you need the whole story — opening intent, key decisions, closing state. Long sessions elide middle exchanges (elided > 0) but always keep the first and last. To expand any exchange, pass its exchanges[].index as the offset to get_session_messages. Empty exchanges means no genuine human turns — fall back to get_session_messages.',
   {
-    filePath: z.string().describe('Path to the session JSONL file (from search_sessions results)'),
+    filePath: z.string().describe('The session filePath from search_sessions results'),
   },
   async ({ filePath }) => runGetSessionDigest({ filePath }),
 );
@@ -153,7 +148,7 @@ server.tool(
   {
     startDate: z.string().describe('Start date inclusive (YYYY-MM-DD). Example: "2026-05-07"'),
     endDate: z.string().describe('End date inclusive (YYYY-MM-DD). Example: "2026-05-14"'),
-    tool: z.enum(['claude', 'codex', 'pi']).optional().describe('Filter to a specific tool'),
+    tool: z.enum(['claude', 'codex', 'pi', 'opencode']).optional().describe('Filter to a specific tool'),
     project: z.string().optional().describe('Filter to sessions from this project directory path'),
     detail: z
       .enum(['compact', 'highlights', 'full'])
@@ -182,7 +177,7 @@ server.tool(
   {
     startDate: z.string().describe('Start date inclusive (YYYY-MM-DD). Example: "2026-05-07"'),
     endDate: z.string().describe('End date inclusive (YYYY-MM-DD). Example: "2026-05-14"'),
-    tool: z.enum(['claude', 'codex', 'pi']).optional().describe('Filter to a specific tool'),
+    tool: z.enum(['claude', 'codex', 'pi', 'opencode']).optional().describe('Filter to a specific tool'),
     project: z.string().optional().describe('Filter to sessions from this project directory path'),
   },
   async ({ startDate, endDate, tool, project }) => {
@@ -205,7 +200,7 @@ server.tool(
     cwd: z.string().optional().describe('Repo path to scope to. Defaults to the server process cwd.'),
     limit: z.number().optional().describe('Recent-tier size (default 10).'),
     days: z.number().optional().describe('Only include sessions from the last N days.'),
-    tool: z.enum(['claude', 'codex', 'pi']).optional().describe('Filter to one tool.'),
+    tool: z.enum(['claude', 'codex', 'pi', 'opencode']).optional().describe('Filter to one tool.'),
     worktree: z
       .boolean()
       .optional()

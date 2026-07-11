@@ -1,5 +1,5 @@
 import type { Tool } from './types';
-import { tryParse } from './extract-util';
+import { tryParse, opencodeAssistantBlocks, toolInput } from './extract-util';
 
 /** Upper bound on stored distinct commands per session (bounds the indexed column). */
 export const MAX_COMMANDS = 100;
@@ -70,6 +70,15 @@ function extractPi(lines: string[], push: (c: string) => void): void {
   }
 }
 
+// OpenCode: the `bash` tool block's `state.input.command`.
+function extractOpencode(lines: string[], push: (c: string) => void): void {
+  for (const block of opencodeAssistantBlocks(lines)) {
+    if (block.type !== 'tool' || block.tool !== 'bash') continue;
+    const cmd = toolInput(block).command;
+    if (typeof cmd === 'string' && cmd.trim()) push(cmd.trim());
+  }
+}
+
 /** De-duplicated, order-preserving, capped list of shell commands run in a session. */
 export function extractCommands(lines: string[], tool: Tool): string[] {
   const seen = new Set<string>();
@@ -82,5 +91,6 @@ export function extractCommands(lines: string[], tool: Tool): string[] {
   if (tool === 'claude') extractClaude(lines, push);
   else if (tool === 'codex') extractCodex(lines, push);
   else if (tool === 'pi') extractPi(lines, push);
+  else if (tool === 'opencode') extractOpencode(lines, push);
   return out;
 }

@@ -12,7 +12,7 @@
     {
       "name": "sessions",
       "source": "./plugin",
-      "description": "Weekly summaries, standups, recall, and metrics for AI coding sessions across Claude Code, Codex, and Pi."
+      "description": "Weekly summaries, standups, recall, and metrics for AI coding sessions across Claude Code, Codex, Pi, and OpenCode."
     }
   ]
 }

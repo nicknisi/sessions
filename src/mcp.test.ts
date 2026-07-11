@@ -18,6 +18,7 @@ function setEnv(): void {
   process.env.SESSIONS_CLAUDE_DIR = join(tmp, 'claude');
   process.env.SESSIONS_PI_DIR = join(tmp, 'pi');
   process.env.SESSIONS_CODEX_DIR = join(tmp, 'codex');
+  process.env.SESSIONS_OPENCODE_DB = join(tmp, 'opencode.db'); // absent → no OpenCode sessions leak in
 }
 
 beforeAll(async () => {
@@ -188,7 +189,7 @@ test('get_session_digest returns exchange shape within budget', async () => {
 test('get_session_digest flags unreadable files with isError', async () => {
   const res = await mcp.runGetSessionDigest({ filePath: join(tmp, 'nope', 'missing.jsonl') });
   expect(res.isError).toBe(true);
-  expect(res.content[0]!.text).toContain('Could not read file');
+  expect(res.content[0]!.text).toContain('Could not read session');
 });
 
 test('get_session_digest returns empty exchanges for sessions with no genuine turns', async () => {

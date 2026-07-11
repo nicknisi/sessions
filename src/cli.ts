@@ -3,12 +3,12 @@ import { type Tool, type CliArgs } from './types';
 import type { SearchOptions } from './cache';
 import { resolveRepo } from './repo';
 
-const VALID_TOOLS = new Set<string>(['claude', 'codex', 'pi']);
+const VALID_TOOLS = new Set<string>(['claude', 'codex', 'pi', 'opencode']);
 
 function usage(): never {
   process.stderr.write(`${C.bold}sessions${C.reset} — find and resume AI coding sessions
 
-Browse sessions from Claude Code, Codex, and Pi with fuzzy search.
+Browse sessions from Claude Code, Codex, Pi, and OpenCode with fuzzy search.
 Scoped to the current git repo.
 
 ${C.bold}Usage:${C.reset}
@@ -18,7 +18,7 @@ ${C.bold}Usage:${C.reset}
 
 ${C.bold}Options:${C.reset}
   --here           Scope to current git repo (default: all projects)
-  --tool <name>    Filter: claude, codex, pi
+  --tool <name>    Filter: claude, codex, pi, opencode
   --errored        Only sessions that hit an error
   --file <path>    Only sessions that touched or read this path (substring
                    match; repeatable — every path must match). Newest first
@@ -73,7 +73,7 @@ export function parseArgs(argv: string[]): CliArgs {
       case '--tool':
         i++;
         if (!argv[i] || !VALID_TOOLS.has(argv[i]!)) {
-          die(`--tool requires one of: claude, codex, pi`);
+          die(`--tool requires one of: claude, codex, pi, opencode`);
         }
         args.toolFilter = argv[i] as Tool;
         break;

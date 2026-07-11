@@ -1,6 +1,7 @@
 import { basename } from 'node:path';
 import { extractMessages, stripInsightFences } from './parser';
 import { resolveSessionFile } from './cache';
+import { isOpencodePath, readSessionLines } from './opencode';
 
 export interface DigestExchange {
   /** Message index of the user turn — feeds get_session_messages(offset). */
@@ -176,20 +177,18 @@ export function parseDigestArgs(argv: string[]): DigestArgs {
 
 export async function runDigest(args: DigestArgs): Promise<void> {
   let filePath = args.target;
-  if (!(await Bun.file(filePath).exists())) {
+  // OpenCode paths are synthetic (dbPath/sessionId), so exists() is false — resolve
+  // by id only for real, missing files; a query-string target still resolves below.
+  if (!isOpencodePath(filePath) && !(await Bun.file(filePath).exists())) {
     const resolved = await resolveSessionFile(args.target);
     if (!resolved) die(`no session matching ${args.target} — try \`sessions <query>\` to find it`);
     filePath = resolved;
   }
 
-  let raw: string;
-  try {
-    raw = await Bun.file(filePath).text();
-  } catch (e) {
-    die(`could not read ${filePath}: ${e instanceof Error ? e.message : String(e)}`);
-  }
+  const lines = readSessionLines(filePath);
+  if (lines.length === 0) die(`could not read ${filePath}`);
 
-  const digest = buildSessionDigest(raw.trimEnd().split('\n'));
+  const digest = buildSessionDigest(lines);
   const md = renderDigestMarkdown(digest, basename(filePath));
   process.stdout.write(md.endsWith('\n') ? md : md + '\n');
 }

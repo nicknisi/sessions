@@ -47,3 +47,36 @@ test('pi: toolResult isError is an error', () => {
   expect(r.errored).toBe(true);
   expect(r.messages[0]).toContain('nope');
 });
+
+test('opencode: a tool block with state.status=error is an error', () => {
+  const lines = [
+    j({
+      type: 'message',
+      message: {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool',
+            tool: 'bash',
+            state: { status: 'error', input: { command: 'x' }, error: 'permission denied' },
+          },
+          { type: 'tool', tool: 'read', state: { status: 'completed', input: { filePath: '/ok.ts' } } },
+        ],
+      },
+    }),
+  ];
+  const r = extractErrors(lines, 'opencode');
+  expect(r.errored).toBe(true);
+  expect(r.count).toBe(1);
+  expect(r.messages[0]).toContain('permission denied');
+});
+
+test('opencode: falls back to a "<tool> error" label when state.error is absent', () => {
+  const lines = [
+    j({
+      type: 'message',
+      message: { role: 'assistant', content: [{ type: 'tool', tool: 'edit', state: { status: 'error' } }] },
+    }),
+  ];
+  expect(extractErrors(lines, 'opencode').messages[0]).toBe('edit error');
+});

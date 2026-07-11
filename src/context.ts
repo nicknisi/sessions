@@ -3,7 +3,7 @@ import { resolveRepo } from './repo';
 import { getContextPrimer } from './cache';
 import type { ContextPrimer, Tool } from './types';
 
-const VALID_TOOLS = new Set<string>(['claude', 'codex', 'pi']);
+const VALID_TOOLS = new Set<string>(['claude', 'codex', 'pi', 'opencode']);
 
 export interface ContextArgs {
   here: boolean; // scope to current repo (always true for this command)
@@ -38,7 +38,7 @@ Usage:
 Options:
   --limit N        Recent-tier size (default 10)
   --days N         Only include sessions from the last N days
-  --tool <name>    Filter: claude, codex, pi
+  --tool <name>    Filter: claude, codex, pi, opencode
   --full           Widen per-session detail
   --worktree       Restrict to the current worktree (default: all worktrees)
   --out <path>     Write the primer to a file instead of stdout
@@ -82,7 +82,7 @@ export function parseContextArgs(argv: string[]): ContextArgs {
       }
       case '--tool': {
         const v = argv[++i] ?? '';
-        if (!VALID_TOOLS.has(v)) die('--tool must be claude|codex|pi');
+        if (!VALID_TOOLS.has(v)) die('--tool must be claude|codex|pi|opencode');
         args.tool = v as Tool;
         break;
       }

@@ -18,6 +18,7 @@ function setEnv(): void {
   process.env.SESSIONS_CLAUDE_DIR = join(tmp, 'claude');
   process.env.SESSIONS_PI_DIR = join(tmp, 'pi');
   process.env.SESSIONS_CODEX_DIR = join(tmp, 'codex');
+  process.env.SESSIONS_OPENCODE_DB = join(tmp, 'opencode.db'); // absent → no OpenCode sessions leak in
 }
 
 function writeClaude(claudeDir: string, id: string, cwd: string, records: unknown[]): void {

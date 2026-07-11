@@ -3,7 +3,7 @@
 // Source: https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json
 import type { ModelPricing } from './pricing.ts';
 
-export const GENERATED_AT = '2026-06-25T03:27:00.109Z';
+export const GENERATED_AT = '2026-07-12T02:36:05.556Z';
 export const SOURCE_COMMIT = 'litellm-main';
 
 export const PRICING: Record<string, ModelPricing> = {
@@ -167,6 +167,12 @@ export const PRICING: Record<string, ModelPricing> = {
     cacheReadPerToken: 3e-7,
     cacheWritePerToken: 0.00000375,
   },
+  'claude-sonnet-5': {
+    inputPerToken: 0.000002,
+    outputPerToken: 0.00001,
+    cacheReadPerToken: 2e-7,
+    cacheWritePerToken: 0.0000025,
+  },
   'codex-mini-latest': { inputPerToken: 0.0000015, outputPerToken: 0.000006, cacheReadPerToken: 3.75e-7 },
   'ft:gpt-3.5-turbo': { inputPerToken: 0.000003, outputPerToken: 0.000006 },
   'ft:gpt-3.5-turbo-0125': { inputPerToken: 0.000003, outputPerToken: 0.000006 },
@@ -281,6 +287,30 @@ export const PRICING: Record<string, ModelPricing> = {
   'gpt-5.5-2026-04-23': { inputPerToken: 0.000005, outputPerToken: 0.00003, cacheReadPerToken: 5e-7 },
   'gpt-5.5-pro': { inputPerToken: 0.00003, outputPerToken: 0.00018, cacheReadPerToken: 0.000003 },
   'gpt-5.5-pro-2026-04-23': { inputPerToken: 0.00003, outputPerToken: 0.00018, cacheReadPerToken: 0.000003 },
+  'gpt-5.6': {
+    inputPerToken: 0.000005,
+    outputPerToken: 0.00003,
+    cacheReadPerToken: 5e-7,
+    cacheWritePerToken: 0.00000625,
+  },
+  'gpt-5.6-luna': {
+    inputPerToken: 0.000001,
+    outputPerToken: 0.000006,
+    cacheReadPerToken: 1e-7,
+    cacheWritePerToken: 0.00000125,
+  },
+  'gpt-5.6-sol': {
+    inputPerToken: 0.000005,
+    outputPerToken: 0.00003,
+    cacheReadPerToken: 5e-7,
+    cacheWritePerToken: 0.00000625,
+  },
+  'gpt-5.6-terra': {
+    inputPerToken: 0.0000025,
+    outputPerToken: 0.000015,
+    cacheReadPerToken: 2.5e-7,
+    cacheWritePerToken: 0.000003125,
+  },
   'gpt-audio': { inputPerToken: 0.0000025, outputPerToken: 0.00001 },
   'gpt-audio-1.5': { inputPerToken: 0.0000025, outputPerToken: 0.00001 },
   'gpt-audio-2025-08-28': { inputPerToken: 0.0000025, outputPerToken: 0.00001 },
@@ -294,6 +324,8 @@ export const PRICING: Record<string, ModelPricing> = {
   'gpt-realtime': { inputPerToken: 0.000004, outputPerToken: 0.000016, cacheReadPerToken: 4e-7 },
   'gpt-realtime-1.5': { inputPerToken: 0.000004, outputPerToken: 0.000016, cacheReadPerToken: 4e-7 },
   'gpt-realtime-2': { inputPerToken: 0.000004, outputPerToken: 0.000016, cacheReadPerToken: 4e-7 },
+  'gpt-realtime-2.1': { inputPerToken: 0.000004, outputPerToken: 0.000024, cacheReadPerToken: 4e-7 },
+  'gpt-realtime-2.1-mini': { inputPerToken: 6e-7, outputPerToken: 0.0000024, cacheReadPerToken: 6e-8 },
   'gpt-realtime-2025-08-28': { inputPerToken: 0.000004, outputPerToken: 0.000016, cacheReadPerToken: 4e-7 },
   'gpt-realtime-mini': { inputPerToken: 6e-7, outputPerToken: 0.0000024 },
   'gpt-realtime-mini-2025-10-06': { inputPerToken: 6e-7, outputPerToken: 0.0000024, cacheReadPerToken: 6e-8 },
@@ -534,6 +566,12 @@ export const PRICING: Record<string, ModelPricing> = {
     cacheWritePerToken: 0,
   },
   'openrouter/z-ai/glm-5': { inputPerToken: 8e-7, outputPerToken: 0.00000256 },
+  'openrouter/z-ai/glm-5.1': {
+    inputPerToken: 0.00000105,
+    outputPerToken: 0.0000035,
+    cacheReadPerToken: 5.25e-7,
+    cacheWritePerToken: 0,
+  },
   'text-embedding-3-large': { inputPerToken: 1.3e-7, outputPerToken: 0 },
   'text-embedding-3-small': { inputPerToken: 2e-8, outputPerToken: 0 },
   'text-embedding-ada-002': { inputPerToken: 1e-7, outputPerToken: 0 },
@@ -550,11 +588,18 @@ export const PRICING: Record<string, ModelPricing> = {
   'zai/glm-4.5v': { inputPerToken: 6e-7, outputPerToken: 0.0000018 },
   'zai/glm-4.6': { inputPerToken: 6e-7, outputPerToken: 0.0000022, cacheReadPerToken: 1.1e-7, cacheWritePerToken: 0 },
   'zai/glm-4.7': { inputPerToken: 6e-7, outputPerToken: 0.0000022, cacheReadPerToken: 1.1e-7, cacheWritePerToken: 0 },
+  'zai/glm-4.7-flash': { inputPerToken: 0, outputPerToken: 0, cacheReadPerToken: 0, cacheWritePerToken: 0 },
   'zai/glm-5': { inputPerToken: 0.000001, outputPerToken: 0.0000032, cacheReadPerToken: 2e-7, cacheWritePerToken: 0 },
   'zai/glm-5-code': {
     inputPerToken: 0.0000012,
     outputPerToken: 0.000005,
     cacheReadPerToken: 3e-7,
+    cacheWritePerToken: 0,
+  },
+  'zai/glm-5.1': {
+    inputPerToken: 0.0000014,
+    outputPerToken: 0.0000044,
+    cacheReadPerToken: 2.6e-7,
     cacheWritePerToken: 0,
   },
 };

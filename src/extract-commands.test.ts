@@ -45,6 +45,22 @@ test('pi: extracts bashExecution commands', () => {
   expect(extractCommands(lines, 'pi')).toEqual(['npm run build']);
 });
 
+test('opencode: extracts bash tool commands, ignores non-bash tools', () => {
+  const lines = [
+    j({
+      type: 'message',
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'tool', tool: 'bash', state: { status: 'completed', input: { command: 'jj diff --stat' } } },
+          { type: 'tool', tool: 'read', state: { status: 'completed', input: { filePath: '/x.ts' } } },
+        ],
+      },
+    }),
+  ];
+  expect(extractCommands(lines, 'opencode')).toEqual(['jj diff --stat']);
+});
+
 test('dedups identical commands and caps at MAX_COMMANDS', () => {
   const dup = Array.from({ length: 3 }, () =>
     j({

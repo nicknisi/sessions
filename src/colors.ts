@@ -48,4 +48,5 @@ export const toolColor: Record<string, string> = {
   claude: C.purple,
   pi: C.green,
   codex: C.blue,
+  opencode: C.yellow,
 };

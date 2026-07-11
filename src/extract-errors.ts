@@ -1,5 +1,5 @@
 import type { Tool } from './types';
-import { tryParse } from './extract-util';
+import { tryParse, opencodeAssistantBlocks } from './extract-util';
 
 export const MAX_ERROR_MESSAGES = 20;
 export const MAX_ERROR_LEN = 300;
@@ -72,6 +72,17 @@ function extractPi(lines: string[], push: (m: string) => void): void {
   }
 }
 
+// OpenCode: a tool block whose `state.status` is 'error' — the message is `state.error`.
+function extractOpencode(lines: string[], push: (m: string) => void): void {
+  for (const block of opencodeAssistantBlocks(lines)) {
+    if (block.type !== 'tool') continue;
+    const state = block.state as Record<string, unknown> | undefined;
+    if (!state || state.status !== 'error') continue;
+    const msg = typeof state.error === 'string' ? state.error : '';
+    push(msg || `${typeof block.tool === 'string' ? block.tool : 'tool'} error`);
+  }
+}
+
 /** Whether (and how) a session hit errors — drives the `errored` filter + `context_text` FTS column. */
 export function extractErrors(lines: string[], tool: Tool): SessionErrors {
   const messages: string[] = [];
@@ -83,5 +94,6 @@ export function extractErrors(lines: string[], tool: Tool): SessionErrors {
   if (tool === 'claude') extractClaude(lines, push);
   else if (tool === 'codex') extractCodex(lines, push);
   else if (tool === 'pi') extractPi(lines, push);
+  else if (tool === 'opencode') extractOpencode(lines, push);
   return { errored: count > 0, count, messages };
 }

@@ -14,19 +14,16 @@ import {
   messageCount,
 } from './parser';
 import { cwdUnder } from './repo';
+import { getOpencodeDbPath, discoverOpencodeSessions, readSessionLines } from './opencode';
 
 const home = homedir();
 const CLAUDE_DIR = join(home, '.claude/projects');
 const PI_DIR = join(home, '.pi/agent/sessions');
 const CODEX_DIR = join(home, '.codex/sessions');
 
-async function readLines(filePath: string): Promise<{ lines: string[]; raw: string }> {
-  try {
-    const raw = await Bun.file(filePath).text();
-    return { lines: raw.trimEnd().split('\n'), raw };
-  } catch {
-    return { lines: [], raw: '' };
-  }
+function loadLines(filePath: string, tool: Tool): { lines: string[]; raw: string } {
+  const lines = readSessionLines(filePath, tool);
+  return { lines, raw: lines.join('\n') };
 }
 
 async function processSession(
@@ -36,7 +33,7 @@ async function processSession(
   searchAll: boolean,
   searchQuery: string,
 ): Promise<SessionResult | null> {
-  const { lines, raw } = await readLines(filePath);
+  const { lines, raw } = loadLines(filePath, tool);
   if (lines.length === 0) return null;
 
   const cwd = getCwdFromSession(lines, tool);
@@ -154,8 +151,22 @@ export async function scanSessions(
   if (toolFilter === '' || toolFilter === 'codex') {
     scans.push(scanDir(CODEX_DIR, '', 'codex', repoRoot, searchAll, normalizedQuery));
   }
+  if (toolFilter === '' || toolFilter === 'opencode') {
+    scans.push(scanOpencode(repoRoot, searchAll, normalizedQuery));
+  }
 
   const all = (await Promise.all(scans)).flat();
   all.sort((a, b) => (b.date > a.date ? 1 : b.date < a.date ? -1 : 0));
   return all;
+}
+
+/** No-index fallback for OpenCode: reconstruct each top-level session from the DB, then filter as usual. */
+async function scanOpencode(repoRoot: string, searchAll: boolean, searchQuery: string): Promise<SessionResult[]> {
+  if (!existsSync(getOpencodeDbPath())) return [];
+  const results: SessionResult[] = [];
+  for (const s of discoverOpencodeSessions()) {
+    const r = await processSession(s.path, 'opencode', repoRoot, searchAll, searchQuery);
+    if (r) results.push(r);
+  }
+  return results;
 }

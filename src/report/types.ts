@@ -2,7 +2,7 @@
 // Types match the public data contract in
 // nicknisi.com/docs/superpowers/specs/2026-04-28-tokenmaxing-design.md §4
 
-export type ToolId = 'claude-code' | 'pi' | 'codex';
+export type ToolId = 'claude-code' | 'pi' | 'codex' | 'opencode';
 export type KnownProviderId = 'anthropic' | 'openai' | 'baseten';
 export type ProviderId = KnownProviderId | (string & {});
 

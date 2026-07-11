@@ -87,6 +87,53 @@ describe('extractFiles — codex', () => {
   });
 });
 
+describe('extractFiles — opencode', () => {
+  function ocAssistant(...content: Record<string, unknown>[]): Record<string, unknown> {
+    return { type: 'message', message: { role: 'assistant', content } };
+  }
+  function tool(name: string, input: Record<string, unknown>): Record<string, unknown> {
+    return { type: 'tool', tool: name, state: { status: 'completed', input } };
+  }
+
+  test('collects edit/write filePaths and patch file lists, deduped', () => {
+    const lines = jsonl(
+      ocAssistant(
+        tool('edit', { filePath: '/repo/a.ts' }),
+        tool('write', { filePath: '/repo/b.ts' }),
+        { type: 'patch', files: ['/repo/a.ts', '/repo/c.ts'] }, // a.ts is a duplicate
+      ),
+    );
+    expect(extractFiles(lines, 'opencode')).toEqual(['/repo/a.ts', '/repo/b.ts', '/repo/c.ts']);
+  });
+
+  test('parses apply_patch headers like codex', () => {
+    const patchText = [
+      '*** Begin Patch',
+      '*** Add File: /repo/new.ts',
+      '+export const x = 1;',
+      '*** Update File: /repo/existing.ts',
+      '*** End Patch',
+    ].join('\n');
+    expect(extractFiles(jsonl(ocAssistant(tool('apply_patch', { patchText }))), 'opencode')).toEqual([
+      '/repo/new.ts',
+      '/repo/existing.ts',
+    ]);
+  });
+
+  test('read targets: read filePath, grep/glob path or pattern (not edited files)', () => {
+    const lines = jsonl(
+      ocAssistant(
+        tool('read', { filePath: '/repo/read.ts' }),
+        tool('grep', { pattern: 'foo', path: '/repo/src' }),
+        tool('glob', { pattern: 'packages/**/x*' }),
+        tool('edit', { filePath: '/repo/edited.ts' }),
+      ),
+    );
+    expect(extractFilesRead(lines, 'opencode')).toEqual(['/repo/read.ts', '/repo/src', 'packages/**/x*']);
+    expect(extractFiles(lines, 'opencode')).toEqual(['/repo/edited.ts']);
+  });
+});
+
 describe('extractFiles — pi', () => {
   // TODO: Pi's edited-file shape is unconfirmed — no captured Pi session with file
   // edits exists yet. Per the spec's Open Items this branch returns [] until real

@@ -3,6 +3,7 @@ import { type Tool } from './types';
 interface JsonLine {
   type?: string;
   cwd?: string;
+  directory?: string;
   timestamp?: string;
   gitBranch?: string;
   promptSource?: string | null;
@@ -32,6 +33,9 @@ export function getCwdFromSession(lines: string[], tool: Tool): string {
         const cwd = (d.payload as Record<string, unknown>)?.cwd as string;
         if (cwd) return cwd;
       }
+    } else if (tool === 'opencode') {
+      // Synthesized `session` line carries the session's directory (see src/opencode.ts).
+      if (d.type === 'session' && d.directory) return d.directory;
     }
   }
   return '';

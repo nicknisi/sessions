@@ -26,6 +26,7 @@ const TOOL_LABEL: Record<ToolId, string> = {
   'claude-code': 'Claude Code',
   pi: 'Pi',
   codex: 'Codex',
+  opencode: 'OpenCode',
 };
 const PROVIDER_LABEL: Record<string, string> = {
   anthropic: 'Anthropic',

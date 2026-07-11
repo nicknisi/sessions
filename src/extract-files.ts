@@ -1,5 +1,5 @@
 import type { Tool } from './types';
-import { tryParse } from './extract-util';
+import { tryParse, opencodeAssistantBlocks, toolInput } from './extract-util';
 
 /** Upper bound on stored edited-file paths per session (bounds the indexed column). */
 export const MAX_FILES = 50;
@@ -63,6 +63,31 @@ function extractPi(_lines: string[], _push: (p: string) => void): void {
   // Intentionally empty — see doc comment above.
 }
 
+/**
+ * OpenCode: edited files surface three ways in a synthesized assistant message —
+ * `patch` blocks (an authoritative `files[]` list), `edit`/`write` tool blocks
+ * (`state.input.filePath`), and `apply_patch` tool blocks whose `state.input.patchText`
+ * carries the same `*** … File:` headers as Codex. Shape confirmed against opencode.db.
+ */
+function extractOpencode(lines: string[], push: (p: string) => void): void {
+  for (const block of opencodeAssistantBlocks(lines)) {
+    if (block.type === 'patch' && Array.isArray(block.files)) {
+      for (const f of block.files) if (typeof f === 'string' && f) push(f);
+      continue;
+    }
+    if (block.type !== 'tool') continue;
+    const input = toolInput(block);
+    if ((block.tool === 'edit' || block.tool === 'write') && typeof input.filePath === 'string' && input.filePath) {
+      push(input.filePath);
+    } else if (block.tool === 'apply_patch' && typeof input.patchText === 'string') {
+      for (const patchLine of input.patchText.split('\n')) {
+        const m = PATCH_HEADER.exec(patchLine.trim());
+        if (m && m[1]) push(m[1].trim());
+      }
+    }
+  }
+}
+
 /** De-duplicated, order-preserving, capped list of source-file paths edited during a session. */
 export function extractFiles(lines: string[], tool: Tool): string[] {
   const seen = new Set<string>();
@@ -76,6 +101,7 @@ export function extractFiles(lines: string[], tool: Tool): string[] {
   if (tool === 'claude') extractClaude(lines, push);
   else if (tool === 'codex') extractCodex(lines, push);
   else if (tool === 'pi') extractPi(lines, push);
+  else if (tool === 'opencode') extractOpencode(lines, push);
 
   return out;
 }
@@ -116,5 +142,21 @@ export function extractFilesRead(lines: string[], tool: Tool): string[] {
     out.push(path);
   };
   if (tool === 'claude') extractClaudeRead(lines, push);
+  else if (tool === 'opencode') extractOpencodeRead(lines, push);
   return out;
+}
+
+/** OpenCode: read/searched targets — `read` tool `filePath`, `grep`/`glob` `path`/`pattern`. */
+function extractOpencodeRead(lines: string[], push: (p: string) => void): void {
+  for (const block of opencodeAssistantBlocks(lines)) {
+    if (block.type !== 'tool') continue;
+    const input = toolInput(block);
+    const path =
+      block.tool === 'read'
+        ? input.filePath
+        : block.tool === 'grep' || block.tool === 'glob' || block.tool === 'list'
+          ? (input.path ?? input.pattern)
+          : undefined;
+    if (typeof path === 'string' && path) push(path);
+  }
 }

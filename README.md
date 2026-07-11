@@ -2,7 +2,7 @@
 
 <p align="center">
   Search and memory across your AI coding sessions.<br/>
-  One index over <strong>Claude Code</strong>, <strong>Codex</strong>, and <strong>Pi</strong> — fuzzy-find and resume past sessions from the CLI, give agents recall over prior work via MCP, and see where your tokens go.
+  One index over <strong>Claude Code</strong>, <strong>Codex</strong>, <strong>Pi</strong>, and <strong>OpenCode</strong> — fuzzy-find and resume past sessions from the CLI, give agents recall over prior work via MCP, and see where your tokens go.
 </p>
 
 <p align="center">
@@ -12,11 +12,11 @@
 
 ## Why
 
-Every AI coding session leaves a transcript behind. Claude Code buries them in `~/.claude/projects/`, Codex and Pi have their own layouts — and everything in them (what you tried, what you decided, what broke) is effectively write-only.
+Every AI coding session leaves a transcript behind. Claude Code buries them in `~/.claude/projects/`, Codex and Pi have their own layouts, OpenCode keeps everything in a SQLite database — and everything in them (what you tried, what you decided, what broke) is effectively write-only.
 
 `sessions` builds a full-text search index over all of it and makes that history useful in three ways:
 
-- **Search & resume (CLI)** — fuzzy-find any past session across all three tools, ranked by relevance, and jump back in.
+- **Search & resume (CLI)** — fuzzy-find any past session across all four tools, ranked by relevance, and jump back in.
 - **Agent memory (MCP)** — agents search your history, pull a repo-scoped context primer when you return to a codebase, and answer "what did I do last week?" via bundled skills.
 - **Usage reports** — a token/cost dashboard across tools, models, and projects.
 
@@ -113,7 +113,7 @@ sessions report              # Usage report (HTML dashboard, opens in browser)
 | `uninstall`        | Remove plugin, MCP config, and the SessionStart hook from all tools                                                                                                  |
 | `cleanup`          | Full reset: uninstall plugin + clear search index                                                                                                                    |
 | `--here`           | Scope to the current git repo (default: all projects)                                                                                                                |
-| `--tool <name>`    | Filter by tool: `claude`, `codex`, or `pi`                                                                                                                           |
+| `--tool <name>`    | Filter by tool: `claude`, `codex`, `pi`, or `opencode`                                                                                                               |
 | `--errored`        | Only show sessions that hit an error                                                                                                                                 |
 | `--file <path>`    | Only sessions that touched or read this path (substring match; repeatable — every path must match). Newest first when no query is given                              |
 | `--mcp`            | Start as an MCP server (stdio transport)                                                                                                                             |
@@ -157,7 +157,7 @@ When you pick a session, `sessions` displays the resume command and copies it to
   (copied to clipboard)
 ```
 
-For Claude Code sessions, the command includes `--resume <session-id>`. For Pi and Codex sessions, it navigates to the project directory (these tools don't support direct session resume).
+For Claude Code sessions, the command includes `--resume <session-id>`; for OpenCode, `opencode --session <session-id>`. For Pi and Codex sessions, it navigates to the project directory (these tools don't support direct session resume).
 
 ## Agent memory
 
@@ -229,7 +229,7 @@ To turn it off, run `sessions uninstall` (which also removes the plugin and MCP 
 
 ## Usage reports
 
-`sessions report` does a fresh pass over your local Claude Code, Codex, and Pi logs and produces a token/cost usage report. By default it renders a self-contained HTML dashboard and opens it in your browser; JSON output is available for piping.
+`sessions report` does a fresh pass over your local Claude Code, Codex, Pi, and OpenCode logs and produces a token/cost usage report. By default it renders a self-contained HTML dashboard and opens it in your browser; JSON output is available for piping.
 
 ```sh
 sessions report                              # HTML dashboard, opens in your browser
@@ -254,7 +254,7 @@ The selected period is shown prominently at the top of both outputs (and in the 
 | `--days N`                                                                  | Last `N` days (instead of `--from`/`--to`).                                                                                                     |
 | `--today` / `--this-week` / `--this-month` / `--last-month` / `--this-year` | Convenience presets that resolve to a date range.                                                                                               |
 | `--month YYYY-MM`                                                           | A specific calendar month.                                                                                                                      |
-| `--tool claude\|codex\|pi`                                                  | Restrict to one tool. Default: all three.                                                                                                       |
+| `--tool claude\|codex\|pi\|opencode`                                        | Restrict to one tool. Default: all four.                                                                                                        |
 | `--tz <IANA>`                                                               | Timezone for day/hour bucketing. Default: `$TIMEZONE`, else `America/Chicago`.                                                                  |
 | `--stdout`                                                                  | Print the JSON to stdout and skip the JSON file (HTML is still written if requested).                                                           |
 | `--offline`                                                                 | Skip the pricing refresh; use cached/embedded pricing data.                                                                                     |
@@ -271,7 +271,7 @@ Both outputs are built from the same data:
 
 The JSON is a sessions-owned `UsageReport` (`{ "generator": "sessions", "version": 1, ... }`). The HTML is fully self-contained (inline SVG charts, no external assets) and adapts to light/dark.
 
-Cost is estimated from [LiteLLM](https://github.com/BerriAI/litellm) pricing data, fetched at most once per day and cached locally, with an embedded snapshot as the offline fallback — a failed fetch never blocks the report. Pi sessions use the cost recorded in their own logs. Tokens for unknown models are still counted, with cost shown as `$0`. Token totals exclude cache reads (replayed context, mostly free reuse).
+Cost is estimated from [LiteLLM](https://github.com/BerriAI/litellm) pricing data, fetched at most once per day and cached locally, with an embedded snapshot as the offline fallback — a failed fetch never blocks the report. Pi sessions use the cost recorded in their own logs; OpenCode sessions use their recorded cost when present (Anthropic) and fall back to estimated pricing otherwise (OpenAI). Tokens for unknown models are still counted, with cost shown as `$0`. Token totals exclude cache reads (replayed context, mostly free reuse).
 
 ## Wrapped
 
@@ -297,13 +297,14 @@ The fun slides are **dynamically selected**: every candidate stat is scored for 
 
 ### Session discovery
 
-`sessions` reads JSONL session files from these locations:
+`sessions` reads JSONL session files (and OpenCode's SQLite database) from these locations:
 
-| Tool        | Directory                       |
-| ----------- | ------------------------------- |
-| Claude Code | `~/.claude/projects/<project>/` |
-| Pi          | `~/.pi/agent/sessions/`         |
-| Codex       | `~/.codex/sessions/`            |
+| Tool        | Location                              |
+| ----------- | ------------------------------------- |
+| Claude Code | `~/.claude/projects/<project>/`       |
+| Pi          | `~/.pi/agent/sessions/`               |
+| Codex       | `~/.codex/sessions/`                  |
+| OpenCode    | `~/.local/share/opencode/opencode.db` |
 
 Each session file is parsed to extract:
 
