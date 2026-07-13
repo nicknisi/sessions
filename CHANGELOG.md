@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.13.0](https://github.com/nicknisi/sessions/compare/v1.12.0...v1.13.0) (2026-07-13)
+
+
+### Features
+
+* add `sessions wrapped` (Spotify-style year in review) ([#30](https://github.com/nicknisi/sessions/issues/30)) ([4c92b02](https://github.com/nicknisi/sessions/commit/4c92b02364c30fcc83ddd18971263ba79a3d1627))
+
 ## [1.12.0](https://github.com/nicknisi/sessions/compare/v1.11.0...v1.12.0) (2026-07-10)
 
 
