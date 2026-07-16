@@ -30,4 +30,6 @@ for (const f of files.sort()) {
 
 out += '};\n';
 writeFileSync(outPath, out);
+// Format the output so regeneration never breaks `bun run format:check` in CI.
+Bun.spawnSync(['bunx', 'oxfmt', outPath]);
 process.stderr.write(`Generated ${outPath} (${files.length} files)\n`);
