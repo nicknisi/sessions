@@ -50,7 +50,7 @@ export interface WrappedResult {
   json: string;
 }
 
-const TOOL_MAP: Record<string, ToolId> = { claude: 'claude-code', codex: 'codex', pi: 'pi' };
+const TOOL_MAP: Record<string, ToolId> = { claude: 'claude-code', codex: 'codex', pi: 'pi', opencode: 'opencode' };
 
 function die(msg: string): never {
   process.stderr.write(`error: ${msg}\n`);
@@ -72,7 +72,7 @@ Usage:
 
 Options:
   --year <YYYY>    Calendar year to wrap (default: current year)
-  --tool <name>    Only one tool: claude, codex, or pi
+  --tool <name>    Only one tool: claude, codex, pi, or opencode
   --tz <zone>      Timezone for day/hour bucketing (default: TIMEZONE env or America/Chicago)
   --extras <path>  JSON file of extra slides: [{"headline": "...", "title"?, "subline"?, "footnote"?}]
   --roast          Let an installed agent CLI (claude/codex/pi) improvise a few
@@ -110,7 +110,7 @@ export function parseWrappedArgs(argv: string[]): WrappedOptions {
       case '--tool': {
         const v = argv[++i] ?? '';
         const mapped = TOOL_MAP[v];
-        if (!mapped) die('--tool must be claude|codex|pi');
+        if (!mapped) die('--tool must be claude|codex|pi|opencode');
         opts.tool = mapped;
         break;
       }

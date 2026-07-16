@@ -12,7 +12,7 @@ import { resolveProject } from '../report/project.ts';
 import type { PhraseStat, WrappedContentStats, WrappedSessionOfYear } from './types.ts';
 
 /** Index tool names ('claude') differ from report ToolIds ('claude-code'). */
-const INDEX_TOOL: Record<string, string> = { 'claude-code': 'claude', codex: 'codex', pi: 'pi' };
+const INDEX_TOOL: Record<string, string> = { 'claude-code': 'claude', codex: 'codex', pi: 'pi', opencode: 'opencode' };
 
 interface PhraseSpec {
   id: string;
