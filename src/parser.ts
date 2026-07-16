@@ -3,7 +3,6 @@ import { type Tool } from './types';
 interface JsonLine {
   type?: string;
   cwd?: string;
-  directory?: string;
   timestamp?: string;
   gitBranch?: string;
   promptSource?: string | null;
@@ -26,16 +25,14 @@ export function getCwdFromSession(lines: string[], tool: Tool): string {
 
     if (tool === 'claude') {
       if (d.cwd) return d.cwd;
-    } else if (tool === 'pi') {
+    } else if (tool === 'pi' || tool === 'opencode') {
+      // Pi's native shape; OpenCode synthesizes the same session line (see src/opencode.ts).
       if (d.type === 'session' && d.cwd) return d.cwd;
     } else if (tool === 'codex') {
       if (d.type === 'session_meta') {
         const cwd = (d.payload as Record<string, unknown>)?.cwd as string;
         if (cwd) return cwd;
       }
-    } else if (tool === 'opencode') {
-      // Synthesized `session` line carries the session's directory (see src/opencode.ts).
-      if (d.type === 'session' && d.directory) return d.directory;
     }
   }
   return '';
@@ -45,7 +42,7 @@ export function getCwdFromSession(lines: string[], tool: Tool): string {
  * The git branch a session ran on, read from the logs (not the current worktree).
  * Claude writes `gitBranch` on every line, so the last non-empty one is "where
  * you left off". Codex records its starting branch once in `session_meta`. Pi
- * carries no git metadata, so it returns ''.
+ * and OpenCode carry no git metadata, so they return ''.
  */
 export function sessionBranch(lines: string[], tool: Tool): string {
   if (tool === 'codex') {
@@ -67,7 +64,7 @@ export function sessionBranch(lines: string[], tool: Tool): string {
     }
     return branch;
   }
-  return ''; // pi: no git metadata in logs
+  return ''; // pi, opencode: no git metadata in logs
 }
 
 function clean(text: string): string {
@@ -197,8 +194,7 @@ export function messageCount(lines: string[]): number {
   return count;
 }
 
-export function lastTimestamp(content: string): string {
-  const lines = content.trimEnd().split('\n');
+export function lastTimestamp(lines: string[]): string {
   for (let i = lines.length - 1; i >= Math.max(0, lines.length - 200); i--) {
     const d = tryParseJson(lines[i]!);
     if (!d) continue;

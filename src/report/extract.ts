@@ -6,6 +6,7 @@ import { parseClaudeCode } from './parsers/claude-code.ts';
 import { parsePi } from './parsers/pi.ts';
 import { parseCodex } from './parsers/codex.ts';
 import { parseOpencode } from './parsers/opencode.ts';
+import { getOpencodeDbPath } from '../opencode.ts';
 
 export interface ReportRoots {
   claudeCode: string;
@@ -22,8 +23,8 @@ export function defaultRoots(): ReportRoots {
     claudeCode: join(home, '.claude', 'projects'),
     pi: join(home, '.pi', 'agent', 'sessions'),
     codex: join(home, '.codex', 'sessions'),
-    // Env override mirrors src/opencode.ts so tests can point at a fixture DB.
-    opencode: process.env.SESSIONS_OPENCODE_DB || join(home, '.local', 'share', 'opencode', 'opencode.db'),
+    // Same resolution (env override included) as the search index — one source of truth.
+    opencode: getOpencodeDbPath(),
   };
 }
 

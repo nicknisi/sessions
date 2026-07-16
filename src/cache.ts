@@ -1,5 +1,5 @@
 import { Database } from 'bun:sqlite';
-import { existsSync, mkdirSync, statSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join, basename } from 'node:path';
 import { homedir } from 'node:os';
 import { readdir } from 'node:fs/promises';
@@ -32,14 +32,8 @@ import { extractFiles, extractFilesRead } from './extract-files';
 import { extractCommands } from './extract-commands';
 import { extractErrors } from './extract-errors';
 import { extractThinking } from './extract-thinking';
-import {
-  getOpencodeDbPath,
-  discoverOpencodeSessions,
-  opencodeStat,
-  readSessionLines,
-  collectOpencodeSubagentText,
-  closeOpencodeDb,
-} from './opencode';
+import { discoverOpencodeSessions, collectOpencodeSubagentText, closeOpencodeDb } from './opencode';
+import { readSessionLines, statSession } from './session-io';
 import { type RepoInfo, globPrefix, branchLabel } from './repo';
 import { isTrivia, blendedScore, type ScorableSession } from './significance';
 
@@ -265,9 +259,8 @@ async function discoverFiles(): Promise<FileEntry[]> {
 
   // OpenCode has no per-session files — sessions live in one SQLite DB, so each
   // discovered "file" is a synthetic dbPath/sessionId handle (see src/opencode.ts).
-  if (existsSync(getOpencodeDbPath())) {
-    for (const s of discoverOpencodeSessions()) entries.push(s);
-  }
+  // Returns [] when the DB is absent.
+  entries.push(...discoverOpencodeSessions());
 
   return entries;
 }
@@ -294,15 +287,12 @@ function collectSubagentContent(filePath: string): string {
   return parts.join('\n');
 }
 
-/** Cache-invalidation signal for a session: filesystem stat for JSONL tools, DB metadata for OpenCode. */
-function statSession(filePath: string, tool: Tool): { mtimeMs: number; size: number } | null {
-  if (tool === 'opencode') return opencodeStat(filePath);
-  try {
-    const s = statSync(filePath);
-    return { mtimeMs: s.mtimeMs, size: s.size };
-  } catch {
-    return null;
-  }
+/** Searchable subagent text folded into the parent session: Claude keeps sibling
+ *  transcript files, OpenCode keeps child sessions in its DB; other tools have none. */
+function collectSubagentText(filePath: string, tool: Tool): string {
+  if (tool === 'claude') return collectSubagentContent(filePath);
+  if (tool === 'opencode') return collectOpencodeSubagentText(filePath);
+  return '';
 }
 
 function indexFile(db: Database, filePath: string, tool: Tool): boolean {
@@ -319,7 +309,6 @@ function indexFile(db: Database, filePath: string, tool: Tool): boolean {
 
   const lines = readSessionLines(filePath, tool);
   if (lines.length === 0) return false;
-  const raw = lines.join('\n');
 
   const cwd = getCwdFromSession(lines, tool);
   if (!cwd) return false;
@@ -328,17 +317,12 @@ function indexFile(db: Database, filePath: string, tool: Tool): boolean {
   const sessionId = basename(filePath).replace('.jsonl', '');
   const prompt = firstPrompt(lines, tool);
   const title = customTitle(lines);
-  const date = lastTimestamp(raw);
+  const date = lastTimestamp(lines);
   const createdAt = firstTimestamp(lines);
   const msgCount = messageCount(lines);
 
   const messages = extractMessages(lines);
-  const subagentContent =
-    tool === 'claude'
-      ? collectSubagentContent(filePath)
-      : tool === 'opencode'
-        ? collectOpencodeSubagentText(filePath)
-        : '';
+  const subagentContent = collectSubagentText(filePath, tool);
 
   const filesTouchedArr = extractFiles(lines, tool);
   const filesTouched = JSON.stringify(filesTouchedArr);

@@ -14,17 +14,13 @@ import {
   messageCount,
 } from './parser';
 import { cwdUnder } from './repo';
-import { getOpencodeDbPath, discoverOpencodeSessions, readSessionLines } from './opencode';
+import { discoverOpencodeSessions } from './opencode';
+import { readSessionLines } from './session-io';
 
 const home = homedir();
 const CLAUDE_DIR = join(home, '.claude/projects');
 const PI_DIR = join(home, '.pi/agent/sessions');
 const CODEX_DIR = join(home, '.codex/sessions');
-
-function loadLines(filePath: string, tool: Tool): { lines: string[]; raw: string } {
-  const lines = readSessionLines(filePath, tool);
-  return { lines, raw: lines.join('\n') };
-}
 
 async function processSession(
   filePath: string,
@@ -33,7 +29,7 @@ async function processSession(
   searchAll: boolean,
   searchQuery: string,
 ): Promise<SessionResult | null> {
-  const { lines, raw } = loadLines(filePath, tool);
+  const lines = readSessionLines(filePath, tool);
   if (lines.length === 0) return null;
 
   const cwd = getCwdFromSession(lines, tool);
@@ -44,7 +40,7 @@ async function processSession(
 
   const sessionId = basename(filePath).replace('.jsonl', '');
 
-  const date = lastTimestamp(raw);
+  const date = lastTimestamp(lines);
   const createdAt = firstTimestamp(lines);
   const title = customTitle(lines);
   const msgCount = messageCount(lines);
@@ -162,7 +158,6 @@ export async function scanSessions(
 
 /** No-index fallback for OpenCode: reconstruct each top-level session from the DB, then filter as usual. */
 async function scanOpencode(repoRoot: string, searchAll: boolean, searchQuery: string): Promise<SessionResult[]> {
-  if (!existsSync(getOpencodeDbPath())) return [];
   const results: SessionResult[] = [];
   for (const s of discoverOpencodeSessions()) {
     const r = await processSession(s.path, 'opencode', repoRoot, searchAll, searchQuery);

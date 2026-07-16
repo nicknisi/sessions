@@ -1,4 +1,6 @@
-// VENDORED VERBATIM from tokenmaxing/src/aggregate.ts — do not edit logic here; keep in sync. Public contract: schemaVersion 2.
+// VENDORED from tokenmaxing/src/aggregate.ts (public contract: schemaVersion 2) with ONE local
+// divergence: the 'opencode' TOOL_LABEL entry is a sessions-owned extension — see the matching
+// note in ./types.ts. When re-syncing with upstream, preserve it. Do not edit other logic here.
 import type {
   TokenmaxingData,
   ToolBreakdown,
@@ -26,7 +28,7 @@ const TOOL_LABEL: Record<ToolId, string> = {
   'claude-code': 'Claude Code',
   pi: 'Pi',
   codex: 'Codex',
-  opencode: 'OpenCode',
+  opencode: 'OpenCode', // sessions-local extension — not in upstream tokenmaxing (see header)
 };
 const PROVIDER_LABEL: Record<string, string> = {
   anthropic: 'Anthropic',

@@ -6,7 +6,7 @@ import { formatResult } from './search-format';
 import { getSessionMessages } from './parser';
 import { buildSessionDigest } from './digest';
 import { resolveRepo } from './repo';
-import { readSessionLines } from './opencode';
+import { readSessionLines } from './session-io';
 import { type Tool } from './types';
 
 const server = new McpServer(

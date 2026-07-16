@@ -1,7 +1,8 @@
-/** Parse one JSONL line to an object, or null if it isn't valid JSON. */
+/** Parse one JSONL line to a record, or null — never throws, never yields a bare primitive. */
 export function tryParse(line: string): Record<string, unknown> | null {
   try {
-    return JSON.parse(line) as Record<string, unknown>;
+    const v = JSON.parse(line);
+    return v && typeof v === 'object' ? (v as Record<string, unknown>) : null;
   } catch {
     return null;
   }

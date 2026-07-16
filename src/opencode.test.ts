@@ -1,5 +1,5 @@
 import { test, expect, describe, beforeAll, afterAll } from 'bun:test';
-import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, copyFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Database } from 'bun:sqlite';
@@ -11,9 +11,9 @@ import {
   opencodeStat,
   readOpencodeSession,
   collectOpencodeSubagentText,
-  readSessionLines,
   closeOpencodeDb,
 } from './opencode';
+import { readSessionLines } from './session-io';
 import { getCwdFromSession, firstPrompt, customTitle, messageCount } from './parser';
 import { extractFiles, extractFilesRead } from './extract-files';
 import { extractCommands } from './extract-commands';
@@ -164,6 +164,21 @@ describe('opencode module', () => {
   test('collects subagent user text for parent-session recall', () => {
     expect(collectOpencodeSubagentText(opencodeFilePath('ses_parent'))).toBe('subagent secret term wibbleflorp');
     expect(collectOpencodeSubagentText(opencodeFilePath('ses_plain'))).toBe('');
+  });
+
+  test('a deleted DB stops being discoverable despite a cached handle', () => {
+    // Long-running-process scenario (e.g. the MCP server): the handle is opened,
+    // then the DB file is deleted out from under it — sessions must vanish, not
+    // keep being served off the open inode.
+    const copyPath = join(tmp, 'opencode-copy.db');
+    copyFileSync(dbPath, copyPath);
+    process.env.SESSIONS_OPENCODE_DB = copyPath;
+    closeOpencodeDb();
+    expect(discoverOpencodeSessions()).toHaveLength(2); // handle now open + cached
+    rmSync(copyPath);
+    expect(discoverOpencodeSessions()).toEqual([]);
+    process.env.SESSIONS_OPENCODE_DB = dbPath;
+    closeOpencodeDb();
   });
 });
 

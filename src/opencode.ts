@@ -1,8 +1,9 @@
 import { Database } from 'bun:sqlite';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname, basename } from 'node:path';
 import { type Tool } from './types';
+import { tryParse } from './extract-util';
 
 // OpenCode stores sessions in a single SQLite database (it migrated off the old
 // file-per-session `storage/` layout). Everything else in this codebase reads one
@@ -33,10 +34,12 @@ export function sessionIdFromPath(filePath: string): string {
 
 let _conn: { path: string; db: Database } | null = null;
 
-/** Cached read-only DB handle for the current db path, or null if the DB is absent/unreadable. */
+/** Cached read-only DB handle for the current db path, or null if the DB is absent/unreadable.
+ *  Re-checks existence even on a cache hit so a DB deleted mid-process (e.g. under a
+ *  long-running MCP server) stops serving stale sessions instead of riding the open inode. */
 function db(): Database | null {
   const path = getOpencodeDbPath();
-  if (_conn && _conn.path === path) return _conn.db;
+  if (_conn && _conn.path === path && existsSync(path)) return _conn.db;
   closeOpencodeDb();
   if (!existsSync(path)) return null;
   try {
@@ -88,10 +91,11 @@ export function opencodeStat(filePath: string): { mtimeMs: number; size: number 
 }
 
 /**
- * Reconstruct a session as JSONL-style `lines[]` the shared parser understands: a
- * `session` line carrying the cwd, an optional `custom-title` line, then one
- * `message` line per turn whose `message.content[]` mixes text, thinking, tool,
- * and patch blocks (the generic `type:'message'` shape pi/codex already parse).
+ * Reconstruct a session as JSONL-style `lines[]` built entirely from shapes the
+ * shared parser already understands: a Pi-style `session` line carrying the cwd,
+ * an optional `custom-title` line, then one `message` line per turn whose
+ * `message.content[]` mixes text, thinking, tool, and patch blocks (the generic
+ * `type:'message'` shape pi/codex already parse).
  */
 export function readOpencodeSession(filePath: string): string[] {
   const d = db();
@@ -106,9 +110,7 @@ export function readOpencodeSession(filePath: string): string[] {
   if (!session) return [];
 
   const lines: string[] = [];
-  lines.push(
-    JSON.stringify({ type: 'session', directory: session.directory, timestamp: isoTime(session.time_created) }),
-  );
+  lines.push(JSON.stringify({ type: 'session', cwd: session.directory, timestamp: isoTime(session.time_created) }));
   // Skip OpenCode's auto-generated "New session - <date>" placeholder; a real,
   // summarized title becomes a custom-title (reused by display/context as the intent).
   if (session.title && !session.title.startsWith('New session')) {
@@ -155,22 +157,6 @@ export function collectOpencodeSubagentText(filePath: string): string {
       .join('\n');
   } catch {
     return '';
-  }
-}
-
-/**
- * Read any session into `lines[]`, routing OpenCode (no real file) through the DB
- * and every other tool through its JSONL file. `tool` is optional: when omitted
- * (call sites that only carry a file_path) OpenCode is detected from the path.
- */
-export function readSessionLines(filePath: string, tool?: Tool): string[] {
-  if (tool === 'opencode' || (tool === undefined && isOpencodePath(filePath))) {
-    return readOpencodeSession(filePath);
-  }
-  try {
-    return readFileSync(filePath, 'utf-8').trimEnd().split('\n');
-  } catch {
-    return [];
   }
 }
 
@@ -223,14 +209,4 @@ function buildContent(parts: unknown[]): Record<string, unknown>[] {
 function isoTime(ms: number | undefined): string {
   if (typeof ms !== 'number' || !Number.isFinite(ms)) return '';
   return new Date(ms).toISOString();
-}
-
-/** JSON.parse that yields a record or null instead of throwing on malformed rows. */
-function tryParse(text: string): Record<string, unknown> | null {
-  try {
-    const v = JSON.parse(text);
-    return v && typeof v === 'object' ? (v as Record<string, unknown>) : null;
-  } catch {
-    return null;
-  }
 }

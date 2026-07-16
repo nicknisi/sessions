@@ -1,8 +1,10 @@
-// VENDORED VERBATIM from tokenmaxing/src/types.ts — do not edit logic here; keep in sync. Public contract: schemaVersion 2.
-// Types match the public data contract in
+// VENDORED from tokenmaxing/src/types.ts (public contract: schemaVersion 2) with ONE local
+// divergence: the 'opencode' ToolId member is a sessions-owned extension — OpenCode is not
+// part of the upstream tokenmaxing contract. When re-syncing with upstream, preserve it.
+// Types otherwise match the public data contract in
 // nicknisi.com/docs/superpowers/specs/2026-04-28-tokenmaxing-design.md §4
 
-export type ToolId = 'claude-code' | 'pi' | 'codex' | 'opencode';
+export type ToolId = 'claude-code' | 'pi' | 'codex' | 'opencode'; // 'opencode' is sessions-local (see header)
 export type KnownProviderId = 'anthropic' | 'openai' | 'baseten';
 export type ProviderId = KnownProviderId | (string & {});
 

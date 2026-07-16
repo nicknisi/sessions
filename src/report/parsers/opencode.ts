@@ -75,10 +75,13 @@ export async function parseOpencode(dbPath: string): Promise<UsageEvent[]> {
   return events;
 }
 
-/** JSON.parse a message row to a typed shape, or null on malformed data. */
+/** JSON.parse a message row to a typed shape, or null on malformed/non-object data.
+ *  Deliberately local (not src/extract-util's): the report/ subtree stays self-contained
+ *  and types its rows. */
 function tryParse(text: string): OpencodeMessage | null {
   try {
-    return JSON.parse(text) as OpencodeMessage;
+    const v = JSON.parse(text);
+    return v && typeof v === 'object' ? (v as OpencodeMessage) : null;
   } catch {
     return null;
   }

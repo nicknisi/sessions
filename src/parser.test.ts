@@ -142,18 +142,17 @@ describe('firstPrompt', () => {
 });
 
 describe('lastTimestamp', () => {
-  test('returns the last timestamp from content', () => {
-    const content = [
+  test('returns the last timestamp from the lines', () => {
+    const lines = [
       JSON.stringify({ type: 'user', timestamp: '2026-01-01T00:00:00Z' }),
       JSON.stringify({ type: 'assistant', timestamp: '2026-01-01T12:00:00Z' }),
       JSON.stringify({ type: 'user', timestamp: '2026-01-02T08:00:00Z' }),
-    ].join('\n');
-    expect(lastTimestamp(content)).toBe('2026-01-02');
+    ];
+    expect(lastTimestamp(lines)).toBe('2026-01-02');
   });
 
   test('returns ? for no timestamps', () => {
-    const content = JSON.stringify({ type: 'user' });
-    expect(lastTimestamp(content)).toBe('?');
+    expect(lastTimestamp([JSON.stringify({ type: 'user' })])).toBe('?');
   });
 });
 
