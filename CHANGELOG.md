@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.14.0](https://github.com/nicknisi/sessions/compare/v1.13.0...v1.14.0) (2026-07-16)
+
+
+### Features
+
+* Add opencode support. ([#29](https://github.com/nicknisi/sessions/issues/29)) ([12b289a](https://github.com/nicknisi/sessions/commit/12b289ad7f86d80225e8115c646847ffe1196971))
+* **discoverability:** teach agents when to reach for session history ([#33](https://github.com/nicknisi/sessions/issues/33)) ([e0b59d1](https://github.com/nicknisi/sessions/commit/e0b59d1106c791cafb6c81d4173fe59048c12eaf))
+* **mcp:** add grep_sessions and include_tools for exhaustive recall ([#35](https://github.com/nicknisi/sessions/issues/35)) ([82804a9](https://github.com/nicknisi/sessions/commit/82804a9cc1e2e5f9313a3215cc78efa1e7586208))
+* **wrapped:** adaptive roast slide type and a new round of unhinged stats ([#32](https://github.com/nicknisi/sessions/issues/32)) ([68d7435](https://github.com/nicknisi/sessions/commit/68d74359cf5a84a1f8360f261a6c9fa9c9ea9d03))
+
 ## [1.13.0](https://github.com/nicknisi/sessions/compare/v1.12.0...v1.13.0) (2026-07-13)
 
 
