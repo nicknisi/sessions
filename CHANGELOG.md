@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.14.1](https://github.com/nicknisi/sessions/compare/v1.14.0...v1.14.1) (2026-07-17)
+
+
+### Bug Fixes
+
+* **wrapped:** base stats on real user activity, not automated noise ([#36](https://github.com/nicknisi/sessions/issues/36)) ([60c07cd](https://github.com/nicknisi/sessions/commit/60c07cd9ae1228e97cf552e53ff1114016f375a8))
+
 ## [1.14.0](https://github.com/nicknisi/sessions/compare/v1.13.0...v1.14.0) (2026-07-16)
 
 
