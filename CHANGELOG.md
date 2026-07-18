@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.14.2](https://github.com/nicknisi/sessions/compare/v1.14.1...v1.14.2) (2026-07-18)
+
+
+### Bug Fixes
+
+* **mcp:** exit on stdin close to avoid orphaned servers busy-looping CPU ([#38](https://github.com/nicknisi/sessions/issues/38)) ([7d656f9](https://github.com/nicknisi/sessions/commit/7d656f9cc741b4e1495d3dc9fc3ac4d715e153dd))
+
 ## [1.14.1](https://github.com/nicknisi/sessions/compare/v1.14.0...v1.14.1) (2026-07-17)
 
 
