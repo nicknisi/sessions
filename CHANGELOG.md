@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.15.0](https://github.com/nicknisi/sessions/compare/v1.14.2...v1.15.0) (2026-07-19)
+
+
+### Features
+
+* **wrapped:** add "the loop" — longest unsupervised run ([#40](https://github.com/nicknisi/sessions/issues/40)) ([9852a2a](https://github.com/nicknisi/sessions/commit/9852a2a1d7a7386d66c3bf17929c7038a12264bc))
+
 ## [1.14.2](https://github.com/nicknisi/sessions/compare/v1.14.1...v1.14.2) (2026-07-18)
 
 
