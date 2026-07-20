@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.15.1](https://github.com/nicknisi/sessions/compare/v1.15.0...v1.15.1) (2026-07-20)
+
+
+### Bug Fixes
+
+* **release:** version plugin manifests with the CLI; add --version flag ([#42](https://github.com/nicknisi/sessions/issues/42)) ([bd523dd](https://github.com/nicknisi/sessions/commit/bd523dd37689c0d2888a14e8846e2f1a184230c9))
+
 ## [1.15.0](https://github.com/nicknisi/sessions/compare/v1.14.2...v1.15.0) (2026-07-19)
 
 

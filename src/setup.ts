@@ -8,7 +8,7 @@ import { enableSessionHook, disableSessionHook } from './hooks';
 const home = homedir();
 const SESSIONS_DIR = join(home, '.local', 'share', 'sessions');
 const PLUGIN_DEST = join(SESSIONS_DIR, 'plugin');
-const PLUGIN_VERSION = '1.15.0'; // x-release-please-version
+const PLUGIN_VERSION = '1.15.1'; // x-release-please-version
 const MARKETPLACE_NAME = 'sessions';
 const PLUGIN_NAME = 'sessions';
 
