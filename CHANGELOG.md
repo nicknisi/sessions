@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.15.2](https://github.com/nicknisi/sessions/compare/v1.15.1...v1.15.2) (2026-07-23)
+
+
+### Bug Fixes
+
+* stop --stdout hanging forever when piped ([#44](https://github.com/nicknisi/sessions/issues/44)) ([2938ff4](https://github.com/nicknisi/sessions/commit/2938ff4665dec49371b2d1762b16bef2192f2eb3))
+
 ## [1.15.1](https://github.com/nicknisi/sessions/compare/v1.15.0...v1.15.1) (2026-07-20)
 
 
