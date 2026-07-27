@@ -275,6 +275,13 @@ Sessions are a record of what happened. A **lesson** is an assertion someone cho
 
 They live in their own database at `~/.local/share/sessions/memory.db` — deliberately **not** in the search index. Everything under `~/.cache/sessions` is a rebuildable projection of your transcripts and gets dropped on a schema bump, a `--clear-cache`, or corruption. Nothing regenerates a lesson, so `--clear-cache`, `sessions cleanup`, and `sessions uninstall` all leave it alone; uninstall prints where it is and how to export it. Only `sessions uninstall --purge-lessons --yes` deletes it.
 
+Every save also refreshes two backups beside the store, so a stray `rm` is not the end of them:
+
+- `memory.db.snapshot` — a `VACUUM INTO` copy, i.e. a valid database rather than a copy of a file mid-write. Restoring is `cp memory.db.snapshot memory.db`, and it brings back supersedes chains and review groups along with the text.
+- `lessons.jsonl` — one JSON object per lesson, for reading and grepping. Derived, not a restore path.
+
+Both are complete copies of the same lessons, so `--purge-lessons --yes` removes them too. A backup that fails is reported as a warning and never fails the save that triggered it.
+
 ```bash
 sessions lessons                 # lessons in scope for this repo (plus global ones)
 sessions lessons --all           # every lesson, every repo
@@ -416,7 +423,9 @@ Each session file is parsed to extract:
 
 Both the CLI and the MCP server share a SQLite + FTS5 index at `~/.cache/sessions/index.db`. Messages are indexed individually, so a hit localizes to the exact message that matched — not just the session. The index is built automatically on first use (under a minute for a few thousand sessions) and updated incrementally on subsequent runs by checking file modification times — only new or changed sessions are re-indexed.
 
-Long-lived MCP servers coalesce concurrent refreshes and reuse a freshness check for five seconds, so a burst of related tool calls does not walk the full session tree repeatedly. Set `SESSIONS_REFRESH_INTERVAL_MS=0` on the MCP process to require a source scan before every call.
+Long-lived MCP servers coalesce concurrent refreshes and reuse a freshness check for five seconds, so a burst of related tool calls does not walk the full session tree repeatedly. The finish time of each walk is recorded in the index itself, so a _second_ process starting inside that window skips the walk the first one just did. Set `SESSIONS_REFRESH_INTERVAL_MS=0` to require a source scan before every call, which disables both.
+
+A refresh that fails backs off for 30 seconds rather than re-walking the whole tree on the next query — `SESSIONS_REFRESH_BACKOFF_MS` overrides it.
 
 To clear the index and force a full rebuild:
 

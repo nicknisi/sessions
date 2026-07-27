@@ -20,6 +20,10 @@ function setEnv(): void {
   process.env.SESSIONS_PI_DIR = join(tmp, 'pi');
   process.env.SESSIONS_CODEX_DIR = join(tmp, 'codex');
   process.env.SESSIONS_OPENCODE_DB = join(tmp, 'opencode.db'); // absent → no OpenCode sessions leak in
+  // Tests here add transcripts between queries and expect the very next query to find
+  // them. Zero interval opts out of both freshness short-circuits — the in-process timer
+  // and the on-disk refresh marker a prior query left behind.
+  process.env.SESSIONS_REFRESH_INTERVAL_MS = '0';
 }
 
 function writeClaude(claudeDir: string, id: string, cwd: string, records: unknown[]): void {
@@ -354,6 +358,7 @@ beforeEach(() => {
 afterAll(() => {
   cache.closeDb(); // release the handle before deleting the temp dir
   rmSync(tmp, { recursive: true, force: true });
+  delete process.env.SESSIONS_REFRESH_INTERVAL_MS;
 });
 
 test('indexes new content: a command query finds the session that ran it', async () => {

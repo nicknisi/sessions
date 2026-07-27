@@ -59,3 +59,28 @@ export function getPiDir(): string {
 export function getCodexDir(): string {
   return process.env.SESSIONS_CODEX_DIR || join(getHome(), '.codex/sessions');
 }
+
+/**
+ * Refuse a real durable path while under test.
+ *
+ * The test preload (src/test-preload.ts) redirects every SESSIONS_* var at a temp dir,
+ * so reaching a real store here means the redirection was lost — a child spawned with a
+ * scrubbed env, or a test that reset process.env itself. Both used to write the
+ * developer's own memory.db and index.db, silently.
+ *
+ * Compared against `homedir()` and not `getHome()`: getHome() is itself redirected under
+ * test, so a comparison against it could never match. It fires only when SESSIONS_TEST is
+ * set, so nothing in production is touched — and only from the two DB openers, because
+ * the path getters are also used for display and cleanup, where resolving a real path is
+ * exactly right.
+ */
+export function assertNotRealStore(resolved: string, kind: 'memory' | 'index'): void {
+  if (!process.env.SESSIONS_TEST) return;
+  const real =
+    kind === 'memory'
+      ? join(homedir(), '.local', 'share', 'sessions', 'memory.db')
+      : join(homedir(), '.cache', 'sessions', 'index.db');
+  if (resolved === real) {
+    throw new Error(`refusing to open the real ${kind} store under test: ${resolved}`);
+  }
+}

@@ -3,6 +3,7 @@ import { Database } from 'bun:sqlite';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { applyTestEnv } from './test-preload';
 
 /**
  * The one failure that loses data nothing can regenerate: a path that assumes the
@@ -85,18 +86,10 @@ afterAll(() => {
   mem.closeMemoryDb();
   cache.closeDb();
   rmSync(fixtureRoot, { recursive: true, force: true });
-  for (const k of [
-    'SESSIONS_HOME',
-    'SESSIONS_DATA_DIR',
-    'SESSIONS_MEMORY_DB',
-    'SESSIONS_CACHE_DIR',
-    'SESSIONS_CLAUDE_DIR',
-    'SESSIONS_PI_DIR',
-    'SESSIONS_CODEX_DIR',
-    'SESSIONS_OPENCODE_DB',
-  ]) {
-    delete process.env[k];
-  }
+  // Restored, not deleted. Deleting these left every later file in the same `bun test`
+  // process resolving the developer's real memory.db and index.db — the exact hole the
+  // preload closes, reopened by a teardown.
+  applyTestEnv();
 });
 
 describe('lessons survive every wipe the tool performs', () => {
@@ -210,11 +203,19 @@ describe('lessons survive every wipe the tool performs', () => {
 
   test('--purge-lessons --yes is the only path that deletes them', () => {
     seed();
+    // The backup written on every save is a complete second copy. A purge that left it
+    // behind would make the warning the user just accepted untrue.
+    expect(existsSync(`${memoryDb}.snapshot`)).toBe(true);
+    expect(existsSync(join(dataDir, 'lessons.jsonl'))).toBe(true);
+
     const err = spyOn(process.stderr, 'write').mockImplementation(() => true);
     setup.runUninstall({ purgeLessons: true, yes: true });
     err.mockRestore();
 
     expect(existsSync(memoryDb)).toBe(false);
+    expect(existsSync(`${memoryDb}.snapshot`)).toBe(false);
+    expect(existsSync(`${memoryDb}.snapshot.gen`)).toBe(false);
+    expect(existsSync(join(dataDir, 'lessons.jsonl'))).toBe(false);
     expect(mem.readLessonsForRepo('/repo/alpha', 'github.com/nicknisi/alpha', 5).lessons).toEqual([]);
   });
 });

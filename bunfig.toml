@@ -1,0 +1,6 @@
+# `bun test` only — `bun run` (the CLI, the eval harness, the spawned fixture children)
+# deliberately keeps the real environment. See src/test-preload.ts for what it redirects
+# and why that is enough to make every test file hermetic without shipping any test
+# awareness in src/.
+[test]
+preload = ["./src/test-preload.ts"]

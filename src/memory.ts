@@ -1,7 +1,19 @@
 import { Database } from 'bun:sqlite';
-import { existsSync, mkdirSync, readdirSync, renameSync, unlinkSync } from 'node:fs';
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { basename, dirname, join } from 'node:path';
-import { getMemoryDbPath } from './paths';
+import { assertNotRealStore, getMemoryDbPath } from './paths';
 import type { SessionProvenance } from './provenance';
 import type { ContextLesson, Provenance } from './types';
 
@@ -207,6 +219,9 @@ export function quarantinedStores(): string[] {
  */
 export function getMemoryDb(opts: { create?: boolean } = {}): Database | null {
   const path = getMemoryDbPath();
+  // Before the existsSync/mkdirSync below, not inside openAt: a refused open must not
+  // get as far as creating ~/.local/share/sessions on the way to being refused.
+  assertNotRealStore(path, 'memory');
   if (_db && _dbPath === path) return _db;
   if (_db) closeMemoryDb();
   if (!existsSync(path) && !opts.create) return null;
@@ -535,11 +550,22 @@ function shortlist(db: Database, lesson: string, scope: Scope, container: string
 /**
  * Save a lesson, or say why it was not saved.
  *
+ * Every outcome but `rejected` committed something — a new row, a superseded incumbent,
+ * or a bumped last_seen_at — so every one of them earns a fresh backup. A rejection
+ * never reached the store and leaves the snapshot exactly where it was.
+ */
+export function rememberLesson(input: RememberInput): RememberResult {
+  const result = saveLesson(input);
+  if (result.outcome !== 'rejected') snapshotAfterWrite();
+  return result;
+}
+
+/**
  * Four things keep this from becoming a junk drawer, in order of how much work they
  * do: the length bounds above, exact-content idempotency, near-duplicate quarantine,
  * and making the pressure visible in the primer.
  */
-export function rememberLesson(input: RememberInput): RememberResult {
+function saveLesson(input: RememberInput): RememberResult {
   const lesson = input.lesson.trim();
   const detail = (input.detail ?? '').trim();
   const scope: Scope = input.scope ?? 'repo';
@@ -883,6 +909,7 @@ export function resolveReview(group: number, choice: ReviewChoice, now = new Dat
     for (const r of losers) db.run("UPDATE lessons SET status = 'active', review_group = NULL WHERE id = ?", [r.id]);
   })();
 
+  snapshotAfterWrite();
   return rows.length;
 }
 
@@ -891,7 +918,9 @@ export function retireLesson(id: number): boolean {
   const db = getMemoryDb();
   if (!db || _readonly) return false;
   db.run("UPDATE lessons SET status = 'retired' WHERE id = ? AND status IN ('active', 'needs_review')", [id]);
-  return (db.query<{ n: number }, []>('SELECT changes() AS n').get()?.n ?? 0) > 0;
+  const retired = (db.query<{ n: number }, []>('SELECT changes() AS n').get()?.n ?? 0) > 0;
+  if (retired) snapshotAfterWrite();
+  return retired;
 }
 
 /** Rows whose session is unknown but whose tool_use id is traceable in the transcripts. */
@@ -975,12 +1004,255 @@ export function parseFiles(json: string): string[] {
   }
 }
 
+/**
+ * Backup, on every committed write.
+ *
+ * The store is the one thing here that nothing regenerates, and until now a single
+ * `rm` took it with no second copy anywhere. Two artifacts land beside it: a
+ * `VACUUM INTO` snapshot (restore is a file rename) and `lessons.jsonl` (the
+ * human-readable half — derived, and deliberately not a restore path, since
+ * exportLessons() drops content_hash and review_group).
+ *
+ * Nothing in here may fail a lesson write. A backup that can lose you the thing it
+ * was backing up is worse than no backup.
+ */
+
+const LOCK_WAIT_MS = 2_000;
+const LOCK_STALE_MS = 30_000;
+
+function snapshotPath(): string {
+  return `${getMemoryDbPath()}.snapshot`;
+}
+function generationPath(): string {
+  return `${getMemoryDbPath()}.snapshot.gen`;
+}
+function lockPath(): string {
+  return `${getMemoryDbPath()}.snapshot.lock`;
+}
+function exportPath(): string {
+  return join(dirname(getMemoryDbPath()), 'lessons.jsonl');
+}
+
+/**
+ * How far along the store a given snapshot is, so the newest one always wins the
+ * rename. Rename is atomic but not ordered: two processes can each produce a
+ * perfectly consistent snapshot and the older one can still land last.
+ *
+ * `PRAGMA data_version` cannot do this job, despite reading like it was made for it.
+ * SQLite does not increment it for changes committed on the *querying* connection, so
+ * the writer that just committed reads a counter that does not include its own write —
+ * exactly the comparison this needs. Derived from the rows instead.
+ */
+interface Generation {
+  lastSeen: string;
+  maxId: number;
+  count: number;
+}
+
+const GENERATION_ZERO: Generation = { lastSeen: '', maxId: 0, count: 0 };
+
+function generationOf(db: Database): Generation {
+  const row = db
+    .query<{ last: string | null; max_id: number | null; n: number }, []>(
+      'SELECT MAX(last_seen_at) AS last, MAX(id) AS max_id, COUNT(*) AS n FROM lessons',
+    )
+    .get();
+  return { lastSeen: row?.last ?? '', maxId: row?.max_id ?? 0, count: row?.n ?? 0 };
+}
+
+/** Negative when `a` is behind `b`. last_seen_at is ISO-8601, which sorts lexicographically. */
+function compareGenerations(a: Generation, b: Generation): number {
+  if (a.lastSeen !== b.lastSeen) return a.lastSeen < b.lastSeen ? -1 : 1;
+  if (a.maxId !== b.maxId) return a.maxId - b.maxId;
+  return a.count - b.count;
+}
+
+function readSnapshotGeneration(): Generation {
+  try {
+    const raw = JSON.parse(readFileSync(generationPath(), 'utf8')) as Partial<Generation>;
+    return {
+      lastSeen: typeof raw.lastSeen === 'string' ? raw.lastSeen : '',
+      maxId: typeof raw.maxId === 'number' ? raw.maxId : 0,
+      count: typeof raw.count === 'number' ? raw.count : 0,
+    };
+  } catch {
+    // Absent or unreadable reads as "no snapshot yet", so the first writer wins rather
+    // than every writer refusing to land one.
+    return GENERATION_ZERO;
+  }
+}
+
+function writeSnapshotGeneration(gen: Generation): void {
+  writeFileAtomic(generationPath(), JSON.stringify(gen));
+}
+
+/** tmp + rename, the same shape as src/report/pricing-cache.ts. The tmp name carries the
+ *  pid because concurrent writers would otherwise share one and rename each other's file. */
+function writeFileAtomic(target: string, body: string): void {
+  const tmp = `${target}.${process.pid}.tmp`;
+  try {
+    writeFileSync(tmp, body, 'utf8');
+    renameSync(tmp, target);
+  } catch (e) {
+    try {
+      unlinkSync(tmp);
+    } catch {}
+    throw e;
+  }
+}
+
+/**
+ * Remove a lock whose owner is gone, and only then.
+ *
+ * `process.kill(pid, 0)` throwing ESRCH is the confirmation; EPERM means the process is
+ * alive under another user and the lock is legitimately held. A lock file whose contents
+ * do not parse as a pid is only reaped once it is old enough to be clearly abandoned.
+ */
+function reapStaleLock(path: string): boolean {
+  let owner = 0;
+  try {
+    owner = Number(readFileSync(path, 'utf8').trim());
+  } catch {
+    return false;
+  }
+  if (Number.isInteger(owner) && owner > 0) {
+    try {
+      process.kill(owner, 0);
+      return false; // alive
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'ESRCH') return false;
+    }
+  } else {
+    try {
+      if (Date.now() - statSync(path).mtimeMs < LOCK_STALE_MS) return false;
+    } catch {
+      return false;
+    }
+  }
+  try {
+    unlinkSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Cross-process mutex around the snapshot rename.
+ *
+ * `openSync(path, 'wx')` is the atomic primitive — an exclusive create that reports
+ * EEXIST. (`mkdirSync` cannot serve: every call in this repo passes `{recursive: true}`,
+ * which never reports EEXIST at all.) A lock *file* rather than a directory, because
+ * fixture teardown elsewhere clears a directory with a per-entry `unlinkSync`, and that
+ * throws on a directory.
+ *
+ * Returns false when the lock could not be taken inside the wait window. That is a safe
+ * outcome, not an error: whoever holds it is landing a snapshot at least as new as ours.
+ */
+function withSnapshotLock(fn: () => void): boolean {
+  const path = lockPath();
+  const deadline = Date.now() + LOCK_WAIT_MS;
+  for (;;) {
+    let fd: number;
+    try {
+      fd = openSync(path, 'wx');
+    } catch {
+      if (Date.now() >= deadline) return false;
+      if (!reapStaleLock(path)) Bun.sleepSync(5);
+      continue;
+    }
+    try {
+      writeFileSync(fd, String(process.pid));
+      fn();
+    } finally {
+      try {
+        closeSync(fd);
+      } catch {}
+      try {
+        unlinkSync(path);
+      } catch {}
+    }
+    return true;
+  }
+}
+
+/** One JSON object per lesson, rewritten in full on every save. Not a restore path — see
+ *  ExportedLesson, which is a projection, not the row. */
+function writeExport(): void {
+  const body = exportLessons()
+    .map((l) => JSON.stringify(l))
+    .join('\n');
+  writeFileAtomic(exportPath(), body.length > 0 ? `${body}\n` : '');
+}
+
+/** Every file the snapshot machinery can leave beside the store, including a `.snap.<pid>`
+ *  a killed process never got to rename away. */
+function snapshotArtifacts(): string[] {
+  const path = getMemoryDbPath();
+  const files = [snapshotPath(), generationPath(), lockPath(), exportPath()];
+  const strayPrefix = `${basename(path)}.snap.`;
+  try {
+    for (const f of readdirSync(dirname(path))) {
+      if (f.startsWith(strayPrefix)) files.push(join(dirname(path), f));
+    }
+  } catch {}
+  return files;
+}
+
+/**
+ * Snapshot after a committed write. Never throws into the caller: a failed backup must
+ * not fail the lesson that triggered it.
+ */
+function snapshotAfterWrite(): void {
+  const db = getMemoryDb();
+  if (!db || _readonly) return;
+  const tmp = `${getMemoryDbPath()}.snap.${process.pid}`;
+  try {
+    rmSync(tmp, { force: true });
+    // VACUUM INTO, not copyFileSync: it runs inside a read transaction, so the output is
+    // a consistent database even with another process mid-write. A raw byte copy is not.
+    db.run('VACUUM INTO ?', [tmp]);
+
+    // The generation is read back out of the snapshot itself rather than off the live
+    // handle, so it describes exactly the rows that landed in this file — not rows some
+    // other writer committed in the meantime.
+    const snap = new Database(tmp, { readonly: true });
+    let gen: Generation;
+    try {
+      gen = generationOf(snap);
+    } finally {
+      snap.close();
+    }
+
+    withSnapshotLock(() => {
+      if (compareGenerations(gen, readSnapshotGeneration()) >= 0) {
+        renameSync(tmp, snapshotPath());
+        writeSnapshotGeneration(gen);
+        // Under the same gate, so a writer that is behind cannot roll the export back
+        // either. It is regenerated from the live rows, which are never older than the
+        // snapshot that just landed.
+        writeExport();
+      }
+    });
+    // Gone already if the rename landed; still here if we lost the ordering check or the
+    // lock, and a stray full copy of the store is not something to leave lying around.
+    rmSync(tmp, { force: true });
+  } catch (err) {
+    try {
+      rmSync(tmp, { force: true });
+    } catch {}
+    process.stderr.write(`warning: lesson snapshot failed (the lesson was saved): ${err}\n`);
+  }
+}
+
 /** Delete the store outright. Only ever reached through an explicit, confirmed `--purge-lessons`. */
 export function purgeLessons(): boolean {
   closeMemoryDb();
   const path = getMemoryDbPath();
   let removed = false;
-  for (const f of [path, path + '-wal', path + '-shm', path + '-journal']) {
+  // The snapshot and the plaintext export are complete copies of the same lessons. A
+  // purge the user was told costs them everything has to take those too, or it lies.
+  for (const f of [path, path + '-wal', path + '-shm', path + '-journal', ...snapshotArtifacts()]) {
     try {
       unlinkSync(f);
       if (f === path) removed = true;

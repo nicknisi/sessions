@@ -31,7 +31,15 @@ import { readLessonsForRepo, LESSON_LIMIT } from './memory';
 // Source/cache locations live in src/paths.ts — every one honors a SESSIONS_* env
 // override so tests can point the index at hermetic temp fixtures. Re-exported
 // because the pricing cache and the test harness reference them by these names.
-import { getCacheDir, getDbPath, getEventCachePath, getClaudeDir, getPiDir, getCodexDir } from './paths';
+import {
+  assertNotRealStore,
+  getCacheDir,
+  getDbPath,
+  getEventCachePath,
+  getClaudeDir,
+  getPiDir,
+  getCodexDir,
+} from './paths';
 export { getCacheDir, getDbPath };
 
 // Bump 6 -> 7: search becomes message-granular. A new message_fts table holds one
@@ -61,11 +69,21 @@ export { getCacheDir, getDbPath };
 // v13: the thinking column and Pi's files_touched come from the record too — Codex
 // reasoning was hardcoded to '' and Pi's edited-file branch was a no-op, so both were
 // empty for every session that had them.
-const SCHEMA_VERSION = 13;
+// v14: a `meta` table carries the cross-process refresh marker. It is listed in the drop
+// block below on purpose — that list is hardcoded rather than schema-driven, and a marker
+// that survived a version bump would read "just walked" over an index that was just
+// emptied, so ensureIndexFresh would serve nothing for the length of the interval.
+const SCHEMA_VERSION = 14;
 let _db: Database | null = null;
 let _refreshPromise: Promise<RefreshResult> | null = null;
 let _lastRefreshAt = 0;
+// Separate from _lastRefreshAt rather than back-dating it: a back-date of
+// `now - interval + backoff` lands in the *future* whenever the backoff exceeds the
+// interval (it does, with the defaults), which is indistinguishable from the clock-skew
+// case the marker deliberately treats as expired.
+let _lastFailureAt = 0;
 let _lastRefreshResult: RefreshResult = { total: 0, updated: 0 };
+let _refreshAttempts = 0;
 
 interface RefreshResult {
   total: number;
@@ -100,8 +118,22 @@ export function closeDb(): void {
   // later ensureIndexFresh must start a new scan rather than join a doomed one.
   _refreshPromise = null;
   _lastRefreshAt = 0;
+  _lastFailureAt = 0;
   _lastRefreshResult = { total: 0, updated: 0 };
   closeOpencodeDb();
+}
+
+/**
+ * How many source walks this process has started. A refresh that is skipped — coalesced,
+ * inside the interval, backed off after a failure, or covered by another process's marker
+ * — does not count.
+ *
+ * Exists as an observability seam: discoverFiles and ensureIndexFresh are both private and
+ * there is no module mocking in this repo, so "was the tree actually walked" is otherwise
+ * unobservable from a test or a second process. Monotonic — closeDb() does not reset it.
+ */
+export function refreshAttempts(): number {
+  return _refreshAttempts;
 }
 
 // Open (or create) the index DB and bring it to the v6 schema, resolving the path
@@ -121,8 +153,20 @@ function openDb(): Database {
     db.run('DROP TABLE IF EXISTS session_fts');
     db.run('DROP TABLE IF EXISTS message_fts');
     db.run('DROP TABLE IF EXISTS ignored_files');
+    db.run('DROP TABLE IF EXISTS meta');
     db.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   }
+
+  // Small key/value shelf for facts about the index itself. Currently one key,
+  // 'last_refresh_ms': the wall-clock time a process finished a source walk, so a second
+  // process can skip a walk that one just did. Disposable with the index, which is
+  // correct — it describes the index — and it inherits the busy_timeout above.
+  db.run(`
+    CREATE TABLE IF NOT EXISTS meta (
+      key   TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    )
+  `);
 
   db.run(`
     CREATE TABLE IF NOT EXISTS sessions (
@@ -210,6 +254,9 @@ function isCorruption(e: unknown): boolean {
 
 function getDb(): Database {
   if (_db) return _db;
+  // Ahead of the mkdirSync, so a refused open cannot create ~/.cache/sessions on its way
+  // to being refused. See assertNotRealStore in src/paths.ts.
+  assertNotRealStore(getDbPath(), 'index');
   mkdirSync(getCacheDir(), { recursive: true });
   try {
     _db = openDb();
@@ -433,6 +480,7 @@ function indexFile(db: Database, filePath: string, tool: Tool): boolean {
 }
 
 async function runRefreshIndex(): Promise<RefreshResult> {
+  _refreshAttempts++;
   const db = getDb();
   // De-duplicate at the boundary. It also makes the set/map work below line up
   // exactly with the total reported to callers.
@@ -526,8 +574,15 @@ export async function refreshIndex(): Promise<RefreshResult> {
   try {
     const result = await promise;
     _lastRefreshAt = Date.now();
+    _lastFailureAt = 0;
     _lastRefreshResult = result;
+    writeRefreshMarker(_lastRefreshAt); // visible to other processes
     return result;
+  } catch (err) {
+    // A persistently failing refresh must not re-walk the whole tree on every call. The
+    // caller still sees the error; it is only the *next* caller that is spared the walk.
+    _lastFailureAt = Date.now();
+    throw err;
   } finally {
     if (_refreshPromise === promise) _refreshPromise = null;
   }
@@ -538,9 +593,71 @@ function refreshIntervalMs(): number {
   return Number.isFinite(configured) ? Math.max(0, configured) : 5_000;
 }
 
+/** How long a failed refresh suppresses the next walk. Shorter than the failure costs and
+ *  far longer than the interval, so a broken source root is attempted twice a minute
+ *  rather than on every single query. */
+function refreshBackoffMs(): number {
+  const configured = Number(process.env.SESSIONS_REFRESH_BACKOFF_MS ?? 30_000);
+  return Number.isFinite(configured) ? Math.max(0, configured) : 30_000;
+}
+
+const REFRESH_MARKER_KEY = 'last_refresh_ms';
+
+/** Advisory only, and best effort: losing the marker costs a redundant walk, nothing else. */
+function writeRefreshMarker(ts: number): void {
+  try {
+    getDb().run('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [REFRESH_MARKER_KEY, String(ts)]);
+  } catch {}
+}
+
+/** 0 when absent or unreadable — a missing marker must read as "nobody has walked", never as "fresh". */
+function readRefreshMarker(): number {
+  try {
+    const row = getDb()
+      .query<{ value: string }, [string]>('SELECT value FROM meta WHERE key = ?')
+      .get(REFRESH_MARKER_KEY);
+    const ts = Number(row?.value ?? 0);
+    return Number.isFinite(ts) ? ts : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Another process finished a walk recently enough that this one can skip its own.
+ *
+ * A future-dated marker counts as expired: that is a clock moved backwards, and trusting
+ * it would suppress walks until real time caught up — search silently missing every new
+ * transcript in the meantime.
+ */
+function markerIsFresh(): boolean {
+  const marker = readRefreshMarker();
+  if (marker <= 0) return false;
+  const age = Date.now() - marker;
+  return age >= 0 && age < refreshIntervalMs();
+}
+
+/** Rows already in the index, so a skipped walk reports what is there instead of the
+ *  module-initial "0 sessions indexed". */
+function indexedCount(): number {
+  try {
+    return getDb().query<{ n: number }, []>('SELECT COUNT(*) AS n FROM sessions').get()?.n ?? 0;
+  } catch {
+    return 0;
+  }
+}
+
 async function ensureIndexFresh(): Promise<RefreshResult> {
   if (_refreshPromise) return _refreshPromise;
+  if (_lastFailureAt > 0 && Date.now() - _lastFailureAt < refreshBackoffMs()) return _lastRefreshResult;
   if (_db && Date.now() - _lastRefreshAt < refreshIntervalMs()) return _lastRefreshResult;
+  if (markerIsFresh()) {
+    // Someone else's walk counts as ours. Recorded locally too, so the rest of this
+    // process's queries take the cheap in-memory branch above instead of re-reading it.
+    _lastRefreshAt = Date.now();
+    _lastRefreshResult = { total: indexedCount(), updated: 0 };
+    return _lastRefreshResult;
+  }
   return refreshIndex();
 }
 

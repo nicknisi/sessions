@@ -22,6 +22,10 @@ process.env.SESSIONS_CODEX_DIR = codexDir;
 process.env.SESSIONS_CACHE_DIR = cacheDir;
 process.env.SESSIONS_MEMORY_DB = memoryDb;
 process.env.SESSIONS_OPENCODE_DB = opencodeDb;
+// Sessions are written between queries and the next query has to see them, so opt out of
+// both freshness short-circuits: the in-process timer and the on-disk refresh marker a
+// prior query (or a spawned child, which inherits this) left behind.
+process.env.SESSIONS_REFRESH_INTERVAL_MS = '0';
 
 const cache = await import('./cache');
 
@@ -35,12 +39,14 @@ beforeEach(() => {
   process.env.SESSIONS_CACHE_DIR = cacheDir;
   process.env.SESSIONS_MEMORY_DB = memoryDb;
   process.env.SESSIONS_OPENCODE_DB = opencodeDb;
+  process.env.SESSIONS_REFRESH_INTERVAL_MS = '0';
   cache.closeDb();
 });
 
 afterAll(() => {
   cache.closeDb(); // release the handle before deleting the fixture dir
   rmSync(fixtureRoot, { recursive: true, force: true });
+  delete process.env.SESSIONS_REFRESH_INTERVAL_MS;
 });
 
 let seq = 0;
