@@ -106,6 +106,7 @@ sessions --errored           # Only sessions that hit an error
 sessions --file src/auth.ts  # Only sessions that touched this file
 sessions context             # Print a context primer for the current repo
 sessions lessons             # Lessons saved for the current repo
+sessions distill             # Mine past sessions for lessons, for you to review
 sessions digest <session>    # Print one session's arc as compact markdown
 sessions export <session>    # Print a session as a trajectory-v1 document
 sessions report              # Usage report (HTML dashboard, opens in browser)
@@ -113,24 +114,25 @@ sessions report              # Usage report (HTML dashboard, opens in browser)
 
 ### Options
 
-| Flag / Command     | Description                                                                                                                                                                              |
-| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `context`          | Print a markdown context primer for the current repo (see [Context primer](#context-primer))                                                                                             |
-| `lessons`          | Lessons saved for this repo (see [Lessons](#lessons)). `review` resolves conflicts, `export` writes them out, `audit` traces deferred provenance, `retire <id>` takes one out of service |
-| `digest <session>` | Print one session's arc as compact markdown (~8k chars): each genuine user turn with its exchange's final assistant reply. Accepts a JSONL file path or a session id                     |
-| `export`           | Print sessions as trajectory-v1 JSONL (see [Exporting trajectories](#exporting-trajectories))                                                                                            |
-| `report`           | Generate a usage report (see [Usage reports](#usage-reports))                                                                                                                            |
-| `setup`            | Install plugin and configure MCP for detected tools (`--hooks` opts into auto-injection)                                                                                                 |
-| `uninstall`        | Remove plugin, MCP config, and the SessionStart hook from all tools. Saved lessons are kept; `--purge-lessons --yes` deletes them too                                                    |
-| `cleanup`          | Full reset: uninstall plugin + clear search index. Keeps saved lessons — they are not re-derivable from transcripts                                                                      |
-| `--here`           | Scope to the current git repo (default: all projects)                                                                                                                                    |
-| `--tool <name>`    | Filter by tool: `claude`, `codex`, `pi`, or `opencode`                                                                                                                                   |
-| `--errored`        | Only show sessions that hit an error                                                                                                                                                     |
-| `--file <path>`    | Only sessions that touched or read this path (substring match; repeatable — every path must match). Newest first when no query is given                                                  |
-| `--mcp`            | Start as an MCP server (stdio transport)                                                                                                                                                 |
-| `--clear-cache`    | Remove the search index (rebuilds on next use)                                                                                                                                           |
-| `--no-color`       | Disable colored output                                                                                                                                                                   |
-| `-h`, `--help`     | Show help                                                                                                                                                                                |
+| Flag / Command     | Description                                                                                                                                                                                                      |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `context`          | Print a markdown context primer for the current repo (see [Context primer](#context-primer))                                                                                                                     |
+| `lessons`          | Lessons saved for this repo (see [Lessons](#lessons)). `review` resolves conflicts and distilled proposals, `export` writes them out, `audit` traces deferred provenance, `retire <id>` takes one out of service |
+| `distill`          | Mine past sessions for lessons and park them for review (see [Lessons](#lessons)). `--query`/`--limit`/`--days`/`--here` bound the selection, `--with` picks the agent CLI                                       |
+| `digest <session>` | Print one session's arc as compact markdown (~8k chars): each genuine user turn with its exchange's final assistant reply. Accepts a JSONL file path or a session id                                             |
+| `export`           | Print sessions as trajectory-v1 JSONL (see [Exporting trajectories](#exporting-trajectories))                                                                                                                    |
+| `report`           | Generate a usage report (see [Usage reports](#usage-reports))                                                                                                                                                    |
+| `setup`            | Install plugin and configure MCP for detected tools (`--hooks` opts into auto-injection)                                                                                                                         |
+| `uninstall`        | Remove plugin, MCP config, and the SessionStart hook from all tools. Saved lessons are kept; `--purge-lessons --yes` deletes them too                                                                            |
+| `cleanup`          | Full reset: uninstall plugin + clear search index. Keeps saved lessons — they are not re-derivable from transcripts                                                                                              |
+| `--here`           | Scope to the current git repo (default: all projects)                                                                                                                                                            |
+| `--tool <name>`    | Filter by tool: `claude`, `codex`, `pi`, or `opencode`                                                                                                                                                           |
+| `--errored`        | Only show sessions that hit an error                                                                                                                                                                             |
+| `--file <path>`    | Only sessions that touched or read this path (substring match; repeatable — every path must match). Newest first when no query is given                                                                          |
+| `--mcp`            | Start as an MCP server (stdio transport)                                                                                                                                                                         |
+| `--clear-cache`    | Remove the search index (rebuilds on next use)                                                                                                                                                                   |
+| `--no-color`       | Disable colored output                                                                                                                                                                                           |
+| `-h`, `--help`     | Show help                                                                                                                                                                                                        |
 
 ### Browsing
 
@@ -285,11 +287,37 @@ Both are complete copies of the same lessons, so `--purge-lessons --yes` removes
 ```bash
 sessions lessons                 # lessons in scope for this repo (plus global ones)
 sessions lessons --all           # every lesson, every repo
-sessions lessons review          # resolve lessons that contradict each other
+sessions lessons review          # resolve conflicts and distilled proposals
 sessions lessons export          # the whole store as JSON (--out writes a file)
 sessions lessons audit           # trace deferred provenance back to a session
 sessions lessons retire <id>     # take one out of service (marked, never deleted)
 ```
+
+**Seeding it from history.** `remember_lesson` only fires when an agent chooses to call
+it mid-session, so the realistic failure of the store is an empty table. `sessions
+distill` mines the sessions already indexed:
+
+```bash
+sessions distill                 # the 10 most recent sessions
+sessions distill --query "auth"  # the top-ranked matches instead
+sessions distill --here --days 30
+sessions lessons review          # accept or reject what it found
+```
+
+Everything it writes is a **proposal**, never an active lesson: proposals are withheld
+from the primer, counted separately from conflicts, and only enter service when you
+accept one — at which point they go through the same near-duplicate quarantine as any
+other save. Accepting deletes the proposal row and re-saves the text; rejecting retires
+it, so it stays readable and stays out of the way. A proposal is also the one thing in
+this store that is re-derivable, which is why re-running distill is free: an identical
+proposal bumps a timestamp and inserts nothing.
+
+The child process is restricted, because unlike `wrapped --roast` (which feeds a model
+numbers) distill feeds it transcript prose, and prose can carry anything an agent once
+read. Only CLIs with a verified restriction flag are offered — `claude` with
+`--permission-mode plan` plus an explicit deny list, `codex` with `--sandbox read-only`
+— and the child runs in an empty temp directory. Pi has no such flag, so pi is not
+offered.
 
 **Keeping it from becoming a junk drawer.** Lessons are bounded at write — 280 characters for the lesson, 600 for the detail — and over-length input is rejected with an instruction to compress rather than silently truncated. Re-saving the same lesson bumps a timestamp and inserts nothing. A lesson that substantially overlaps an existing one puts _both_ rows into `needs_review`: neither is served until you pick, because quarantining only the newcomer would keep serving the possibly-stale incumbent while the correction sat invisible. The primer shows the pressure — `+N more` when it caps, and the count of anything flagged.
 

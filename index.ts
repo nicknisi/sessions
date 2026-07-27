@@ -90,6 +90,13 @@ if (command === 'lessons') {
   process.exit(0);
 }
 
+if (command === 'distill') {
+  const { parseDistillArgs, runDistill } = await import('./src/distill.ts');
+  const distillArgs = parseDistillArgs(Bun.argv.slice(3));
+  await runDistill(distillArgs, getRepoRoot(distillArgs.here ?? false));
+  process.exit(0);
+}
+
 if (command === 'digest') {
   const { parseDigestArgs, runDigest } = await import('./src/digest.ts');
   await runDigest(parseDigestArgs(Bun.argv.slice(3)));

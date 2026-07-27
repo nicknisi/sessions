@@ -33,9 +33,14 @@ ${C.bold}Commands:${C.reset}
                    --full widens detail; --limit/--days/--tool filter; --worktree
                    narrows to the current worktree; --out <path> writes to a file
   lessons          Lessons saved for this repo — what past sessions concluded,
-                   not what they did. review resolves conflicts, export writes
-                   them out as JSON, audit traces deferred provenance, retire
-                   takes one out of service. Stored outside the search index
+                   not what they did. review resolves conflicts and distilled
+                   proposals, export writes them out as JSON, audit traces
+                   deferred provenance, retire takes one out of service. Stored
+                   outside the search index
+  distill          Mine past sessions for lessons and park them for review.
+                   Every result is a proposal, never served until accepted.
+                   --query ranks the selection; --limit/--days bound it;
+                   --here scopes to this repo; --with picks the agent CLI
   digest <session> Print the arc of one session as compact markdown (~8k chars):
                    each genuine user turn with its exchange's final assistant
                    reply. Accepts a JSONL file path or an indexed session id

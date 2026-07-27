@@ -3,8 +3,14 @@ export type Tool = 'claude' | 'pi' | 'codex' | 'opencode';
 /**
  * How a lesson's session id was established, most trustworthy first. See
  * src/provenance.ts for the ladder that produces it.
+ *
+ * `distilled` is the odd one out and does not come from that ladder: `sessions distill`
+ * picked the transcript itself, so the session is known exactly — but the claim is a
+ * model's reading of that transcript rather than something anyone stated in it. It gets
+ * its own value so it can never be mistaken for `recovered`, which means a lesson an
+ * agent wrote was traced back to its conversation after the fact.
  */
-export type Provenance = 'meta' | 'hook' | 'env' | 'deferred' | 'recovered' | 'none';
+export type Provenance = 'meta' | 'hook' | 'env' | 'deferred' | 'recovered' | 'distilled' | 'none';
 
 /** A saved lesson as the primer serves it. */
 export interface ContextLesson {
@@ -127,6 +133,9 @@ export interface ContextPrimer {
   lessons: ContextLesson[];
   /** Lessons quarantined as conflicting. A count only — a contested belief is never served as fact. */
   lessonsFlagged: number;
+  /** Unreviewed proposals from `sessions distill`. Counted apart from lessonsFlagged so
+   *  "conflicts withheld" never silently means "things nobody has looked at yet". */
+  lessonsProposed: number;
   /** Active in-scope lessons, so a capped list can say how many it left out. */
   lessonsTotal: number;
   /** Corrupt lesson stores moved aside. Non-empty means lessons are missing, not absent. */

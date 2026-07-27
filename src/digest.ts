@@ -50,7 +50,13 @@ function clip(text: string, max: number): string {
  * message indices. The serialized digest is elided from the middle — never the
  * head or tail — until it fits DIGEST_MAX_CHARS.
  */
-export function buildSessionDigest(lines: string[], tool: Tool): SessionDigest {
+/**
+ * `maxChars` overrides the per-session budget for a caller that has to fit SEVERAL
+ * digests into one payload (src/distill.ts packs a whole batch into a single argv
+ * element). Keep it comfortably above one exchange's field caps: the binary search
+ * below leans on "k = 1 always fits".
+ */
+export function buildSessionDigest(lines: string[], tool: Tool, maxChars: number = DIGEST_MAX_CHARS): SessionDigest {
   const messages = toMessages(parseSession(lines, tool));
 
   const all: DigestExchange[] = [];
@@ -93,7 +99,7 @@ export function buildSessionDigest(lines: string[], tool: Tool): SessionDigest {
   };
 
   let digest = candidate(all.length);
-  if (JSON.stringify(digest).length > DIGEST_MAX_CHARS) {
+  if (JSON.stringify(digest).length > maxChars) {
     // Largest k that fits, by binary search — each kept exchange adds more
     // serialized length than the shrinking `elided` digits remove, so length
     // is monotone in k. k = 1 always fits given the field caps.
@@ -103,7 +109,7 @@ export function buildSessionDigest(lines: string[], tool: Tool): SessionDigest {
     while (lo <= hi) {
       const mid = (lo + hi) >> 1;
       const c = candidate(mid);
-      if (JSON.stringify(c).length <= DIGEST_MAX_CHARS) {
+      if (JSON.stringify(c).length <= maxChars) {
         digest = c;
         lo = mid + 1;
       } else {

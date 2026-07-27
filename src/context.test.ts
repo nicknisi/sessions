@@ -311,6 +311,7 @@ describe('cli', () => {
       isEmpty: false,
       lessons: [],
       lessonsFlagged: 0,
+      lessonsProposed: 0,
       lessonsTotal: 0,
       lessonsQuarantined: [],
       recent: [
@@ -347,6 +348,7 @@ describe('cli', () => {
       isEmpty: true,
       lessons: [],
       lessonsFlagged: 0,
+      lessonsProposed: 0,
       lessonsTotal: 0,
       lessonsQuarantined: [],
       recent: [],
@@ -365,6 +367,7 @@ describe('cli', () => {
       isEmpty: false,
       lessons: [],
       lessonsFlagged: 0,
+      lessonsProposed: 0,
       lessonsTotal: 0,
       lessonsQuarantined: [],
       recent: [

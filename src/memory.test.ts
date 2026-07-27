@@ -849,29 +849,71 @@ describe('export', () => {
 
 describe('the migration ladder', () => {
   test('a later version is applied over an existing file, and the row survives', () => {
-    save('A lesson written by the v1 build.', { detail: 'root cause and fix', now: '2026-07-01T00:00:00.000Z' });
+    save('A lesson written by the current build.', { detail: 'root cause and fix', now: '2026-07-01T00:00:00.000Z' });
     mem.closeMemoryDb();
 
-    // A synthetic v2 step. The v1 step must be skipped, not re-run — the ladder walks
-    // from the file's version, never from zero.
+    // A synthetic step one past the real ladder. The already-applied step must be
+    // skipped, not re-run — the ladder walks from the file's version, never from zero.
+    // Both `to`s are relative to MEMORY_SCHEMA_VERSION on purpose: pinning them to 1
+    // and 2 made this test go quietly green (and stop asserting anything) the moment a
+    // real step 2 landed, because then both synthetic steps are behind the file.
+    const current = mem.MEMORY_SCHEMA_VERSION;
     const db = new Database(dbPath);
     const applied = mem.applyMigrations(db, [
       {
-        to: 1,
+        to: current,
         up: () => {
-          throw new Error('v1 must not re-run on a v1 file');
+          throw new Error(`v${current} must not re-run on a v${current} file`);
         },
       },
-      { to: 2, up: (d) => d.run("ALTER TABLE lessons ADD COLUMN confidence TEXT NOT NULL DEFAULT 'unknown'") },
+      {
+        to: current + 1,
+        up: (d) => d.run("ALTER TABLE lessons ADD COLUMN confidence TEXT NOT NULL DEFAULT 'unknown'"),
+      },
     ]);
 
-    expect(applied).toBe(2);
-    expect(db.query<{ user_version: number }, []>('PRAGMA user_version').get()?.user_version).toBe(2);
+    expect(applied).toBe(current + 1);
+    expect(db.query<{ user_version: number }, []>('PRAGMA user_version').get()?.user_version).toBe(current + 1);
     const row = db.query<{ lesson: string; detail: string; confidence: string }, []>('SELECT * FROM lessons').get()!;
-    expect(row.lesson).toBe('A lesson written by the v1 build.');
+    expect(row.lesson).toBe('A lesson written by the current build.');
     expect(row.detail).toBe('root cause and fix');
     expect(row.confidence).toBe('unknown');
     db.close();
+  });
+
+  test('the forward migration preserves every existing row and its supersedes chain', () => {
+    const first = save('The limiter counts preflight requests against the budget.');
+    const second = save('The limiter does not count preflight requests against the budget.', {
+      supersedes: first.id,
+      detail: 'src/limiter.ts',
+    });
+    expect(second.outcome).toBe('saved');
+    const before = mem.exportLessons();
+    mem.closeMemoryDb();
+
+    // Wind the file back to v1 to stand in for a store written before 'proposed'
+    // existed. v2 is a version bump with no DDL — which is exactly why "did anything
+    // move?" is the only thing worth asserting about it.
+    const older = new Database(dbPath);
+    older.run('PRAGMA user_version = 1');
+    older.close();
+
+    // Reopening runs the ladder.
+    expect(mem.listLessons({ all: true }).length).toBe(2);
+    const after = mem.exportLessons();
+    expect(after).toEqual(before);
+    const chain = mem.listLessons({ all: true });
+    const superseded = chain.find((r) => r.id === first.id)!;
+    expect(superseded.status).toBe('superseded');
+    expect(superseded.superseded_by).toBe(second.id!);
+    expect(chain.find((r) => r.id === second.id)!.supersedes_id).toBe(first.id!);
+
+    mem.closeMemoryDb();
+    const check = new Database(dbPath, { readonly: true });
+    expect(check.query<{ user_version: number }, []>('PRAGMA user_version').get()?.user_version).toBe(
+      mem.MEMORY_SCHEMA_VERSION,
+    );
+    check.close();
   });
 
   test('a file newer than the build is served read-only, never rewritten', () => {

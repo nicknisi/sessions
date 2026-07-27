@@ -11,7 +11,9 @@ import { coerceExtras } from './extras.ts';
 
 export type RoastToolId = 'claude' | 'codex' | 'pi';
 
-interface RoastTool {
+/** Exported so another caller can reuse the spawn MECHANISM with its own tool table —
+ *  see src/distill.ts, which needs a restricted argv this table deliberately lacks. */
+export interface RoastTool {
   id: RoastToolId;
   label: string;
   bin: string;
@@ -102,16 +104,35 @@ export function extractJsonArray(out: string): unknown {
   }
 }
 
-export type RoastRunner = (tool: RoastTool, prompt: string, timeoutMs: number) => Promise<string>;
+/** Optional spawn controls. Roast passes none; distill needs both. */
+export interface SpawnContext {
+  /** Working directory for the child. Roast leaves it inherited (it feeds the model
+   *  numbers); distill points it at an empty temp dir, because it feeds transcript
+   *  prose and a successful escape should have nothing of the user's to touch. */
+  cwd?: string;
+  /** Sink for the child's stderr, so a CLI that rejected a flag can say so instead of
+   *  being reported as "returned nothing usable". Discarded when absent. */
+  onStderr?: (text: string) => void;
+}
+
+export type RoastRunner = (tool: RoastTool, prompt: string, timeoutMs: number, ctx?: SpawnContext) => Promise<string>;
 
 // Default runner: spawn the CLI, capture stdout, hard-kill on timeout. The child
 // rides the user's own auth/subscription — wrapped never handles credentials.
-const spawnRunner: RoastRunner = async (tool, prompt, timeoutMs) => {
-  const proc = Bun.spawn([tool.bin, ...tool.args(prompt)], { stdout: 'pipe', stderr: 'ignore', stdin: 'ignore' });
+// stderr is always piped and always drained: an undrained pipe can block a chatty
+// child, and a discarded-but-drained stream behaves exactly like the old 'ignore'.
+export const spawnRunner: RoastRunner = async (tool, prompt, timeoutMs, ctx) => {
+  const proc = Bun.spawn([tool.bin, ...tool.args(prompt)], {
+    stdout: 'pipe',
+    stderr: 'pipe',
+    stdin: 'ignore',
+    cwd: ctx?.cwd,
+  });
   const timer = setTimeout(() => proc.kill(), timeoutMs);
   try {
-    const out = await new Response(proc.stdout).text();
+    const [out, err] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
     await proc.exited;
+    if (ctx?.onStderr && err.trim()) ctx.onStderr(err.trim());
     return out;
   } finally {
     clearTimeout(timer);
