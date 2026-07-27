@@ -53,6 +53,29 @@ export interface FormattedResult {
   messageHits?: MessageHit[];
 }
 
+/** Bumped only when a payload's shape breaks — never for the tool's own version. */
+export const JSON_ENVELOPE_VERSION = 1;
+
+/** The two fields every machine-readable CLI payload leads with. Mirrors the
+ *  `UsageReport` convention in report/schema.ts. */
+export interface JsonEnvelope {
+  generator: 'sessions';
+  version: number;
+}
+
+/**
+ * Wrap a payload for a `--json` surface.
+ *
+ * A consumer pins `version` and fails loudly on a shape change instead of silently
+ * misreading one. Deliberately *not* folded into formatResult: src/eval/run.ts measures
+ * `JSON.stringify(results.map(formatResult)).length` as the payload metric behind
+ * PAYLOAD_CEILING, so wrapping at the serializer would move every ceiling in the eval
+ * ratchet for a reason that has nothing to do with ranking.
+ */
+export function envelope<T extends object>(payload: T): JsonEnvelope & T {
+  return { generator: 'sessions', version: JSON_ENVELOPE_VERSION, ...payload };
+}
+
 /** Single source of truth for the search-result payload shared across surfaces. */
 export function formatResult(r: SessionResult): FormattedResult {
   const out: FormattedResult = {

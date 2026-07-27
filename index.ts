@@ -1,29 +1,55 @@
 import { basename } from 'node:path';
 import { version } from './package.json';
-import { parseArgs, getRepoRoot, toSearchOptions } from './src/cli';
+import { parseArgs, parseSearchArgs, getRepoRoot, toSearchOptions } from './src/cli';
 import { C } from './src/colors';
 import { scanSessions } from './src/scanner';
 import { formatLine } from './src/display';
 import { selectSession } from './src/select';
 import { copyToClipboard } from './src/clipboard';
-import { buildResumeCommand } from './src/search-format';
+import { buildResumeCommand, envelope, formatResult } from './src/search-format';
+import { writeStdoutFully } from './src/stdout';
 import type { Tool } from './src/types';
-
-if (Bun.argv.includes('--version') || Bun.argv.includes('-v')) {
-  process.stdout.write(`sessions ${version}\n`);
-  process.exit(0);
-}
-
-if (Bun.argv.includes('--clear-cache')) {
-  const { clearCache } = await import('./src/cache');
-  clearCache();
-  process.exit(0);
-}
 
 // Commands dispatch on the positional word only. Matching anywhere in argv
 // (the old behavior) let a flag VALUE fire a command — `sessions wrapped
 // --out cleanup` would have uninstalled the plugin and wiped the index.
 const command = Bun.argv[2];
+
+/**
+ * Every command word — the set that tells a root-level flag from a subcommand's own argv.
+ *
+ * The three flags below still match anywhere in argv, which is fine at the root and wrong
+ * once a subcommand owns the rest of the line: `sessions search --json -v` printed
+ * `sessions 1.15.3` and exited 0, so a query term could silently replace a script's JSON,
+ * and `search --json --clear-cache` wiped the index. Same class of bug the comment above
+ * describes for commands; the fix was never applied here.
+ */
+const COMMANDS = new Set([
+  'search',
+  'cleanup',
+  'setup',
+  'uninstall',
+  'report',
+  'wrapped',
+  'context',
+  'lessons',
+  'distill',
+  'digest',
+  'export',
+]);
+const rootFlag = (flag: string): boolean =>
+  (command === undefined || !COMMANDS.has(command)) && Bun.argv.includes(flag);
+
+if (rootFlag('--version') || rootFlag('-v')) {
+  process.stdout.write(`sessions ${version}\n`);
+  process.exit(0);
+}
+
+if (rootFlag('--clear-cache')) {
+  const { clearCache } = await import('./src/cache');
+  clearCache();
+  process.exit(0);
+}
 
 if (command === 'cleanup') {
   const { clearCache } = await import('./src/cache');
@@ -33,7 +59,7 @@ if (command === 'cleanup') {
   process.exit(0);
 }
 
-if (Bun.argv.includes('--mcp')) {
+if (rootFlag('--mcp')) {
   const { startMcpServer } = await import('./src/mcp');
   await startMcpServer();
   await new Promise(() => {});
@@ -109,10 +135,18 @@ if (command === 'export') {
   process.exit(0);
 }
 
-const args = parseArgs(Bun.argv.slice(2));
+// `sessions search <query>` is the scriptable twin of the bare-query path, not a second
+// implementation of it: same parser, same options, same searchSessions call, same
+// interactive tail. It only adds --json/--no-refresh and grep's exit codes. Two code
+// paths answering the same question is how get_session_metrics ended up UTC-wrong on one
+// side only, so there is exactly one here.
+const searchArgs = command === 'search' ? parseSearchArgs(Bun.argv.slice(3)) : null;
+const args = searchArgs ?? parseArgs(Bun.argv.slice(2));
 const repoRoot = getRepoRoot(args.scopeHere);
 
-if (args.searchQuery) {
+// --json owns stdout and leaves stderr empty, so a caller that merges the two streams
+// still gets parseable JSON. That means no spinner and no "No sessions found." notice.
+if (args.searchQuery && !searchArgs?.json) {
   process.stderr.write(`${C.dim}  searching sessions...${C.reset}`);
 }
 
@@ -121,14 +155,29 @@ const { query, opts } = toSearchOptions(args, repoRoot);
 let results;
 try {
   results = await searchSessions(query, opts);
-} catch {
+} catch (e) {
+  // The scanner fallback is deliberately not reachable from --json: its results carry no
+  // messageHits (see FormattedResult), so the envelope's shape would depend on whether
+  // the index happened to open. A machine surface reports the error instead.
+  if (searchArgs?.json) {
+    process.stderr.write(`${C.red}error:${C.reset} ${e instanceof Error ? e.message : String(e)}\n`);
+    process.exit(2);
+  }
   results = await scanSessions(repoRoot, args.toolFilter, args.searchQuery); // no-index fallback
+}
+
+if (searchArgs?.json) {
+  await writeStdoutFully(`${JSON.stringify(envelope({ query, results: results.map(formatResult) }))}\n`);
+  // Awaited: an unawaited write followed by process.exit truncates a piped payload at the
+  // 64KB buffer, and the default limit is 1000 results. grep semantics on the way out —
+  // "matched nothing" is not an error, but a script has to be able to tell them apart.
+  process.exit(results.length > 0 ? 0 : 1);
 }
 
 if (results.length === 0) {
   if (args.searchQuery) process.stderr.write('\r\x1b[K');
   process.stderr.write(`${C.dim}No sessions found.${C.reset}\n`);
-  process.exit(0);
+  process.exit(searchArgs ? 1 : 0);
 }
 
 const cols = parseInt(process.env.COLUMNS ?? '80', 10);

@@ -100,6 +100,7 @@ To remove everything: `sessions uninstall`
 ```sh
 sessions                     # Browse all sessions with fzf
 sessions <query>             # Full-text search across session content
+sessions search --json auth  # The same search, as JSON on stdout (see Scripting)
 sessions --here              # Scope to current git repo only
 sessions --tool claude       # Filter to Claude Code sessions only
 sessions --errored           # Only sessions that hit an error
@@ -116,7 +117,8 @@ sessions report              # Usage report (HTML dashboard, opens in browser)
 
 | Flag / Command     | Description                                                                                                                                                                                                      |
 | ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `context`          | Print a markdown context primer for the current repo (see [Context primer](#context-primer))                                                                                                                     |
+| `search <query>`   | The bare-query search as a scriptable command: `--json` prints a versioned envelope, `--no-refresh` serves the index as-is, and the exit code follows grep (see [Scripting](#scripting))                         |
+| `context`          | Print a markdown context primer for the current repo (see [Context primer](#context-primer)). `--json` emits it as a versioned envelope; `--no-refresh` skips the source scan                                    |
 | `lessons`          | Lessons saved for this repo (see [Lessons](#lessons)). `review` resolves conflicts and distilled proposals, `export` writes them out, `audit` traces deferred provenance, `retire <id>` takes one out of service |
 | `distill`          | Mine past sessions for lessons and park them for review (see [Lessons](#lessons)). `--query`/`--limit`/`--days`/`--here` bound the selection, `--with` picks the agent CLI                                       |
 | `digest <session>` | Print one session's arc as compact markdown (~8k chars): each genuine user turn with its exchange's final assistant reply. Accepts a JSONL file path or a session id                                             |
@@ -171,6 +173,46 @@ When you pick a session, `sessions` displays the resume command and copies it to
 ```
 
 For Claude Code sessions, the command includes `--resume <session-id>`; for OpenCode, `opencode --session <session-id>`. For Pi and Codex sessions, it navigates to the project directory (these tools don't support direct session resume).
+
+### Scripting
+
+The interactive picker is the wrong shape for a shell script, a statusline, or an editor plugin. `sessions search --json` and `sessions context --json` are the same capabilities without it — stdout carries the payload, stderr stays empty, and the exit code is the branch.
+
+```sh
+sessions search --json auth | jq -r '.results[0].resumeCommand'
+sessions context --json --no-refresh | jq '.lessons | length'
+
+if sessions search --json "flaky test" >/dev/null; then
+  echo "we have been here before"
+fi
+```
+
+Both payloads carry the same two-field envelope, so a consumer can pin the shape and fail loudly if it ever changes:
+
+```jsonc
+{
+  "generator": "sessions",
+  "version": 1,
+  "query": "auth",
+  "results": [
+    /* the same objects the MCP `search_sessions` tool returns */
+  ],
+}
+```
+
+`sessions context --json` puts the primer's own fields (`repoLabel`, `recent`, `headlines`, `lessons`, `isEmpty`, …) beside `generator` and `version` at the top level. Outside a git repo it still prints a valid envelope with an empty primer rather than nothing at all — `JSON.parse('')` throws, and a statusline should not.
+
+`version` is the envelope's, not the tool's: it moves only when a payload shape breaks.
+
+| Exit code | Meaning                                  |
+| --------- | ---------------------------------------- |
+| `0`       | One or more matches                      |
+| `1`       | No matches                               |
+| `2`       | Usage error (unknown flag, bad argument) |
+
+Those are grep's codes, and they apply to `sessions search` only — the bare `sessions <query>` form keeps the exit codes it has always had, so existing scripts are unaffected. `sessions search` shadows the word "search" as a bare query; write it twice (`sessions search search`) to search for the word itself.
+
+`--no-refresh` (on both commands) serves whatever the index already holds instead of scanning your session directories for new transcripts. Against a cache that has never been built it returns nothing and builds nothing — deliberately, so a latency-sensitive caller can never be the one that pays for the first index. `sessions context --no-refresh` still reads saved lessons, which live outside the search index.
 
 ## Agent memory
 

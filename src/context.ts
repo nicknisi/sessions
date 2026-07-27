@@ -3,6 +3,8 @@ import { resolveRepo } from './repo';
 import { getContextPrimer } from './cache';
 import { LESSON_HOOK_LIMIT } from './memory';
 import { writeHandoff } from './provenance';
+import { envelope } from './search-format';
+import { writeStdoutFully } from './stdout';
 import type { ContextPrimer, Tool } from './types';
 
 const VALID_TOOLS = new Set<string>(['claude', 'codex', 'pi', 'opencode']);
@@ -16,6 +18,8 @@ export interface ContextArgs {
   worktreeOnly: boolean;
   out?: string;
   hook: boolean; // SessionStart-hook mode: tight defaults, never-throw, empty-on-nothing
+  json: boolean; // emit the primer as a versioned envelope instead of markdown
+  noRefresh: boolean; // serve the index as-is; never scan, never build one
 }
 
 /** Recent-tier size used by `--hook` mode: a small primer, not a transcript. */
@@ -44,6 +48,11 @@ Options:
   --full           Widen per-session detail
   --worktree       Restrict to the current worktree (default: all worktrees)
   --out <path>     Write the primer to a file instead of stdout
+  --json           Emit the primer as JSON: the ContextPrimer fields under a
+                   {generator, version} envelope. Outside a git repo it still
+                   prints a valid empty envelope, never nothing
+  --no-refresh     Serve the index as-is instead of scanning for new transcripts.
+                   With no index yet, serves lessons only and builds nothing
   --hook           SessionStart-hook mode: tiny primer, exit 0 on anything
   -h, --help       Show this help
 `);
@@ -58,6 +67,8 @@ export function parseContextArgs(argv: string[]): ContextArgs {
     full: false,
     worktreeOnly: false,
     hook: false,
+    json: false,
+    noRefresh: false,
   };
 
   let limitExplicit = false;
@@ -106,11 +117,22 @@ export function parseContextArgs(argv: string[]): ContextArgs {
       case '--hook':
         args.hook = true;
         break;
+      case '--json':
+        args.json = true;
+        break;
+      case '--no-refresh':
+        args.noRefresh = true;
+        break;
       default:
         die(`unknown option: ${a}`);
     }
     i++;
   }
+
+  // Hook mode appends a prose pointer paragraph after the primer and swallows every
+  // error, so a caller asking for both would get markdown trailing its JSON. Rejected
+  // rather than silently letting one win.
+  if (args.json && args.hook) die('--json cannot be combined with --hook');
 
   // Hook mode is a tiny primer by default; an explicit --limit still wins.
   if (args.hook && !limitExplicit) args.limit = HOOK_LIMIT;
@@ -234,6 +256,13 @@ export async function runContext(args: ContextArgs): Promise<void> {
 
   const repo = resolveRepo(process.cwd());
   if (!repo) {
+    // A machine surface has to emit parseable bytes even when there is nothing to say:
+    // today's "message on stderr, empty stdout" makes a statusline call JSON.parse('')
+    // and throw. An empty primer says the same thing in a shape the caller can read.
+    if (args.json) {
+      await emitContext(JSON.stringify(envelope(EMPTY_PRIMER)), args);
+      return;
+    }
     process.stderr.write('Not inside a git repository.\n');
     process.exit(0);
   }
@@ -243,20 +272,44 @@ export async function runContext(args: ContextArgs): Promise<void> {
     days: args.days,
     tool: args.tool,
     worktreeOnly: args.worktreeOnly,
+    noRefresh: args.noRefresh,
   });
 
-  const md = renderMarkdown(primer, args.full);
+  // Non-pretty, matching the MCP handlers: indentation is pure byte cost on a machine
+  // surface. The envelope is a CLI concern only — get_context_primer (src/mcp.ts) keeps
+  // returning the bare primer, because its clients pin the MCP protocol version instead.
+  await emitContext(args.json ? JSON.stringify(envelope(primer)) : renderMarkdown(primer, args.full), args);
+}
 
+/** Not a git repo, in the shape `--json` promises: every ContextPrimer field, all empty. */
+const EMPTY_PRIMER: ContextPrimer = {
+  repoLabel: '',
+  toolFilter: '',
+  recent: [],
+  headlines: [],
+  lessons: [],
+  lessonsFlagged: 0,
+  lessonsProposed: 0,
+  lessonsTotal: 0,
+  lessonsQuarantined: [],
+  isEmpty: true,
+};
+
+/** `--out` writes whatever `--json` decided the body is; stdout gets the same bytes
+ *  otherwise. writeStdoutFully because index.ts process.exit()s the moment runContext
+ *  returns, and a bare write truncates a piped primer at the 64KB pipe buffer. */
+async function emitContext(body: string, args: ContextArgs): Promise<void> {
+  const text = body.endsWith('\n') ? body : body + '\n';
   if (args.out) {
     try {
-      await writeFile(args.out, md, 'utf-8');
+      await writeFile(args.out, text, 'utf-8');
       process.stderr.write(`wrote ${args.out}\n`);
     } catch (e) {
       die(`could not write ${args.out}: ${e instanceof Error ? e.message : String(e)}`);
     }
-  } else {
-    process.stdout.write(md.endsWith('\n') ? md : md + '\n');
+    return;
   }
+  await writeStdoutFully(text);
 }
 
 /** The SessionStart payload Claude Code writes to the hook's stdin. */
@@ -333,12 +386,13 @@ async function runContextHook(args: ContextArgs): Promise<void> {
 
     if (primer.isEmpty) return; // no history → inject nothing
 
-    // Never widen detail in hook mode — keep the injected block small.
-    process.stdout.write(renderMarkdown(primer, false, LESSONS_MAX_CHARS_HOOK));
+    // Never widen detail in hook mode — keep the injected block small. Awaited for the
+    // same reason as the primer path: index.ts exits the moment this returns.
+    await writeStdoutFully(renderMarkdown(primer, false, LESSONS_MAX_CHARS_HOOK));
     // Standing pointer for the agent: the primer is a snapshot, not the archive — and
     // the store is written, not only read. Nothing else fires at the moment something
     // is learned, so the one sentence that says "save it" has to ride along here.
-    process.stdout.write(
+    await writeStdoutFully(
       '\n> This is a snapshot of recent sessions on this repo. Full history across all past sessions is searchable — use the sessions MCP tools (search_sessions, get_session_digest, get_context_primer) when prior work, decisions, or dead ends are referenced. When this session turns up something the next one would otherwise re-derive — a root cause that took real work, a correction from the user, an approach that looked right and was not — call remember_lesson before you finish.\n',
     );
   } catch {

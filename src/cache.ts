@@ -26,7 +26,7 @@ import { getSessionMessages, parseSession, toMessages } from './record';
 import { type RepoInfo, globPrefix, branchLabel } from './repo';
 import { isTrivia, blendedScore, type ScorableSession } from './significance';
 import { isJunkScope, notJunkCwdSql } from './wrapped/exclude';
-import { readLessonsForRepo, LESSON_LIMIT } from './memory';
+import { readLessonsForRepo, LESSON_LIMIT, type RepoLessons } from './memory';
 
 // Source/cache locations live in src/paths.ts — every one honors a SESSIONS_* env
 // override so tests can point the index at hermetic temp fixtures. Re-exported
@@ -680,7 +680,23 @@ function indexedCount(): number {
   }
 }
 
-async function ensureIndexFresh(): Promise<RefreshResult> {
+/**
+ * A `--no-refresh` caller against a cache that has never been built.
+ *
+ * getDb() creates the file — mkdirSync(getCacheDir()) + `new Database(getDbPath())` plus
+ * the whole CREATE TABLE ladder — and it runs *before* ensureIndexFresh at every call
+ * site. So the flag has to gate the open, not just the walk: short-circuiting the walk
+ * alone still leaves an index.db, a -wal and a -shm behind on a cold cache, which is the
+ * opposite of what "do not build an index" promises.
+ */
+function indexAbsent(): boolean {
+  return !existsSync(getDbPath());
+}
+
+async function ensureIndexFresh(noRefresh = false): Promise<RefreshResult> {
+  // Ahead of every other short-circuit: this one is a promise to the caller ("stale is
+  // fine, do not walk"), not an optimization the module is free to second-guess.
+  if (noRefresh) return _lastRefreshResult;
   if (_refreshPromise) return _refreshPromise;
   if (_lastFailureAt > 0 && Date.now() - _lastFailureAt < refreshBackoffMs()) return _lastRefreshResult;
   if (_db && Date.now() - _lastRefreshAt < refreshIntervalMs()) return _lastRefreshResult;
@@ -714,6 +730,10 @@ export interface SearchOptions {
    *  throwaways, menu-bar probes. Off by default: they are ~43% of a real index and
    *  are never what a search is looking for. See src/wrapped/exclude.ts. */
   includeAutomated?: boolean;
+  /** Serve whatever the index already holds and walk nothing. A latency-sensitive caller
+   *  (a statusline, a shell prompt) wants a fast stale answer over a slow fresh one.
+   *  With no index on disk this returns empty rather than building one. */
+  noRefresh?: boolean;
 }
 
 /**
@@ -745,8 +765,9 @@ export function buildFtsQuery(query: string): string {
 }
 
 export async function searchSessions(query: string, opts: SearchOptions = {}): Promise<SessionResult[]> {
+  if (opts.noRefresh && indexAbsent()) return [];
   const db = getDb();
-  await ensureIndexFresh();
+  await ensureIndexFresh(opts.noRefresh);
 
   const toolFilter = opts.tool ?? '';
   const project = opts.project ?? '';
@@ -1313,6 +1334,10 @@ export interface ContextOptions {
   worktreeOnly?: boolean; // restrict to current worktree (default false → aggregate)
   headlineCap?: number; // older-tier cap (default 40)
   lessonLimit?: number; // saved-lesson cap (default LESSON_LIMIT)
+  /** Serve the index as-is and walk nothing; with no index on disk, serve lessons only.
+   *  Separate from SearchOptions.noRefresh because these are two different interfaces —
+   *  getContextPrimer never sees a SearchOptions. */
+  noRefresh?: boolean;
 }
 
 interface ContextRow {
@@ -1339,6 +1364,29 @@ function parseFiles(json: string): string[] {
   }
 }
 
+/** A primer with no session tiers: either the repo has no indexed sessions, or the caller
+ *  said `--no-refresh` and there is no index to read. Both reach the same shape. */
+function primerWithoutSessions(repo: RepoInfo, toolFilter: Tool | '', lessons: RepoLessons): ContextPrimer {
+  return {
+    repoLabel: basename(repo.container),
+    toolFilter,
+    recent: [],
+    headlines: [],
+    lessons: lessons.lessons,
+    lessonsFlagged: lessons.flagged,
+    lessonsProposed: lessons.proposed,
+    lessonsTotal: lessons.total,
+    lessonsQuarantined: lessons.quarantined,
+    // A repo with lessons but no indexed sessions still has something to say — and so
+    // does a store that was moved aside, which is the one empty that must be loud.
+    isEmpty:
+      lessons.lessons.length === 0 &&
+      lessons.flagged === 0 &&
+      lessons.proposed === 0 &&
+      lessons.quarantined.length === 0,
+  };
+}
+
 /**
  * Repo-scoped, two-tier, worktree-aggregated context primer assembled entirely
  * from indexed columns + the RepoInfo branch map. Reads zero session source
@@ -1346,8 +1394,15 @@ function parseFiles(json: string): string[] {
  * list` call already made in resolveRepo).
  */
 export async function getContextPrimer(repo: RepoInfo, opts: ContextOptions): Promise<ContextPrimer> {
+  // No index and none to be built: the repo's lessons live in a different store and are
+  // still worth serving, so this is a primer with no session tiers rather than an error.
+  if (opts.noRefresh && indexAbsent()) {
+    const lessons = readLessonsForRepo(repo.container, repo.remote, opts.lessonLimit ?? LESSON_LIMIT);
+    return primerWithoutSessions(repo, opts.tool ?? '', lessons);
+  }
+
   const db = getDb();
-  await ensureIndexFresh();
+  await ensureIndexFresh(opts.noRefresh);
 
   const limit = opts.limit ?? 10;
   const headlineCap = opts.headlineCap ?? 40;
@@ -1387,26 +1442,7 @@ export async function getContextPrimer(repo: RepoInfo, opts: ContextOptions): Pr
   // wasted read, a wrong lesson costs a wrong belief.
   const lessons = readLessonsForRepo(repo.container, repo.remote, opts.lessonLimit ?? LESSON_LIMIT);
 
-  if (rows.length === 0) {
-    return {
-      repoLabel,
-      toolFilter,
-      recent: [],
-      headlines: [],
-      lessons: lessons.lessons,
-      lessonsFlagged: lessons.flagged,
-      lessonsProposed: lessons.proposed,
-      lessonsTotal: lessons.total,
-      lessonsQuarantined: lessons.quarantined,
-      // A repo with lessons but no indexed sessions still has something to say — and so
-      // does a store that was moved aside, which is the one empty that must be loud.
-      isEmpty:
-        lessons.lessons.length === 0 &&
-        lessons.flagged === 0 &&
-        lessons.proposed === 0 &&
-        lessons.quarantined.length === 0,
-    };
-  }
+  if (rows.length === 0) return primerWithoutSessions(repo, toolFilter, lessons);
 
   // Rank the detail tier by recency-weighted significance instead of raw recency,
   // keeping trivial sessions out of it. All inputs are already-selected columns.
