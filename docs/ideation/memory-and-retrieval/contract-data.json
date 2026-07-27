@@ -1,0 +1,288 @@
+{
+  "projectName": "Memory Hygiene & Measured Retrieval",
+  "slug": "memory-and-retrieval",
+  "date": "2026-07-25",
+  "status": "Approved",
+  "approvedOn": "2026-07-26",
+  "approvedBy": "Nick Nisi",
+  "approvalMode": "express",
+  "branch": "ideation/memory-and-retrieval",
+  "supersedes": null,
+  "gates": {
+    "dimensions": [
+      {
+        "key": "problem",
+        "label": "Problem Clarity",
+        "status": "ready",
+        "evidence": "Every item traces to a defect verified in this codebase with file:line — no test-context guard and no bunfig.toml preload while 11 of 41 test files hand-roll env overrides across 42 occurrences, _lastRefreshAt set only on success at cache.ts:528, in-process-only refresh state with 7 live MCP servers observed, no backup for the one non-re-derivable artifact, a lesson table holding exactly 1 row, and a 21-document eval that passes when tuned constants are reverted."
+      },
+      {
+        "key": "goals",
+        "label": "Goal Definition",
+        "status": "ready",
+        "evidence": "Each goal names an observable change: the whole suite leaves the real memory.db mtime untouched, a persistent refresh failure stops re-scanning every call, N concurrent processes perform one tree walk, every lesson write also produces a restorable copy, and four named ranking mutants must all be killed by the eval."
+      },
+      {
+        "key": "success",
+        "label": "Success Criteria",
+        "status": "ready",
+        "evidence": "Twelve of thirteen criteria are runnable commands, each scoped to a temp store or the fixture corpus so acceptance cannot touch the real artifacts; the single judgment criterion — distill output quality — carries an explicit bar (at least half the first real batch accepted) rather than an unscored observation."
+      },
+      {
+        "key": "scope",
+        "label": "Scope Boundaries",
+        "status": "ready",
+        "evidence": "Five phases with per-phase file claims including the cross-phase collisions on src/cache.ts; four exclusions with rationale; pinned lessons demoted to future because LESSON_HOOK_LIMIT=3 against a one-row store makes it a no-op today."
+      },
+      {
+        "key": "consistency",
+        "label": "Consistency",
+        "status": "ready",
+        "evidence": "Interview tensions resolved (scope fork, agent-CLI vs zero-config, unbounded distill cost), and four critic blockers resolved: phase 3's false independence claim, distill's collision with the conflict-quarantine review queue, a tautological eval-diff check, and an unrunnable fails-open command."
+      }
+    ]
+  },
+  "problem": [
+    "sessions recently stopped being 100% re-derivable. Until now every byte it held could be rebuilt from transcripts, which is what let --clear-cache, cleanup, and a SCHEMA_VERSION bump all be safe destructive operations. The new lesson store at ~/.local/share/sessions/memory.db breaks that invariant, and the operational discipline a durable store requires never followed it in.",
+    "Nothing prevents a test from opening the real memory.db or index. Hermeticity depends on every test remembering SESSIONS_MEMORY_DB and SESSIONS_CACHE_DIR — 11 of 41 test files hand-roll those overrides across 42 occurrences, there is no bunfig.toml preload to make it the default, and the discipline was already broken once by accident during a latency measurement in the session that built the store. Several tests also spawn index.ts as a child, where in-process detection would not apply.",
+    "The one non-re-derivable artifact has no backup beyond a manual export. Separately, refresh state is module-level, so each of the 7 concurrent MCP servers observed on this machine walks the transcript tree independently, while a persistent failure re-runs the full scan on every call because _lastRefreshAt is set only on success (src/cache.ts:528).",
+    "The memory store holds exactly one lesson, written by hand to test it. The write path only fires when an agent chooses to call remember_lesson mid-session; nothing seeds it from the thousands of sessions already indexed, so the realistic failure is an empty table rather than a junk drawer.",
+    "The retrieval eval cannot do its job. At 21 documents it is insensitive to two of the four ranking changes it was built to protect — reverting short-message damping or USER_HIT_BOOST passes clean, with only unit tests catching them. That makes further scorer work unmeasurable, including the known flaw where finalRank sums raw BM25 across two FTS tables with different corpus statistics (src/cache.ts:779)."
+  ],
+  "goals": [
+    "Running the full test suite leaves the real lesson store and search index untouched, whether or not individual tests set the environment overrides.",
+    "A persistent refresh failure stops re-running the full discoverFiles and stat pass on every subsequent call.",
+    "N concurrent sessions processes perform one transcript-tree walk between them rather than N independent walks.",
+    "Every write to the lesson store also produces a copy that restores the store without sessions installed.",
+    "sessions distill turns indexed history into lesson proposals that appear in sessions lessons review, bounded by an explicit selection, never writing an active row.",
+    "The eval corpus becomes sensitive enough that each of four named ranking mutants — bm25 column weights, USER_HIT_BOOST, short-message damping, the finalRank sum — is killed by it.",
+    "Distilled titles and finalRank normalization each land only with a measured per-class recall delta recorded in the committed baseline, or do not land.",
+    "sessions search and sessions context become consumable by a shell script or a statusline without speaking MCP or opening the SQLite file."
+  ],
+  "successCriteria": [
+    {
+      "criterion": "The test-context guard refuses the real memory.db and index, including from a spawned child process",
+      "check": { "cmd": "bun test src/hermetic.test.ts", "expect": "exits 0" }
+    },
+    {
+      "criterion": "The entire suite passes AND leaves the real artifacts byte-identical — lesson store, search index, and the index's WAL sidecars, which is where a write lands without the main file changing",
+      "check": { "cmd": "h() { for f in \"$HOME/.local/share/sessions/memory.db\" \"$HOME/.cache/sessions/index.db\"*; do [ -e \"$f\" ] && shasum -a 256 \"$f\"; done | shasum -a 256; }; before=$(h); bun test >/dev/null 2>&1; rc=$?; after=$(h); test $rc -eq 0 && test \"$before\" = \"$after\"", "expect": "exits 0 — hashes not mtimes, and the glob covers index.db-wal and index.db-shm because cache.ts:115 opens the index in WAL mode" }
+    },
+    {
+      "criterion": "A repeatedly failing refresh backs off instead of re-scanning the tree on every call, and two concurrent processes sharing a cache dir perform one tree walk between them",
+      "check": { "cmd": "bun test src/cache.refresh.test.ts", "expect": "exits 0" }
+    },
+    {
+      "criterion": "Every lesson write produces a plaintext export and a SQLite-consistent snapshot; deleting memory.db and restoring the snapshot recovers every row including supersedes chains and review groups; a snapshot failure does not fail the write that triggered it; and when two processes write concurrently the surviving snapshot contains the LATEST committed rows, not merely a valid database — an older snapshot must not be able to rename over a newer one",
+      "check": { "cmd": "bun test src/memory.export.test.ts", "expect": "exits 0" }
+    },
+    {
+      "criterion": "distill emits at least one proposal, every proposal is visible to sessions lessons review, zero rows land active, and a no-argument run selects no more than the documented default limit",
+      "check": { "cmd": "bun test src/distill.test.ts", "expect": "exits 0" }
+    },
+    {
+      "criterion": "distill's production argv is side-effect-free: claude is invoked with tool use disabled, codex with --sandbox read-only, and any CLI without a verified restriction flag is not offered at all. Asserted against the argv distill actually builds, not a mock",
+      "check": { "cmd": "bun test src/distill.sandbox.test.ts", "expect": "exits 0" }
+    },
+    {
+      "criterion": "distill with no agent CLI on PATH fails open — exits 0, creates no store, and says on stderr which CLIs it looked for",
+      "check": { "cmd": "d=$(mktemp -d); SESSIONS_MEMORY_DB=\"$d/m.db\" PATH=/usr/bin:/bin \"$(command -v bun)\" run index.ts distill --limit 1 2>\"$d/err\"; rc=$?; test $rc -eq 0 && test ! -e \"$d/m.db\" && grep -qi 'not found on PATH' \"$d/err\"", "expect": "exits 0 — non-zero exit, a created store, or a silent skip all fail" }
+    },
+    {
+      "criterion": "The eval corpus kills all four named ranking mutants — bm25 column weights, USER_HIT_BOOST, short-message damping, and the finalRank sum — and the harness fails if it applied fewer than four",
+      "check": { "cmd": "bun test src/eval/mutation.test.ts", "expect": "exits 0, reporting 4/4 mutants applied and killed" }
+    },
+    {
+      "criterion": "The committed eval baseline is reproducible from a clean run, so a recall change cannot land without showing up in the diff",
+      "check": { "cmd": "bun run eval > /tmp/eval-now.md && diff -q /tmp/eval-now.md docs/eval-baseline.md", "expect": "exits 0" }
+    },
+    {
+      "criterion": "No query class regresses — the RECALL_FLOOR ratchet holds after every retrieval change",
+      "check": { "cmd": "bun test src/eval/eval.test.ts", "expect": "exits 0" }
+    },
+    {
+      "criterion": "Neither retrieval feature ships neutral: if distilled titles or finalRank normalization is present in the tree, docs/retrieval-evidence.md records its measured before/after and at least one RECALL_FLOOR entry was raised. A change that improves nothing does not land",
+      "check": { "cmd": "if grep -rqE 'distilledTitle|normalizeFinalRank' src/cache.ts src/record.ts; then test -f docs/retrieval-evidence.md && git diff --quiet main -- src/eval/eval.test.ts && exit 1 || exit 0; else exit 0; fi", "expect": "exits 0 — present-but-unmeasured fails; absent passes; measured-and-ratcheted passes" }
+    },
+    {
+      "criterion": "sessions search --json emits envelope version 1 with a non-empty results array over the fixture corpus, and the search process itself exits 0",
+      "check": { "cmd": "set -o pipefail; SESSIONS_CACHE_DIR=$(mktemp -d) SESSIONS_CLAUDE_DIR=src/eval/__fixtures__/claude bun run index.ts search --json stripe | bun -e 'const j=JSON.parse(await Bun.stdin.text()); process.exit(j.generator===\"sessions\" && j.version===1 && Array.isArray(j.results) && j.results.length>0 ? 0 : 1)'", "expect": "exits 0 — pipefail means a non-zero exit from search fails the check too" }
+    },
+    {
+      "criterion": "search --json uses grep-style exit codes — matches exit 0, no matches exit 1, a bad flag exits 2 — so a script can branch on the difference",
+      "check": { "cmd": "d=$(mktemp -d); f=src/eval/__fixtures__/claude; env SESSIONS_CACHE_DIR=\"$d\" SESSIONS_CLAUDE_DIR=\"$f\" bun run index.ts search --json stripe >/dev/null; a=$?; env SESSIONS_CACHE_DIR=\"$d\" SESSIONS_CLAUDE_DIR=\"$f\" bun run index.ts search --json zzq-no-such-term >/dev/null; b=$?; env SESSIONS_CACHE_DIR=\"$d\" SESSIONS_CLAUDE_DIR=\"$f\" bun run index.ts search --json --bogus-flag x >/dev/null 2>&1; e=$?; test $a -eq 0 && test $b -eq 1 && test $e -eq 2", "expect": "exits 0 — assignments passed to env directly so it works under zsh, which does not word-split unquoted parameters" }
+    },
+    {
+      "criterion": "sessions context --json emits envelope version 1, and --no-refresh demonstrably skips the scan — against an empty cache dir it builds no index at all",
+      "check": { "cmd": "set -o pipefail; d=$(mktemp -d); SESSIONS_CACHE_DIR=\"$d\" bun run index.ts context --json --no-refresh | bun -e 'const j=JSON.parse(await Bun.stdin.text()); process.exit(j.generator===\"sessions\" && j.version===1 ? 0 : 1)' && test ! -e \"$d/index.db\"", "expect": "exits 0 — an index.db appearing proves the scan ran despite --no-refresh" }
+    },
+    {
+      "criterion": "The first real distill batch produces lessons worth keeping",
+      "check": { "judgment": "Nick reviews one real sessions distill run over at least 8 proposals and accepts at least half. Fewer than 8 proposals is not a passing batch — it is an inconclusive one, and the run must be widened before judging. Below half, the selection or the prompt is wrong and Memory usefulness is not done. This is a blocking gate in the phase track, not an advisory note: mechanical verification passing means the plumbing works, not that the project is finished" }
+    }
+  ],
+  "scope": {
+    "mvp": [
+      { "item": "Test hermeticity by default — bunfig.toml [test] preload pointing the stores at a per-run temp dir, plus a runtime refusal for the spawned-child case", "reason": "The store is no longer re-derivable, 11 of 41 test files hand-roll overrides across 42 occurrences, and the discipline already failed once by accident" },
+      { "item": "Refresh failure backoff", "reason": "A persistent failure currently re-runs the full discoverFiles and stat pass on every call" },
+      { "item": "Auto-export plus a SQLite-consistent snapshot of the store on write", "reason": "The one non-re-derivable artifact has no backup story. A plain file copy of a live SQLite DB is not a valid backup under concurrent writers, so the snapshot uses VACUUM INTO to a temp path then an atomic rename. Atomic rename alone still allows a slow older snapshot to land after a newer one, so the rename is taken under a cross-process lock with a generation check. A failed snapshot must be logged and swallowed, never failing the write that triggered it" }
+    ],
+    "full": [
+      { "item": "Cross-process refresh marker", "reason": "7 concurrent MCP servers were each observed walking the tree; a throughput fix on the re-derivable index, not a durability one, so it is not MVP" },
+      { "item": "sessions distill — bounded ranked selection surfaced in sessions lessons review", "reason": "The lesson table holds one row; nothing seeds it from indexed history" },
+      { "item": "A side-effect-free invocation contract for the agent CLI distill spawns", "reason": "roast.ts:25 runs `claude -p`, `codex exec`, `pi -p` unsandboxed with full tool access, and roast.ts:45 documents that the seam is only safe because it feeds STATS ONLY, never transcript prose. Distill inverts that premise — transcripts carry arbitrary text an agent once read — so it must restrict the subprocess or it is a prompt-injection path with write access" },
+      { "item": "Grow the eval corpus until it kills all four named mutants", "reason": "At 21 documents it cannot detect two of the four changes it already protects" },
+      { "item": "sessions search --json and sessions context --json with a versioned envelope", "reason": "Two named consumers: shell/jq scripting and a statusline segment" }
+    ],
+    "stretch": [],
+    "outOfScope": [
+      { "item": "Any network, daemon, HTTP, or socket surface", "reason": "65ms measured subprocess latency makes it unnecessary, and this repo already shipped a fix for an orphaned MCP server busy-looping at 100% CPU" },
+      { "item": "An LLM anywhere in the read path — reranker, query expansion, search-time distillation", "reason": "The zero-config offline contract holds; distill is opt-in, batch, write-path only, and fails open without an agent CLI" },
+      { "item": "--json for digest", "reason": "No named consumer; lessons already has a JSON path via sessions lessons export, so only digest genuinely lacks one" },
+      { "item": "Cross-machine lesson sync", "reason": "The export file is the substrate for it, but syncing is a separate project and wants an existing file-sync mechanism, not new code" }
+    ],
+    "future": [
+      "Deterministic distilled title and entity columns — deferred with the Full tier; only worth shipping if the grown corpus shows it moves recall",
+      "finalRank normalization across the two FTS tables — the known flaw at src/cache.ts:779, now safe to attempt whenever wanted because this project makes the eval able to judge it",
+      "Pinned lessons — a no-op until a scope holds more than LESSON_HOOK_LIMIT=3 active lessons; revisit once distill has filled the store",
+      "Cross-machine lesson sync built on the export, using git or an existing file-sync tool rather than a server",
+      "--json for digest once a consumer asks",
+      "A library entry point, if sessions is ever published to npm — the named record makes it nearly free"
+    ]
+  },
+  "decisions": [
+    {
+      "decision": "sessions distill always proposes and never writes an active row",
+      "rejected": "Auto-saving like remember_lesson does, subject to the same near-dup quarantine",
+      "reason": "A bad model pass costs one review pass instead of silently polluting the primer, and it makes the phase testable — assert zero rows land active"
+    },
+    {
+      "decision": "Proposals get an explicit surfacing mechanism rather than reusing bare needs_review",
+      "rejected": "Writing proposals as plain needs_review rows",
+      "reason": "Critic blocker: reviewGroups() only returns rows with a non-NULL review_group (memory.ts:823), so group-less proposals would be invisible to sessions lessons review while still inflating the primer's flagged count (memory.ts:415) — reviewable in name only"
+    },
+    {
+      "decision": "distill reads a bounded ranked selection (--query/--limit/--days), defaulting small",
+      "rejected": "All history, or a watermark that distills everything newer than the last run",
+      "reason": "4,400 indexed sessions times one agent-CLI call each is hours and a lot of tokens; the first watermark run is still unbounded and invites a cron that quietly burns tokens"
+    },
+    {
+      "decision": "Distill success is measured mechanically; quality is a judgment criterion with an explicit bar",
+      "rejected": "Asserting it finds known lessons in the committed eval fixtures",
+      "reason": "Those fixtures are synthetic transcripts, so the test would measure whether it can mine fake sessions"
+    },
+    {
+      "decision": "Test hermeticity comes from a bunfig.toml [test] preload, with a runtime refusal only for spawned children",
+      "rejected": "A test-awareness branch inside src/memory.ts and src/cache.ts",
+      "reason": "Critic finding: paths.ts already resolves lazily from env on every call, so a preload makes hermeticity the default for all 41 test files with zero shipped production code; the runtime guard is kept only where a preload cannot reach"
+    },
+    {
+      "decision": "Back up by auto-exporting plaintext and copying the store file on write",
+      "rejected": "A rotating memory.db snapshot on a launchd timer, and an import/restore command",
+      "reason": "A timer adds an unattended job to a tool that has none. Three critics flagged that the original 'export restores a deleted store' criterion had no importer behind it and would have required reconstructing content_hash uniqueness and supersedes chains — copying the DB file makes restore a cp, and the plaintext export stays the human-readable artifact"
+    },
+    {
+      "decision": "The corpus is done when four named mutants are killed, enforced as src/eval/mutation.test.ts",
+      "rejected": "Growing to a target document and query count; a standalone scripts/eval-mutation.ts",
+      "reason": "A count is a proxy — 100 documents with weak distractors are less sensitive than 40 with sharp ones. 'Any tuned constant' was unbounded (at least ten exist), so the set is enumerated. A test rather than a script so CI enforces it"
+    },
+    {
+      "decision": "Phase 3 hoists the tuned ranking constants to overridable module scope and claims src/cache.ts",
+      "rejected": "Treating corpus growth as touching only the eval tree",
+      "reason": "Critic blocker: all four constants are function-local inside searchSessions (cache.ts:666, :707, :713-714), so no mutation harness can revert them individually without hoisting — and that collides with phase 4's edits to the same file"
+    },
+    {
+      "decision": "Pinned lessons moved to future",
+      "rejected": "Shipping pinning in this project",
+      "reason": "Critic finding: LESSON_HOOK_LIMIT=3 against a store holding one active row makes pinning a no-op — and distill writes only proposals, so it adds no active rows either. It cannot change observable behavior until the store is full"
+    },
+    {
+      "decision": "Retrieval quality becomes a real track, with corpus growth as its prerequisite",
+      "rejected": "Keeping distilled titles as a measure-first phase on the existing 21-document corpus",
+      "reason": "The current corpus cannot detect two of the four changes it already protects, so measure-first on it is ceremony — and normalizing finalRank against an insensitive eval is a coin flip"
+    },
+    {
+      "decision": "--json covers search and context only, behind a versioned envelope",
+      "rejected": "Adding --json to all four read commands at once",
+      "reason": "Only search and context have named consumers; lessons already emits JSON via lessons export, leaving digest as the sole genuine gap and no one asking for it"
+    },
+    {
+      "decision": "Acceptance commands run against temp stores and the fixture corpus, never the real ones",
+      "rejected": "The first draft's commands, which ran distill and search against the operator's live store and 4,400-session index",
+      "reason": "Critic blocker: the fails-open check would have exited 127 forever (bun is not in /usr/bin or /bin) and, worse, would have run against the real memory.db — an acceptance check that can pollute the very artifact this project exists to protect"
+    },
+    {
+      "decision": "The distill acceptance judgment is a blocking gate phase, not just a criterion",
+      "rejected": "Leaving it as criterion 13 alone",
+      "reason": "Review finding: the verifier's completion line reports judgment counts without their outcome, so a batch Nick rejects outright could still produce a green 'contract finished'. Making it a gate in the phase track means the project cannot read as done on mechanical checks alone"
+    },
+    {
+      "decision": "Phase 5 declares a prereq on phase 1, and the strategy is described as sequential",
+      "rejected": "Placing the JSON surface in wave 1 as independent work",
+      "reason": "Review finding: phase 5 decides whether to keep --no-refresh based on phase 1's measured outcome — a real dependency that file-collision serialization neither expresses nor guarantees. Separately, four of five phases claim src/cache.ts, so the earlier 'three in parallel' framing was false"
+    },
+    {
+      "decision": "Backup takes a SQLite-consistent snapshot via VACUUM INTO plus atomic rename, and must not fail the write that triggered it",
+      "rejected": "A plain copyFileSync of memory.db beside the export",
+      "reason": "Review finding: a file copy of a live SQLite database is not a valid backup under concurrent writers, and the original criterion only demonstrated a single-process happy path. The test now covers a snapshot taken mid-write by a second process, and a snapshot failure not breaking the lesson write"
+    },
+    {
+      "decision": "No network, daemon, or HTTP surface of any kind",
+      "rejected": "A localhost daemon or socket to amortize process startup",
+      "reason": "Measured 65ms warm end-to-end makes a subprocess fine for every local consumer, SQLite already handles concurrent readers, and a daemon reintroduces the orphan-process failure this repo already fixed once"
+    }
+  ],
+  "execution": {
+    "strategy": "Four build phases plus one human gate, at the Full tier — Retrieval quality was Stretch and is deferred to Future, so nothing in this run rewrites the scorer. Nearly sequential: three of the four build phases claim src/cache.ts (hygiene edits the refresh path, corpus growth hoists the ranking constants out of searchSessions, the JSON surface adds the refresh bypass), so file-overlap serialization collapses any wave holding two of them. Real dependencies: Durability hygiene gates both Memory usefulness and JSON surface. The only genuine concurrency is Memory usefulness — the one phase that does not touch src/cache.ts — running alongside whichever cache-claiming phase holds the lock. Expect roughly serial execution with one overlap.",
+    "phases": [
+      {
+        "title": "Durability hygiene",
+        "risk": "low",
+        "blocking": true,
+        "kind": "phase",
+        "specPath": "docs/ideation/memory-and-retrieval/spec-phase-1.md",
+        "notes": "Hermeticity by default via a bunfig.toml [test] preload, plus a runtime refusal for the spawned-child case that a preload cannot reach. Refresh failure backoff, and a persisted cross-process refresh marker. Backup is a plaintext export plus a SQLite-consistent snapshot taken with VACUUM INTO to a temp path then renamed atomically — NOT a file copy, which is invalid under concurrent writers. A snapshot failure must be logged and swallowed, never failing the lesson write that triggered it. Restore is replacing memory.db with the snapshot; no importer is built.",
+        "files": ["bunfig.toml", "src/paths.ts", "src/memory.ts", "src/cache.ts", "src/hermetic.test.ts", "src/cache.refresh.test.ts", "src/memory.export.test.ts", "src/__fixtures__/concurrent-refresh.ts"]
+      },
+      {
+        "title": "Memory usefulness",
+        "risk": "medium",
+        "blocking": false,
+        "kind": "phase",
+        "prereqs": ["Durability hygiene"],
+        "specPath": "docs/ideation/memory-and-retrieval/spec-phase-2.md",
+        "notes": "sessions distill over a bounded ranked selection, using an injectable runner over the agent-CLI seam in src/wrapped/roast.ts so tests need no CLI installed. SECURITY: that seam spawns unsandboxed agent CLIs and is only safe today because roast feeds it stats, never prose (roast.ts:45). Distill feeds transcript text, so it must build its own restricted argv — claude with tool use disabled, codex with --sandbox read-only, pi excluded until a restriction flag is verified — and spawn outside the repo. Proposals need an explicit surfacing mechanism: reviewGroups() ignores rows with a NULL review_group, and the primer's flagged count must exclude proposals. Depends on phase 1 so distill's tests cannot pollute the real store.",
+        "files": ["src/distill.ts", "src/distill.test.ts", "src/memory.ts", "src/lessons.ts", "src/wrapped/roast.ts", "src/mcp.ts", "src/context.ts", "src/cli.ts", "index.ts"]
+      },
+      {
+        "title": "Grow the eval corpus",
+        "risk": "medium",
+        "blocking": false,
+        "kind": "phase",
+        "specPath": "docs/ideation/memory-and-retrieval/spec-phase-3.md",
+        "notes": "Hoist the four tuned ranking constants out of searchSessions into an overridable module-scope record — without that no mutation harness can revert them individually. Then add transcripts and queries with sharp distractors until src/eval/mutation.test.ts kills all four. Claims src/cache.ts, so it serializes against phases 4 and 5.",
+        "files": ["src/cache.ts", "src/eval/__fixtures__", "src/eval/queries.ts", "src/eval/run.ts", "src/eval/eval.test.ts", "src/eval/mutation.test.ts", "docs/eval-baseline.md"]
+      },
+      {
+        "title": "JSON surface",
+        "risk": "low",
+        "blocking": false,
+        "kind": "phase",
+        "prereqs": ["Durability hygiene"],
+        "specPath": "docs/ideation/memory-and-retrieval/spec-phase-4.md",
+        "notes": "--no-refresh ships unconditionally — criterion 12 requires it, so leaving it contingent on a measurement made the contract self-contradictory. A caller that wants a stale-but-instant answer needs an explicit way to say so regardless of how good the refresh marker turns out to be; phase 1's marker changes how often the flag matters, not whether it exists. Depends on phase 1 because the bypass sits on the same refresh path the marker adds. Introduce a search subcommand alongside the existing bare-query default (index.ts dispatches no such word today), with --json bypassing selectSession and the stderr spinner. Reuses formatResult so CLI and MCP cannot drift. Versioned envelope and grep-style exit codes. Claims src/cache.ts.",
+        "files": ["src/search-format.ts", "src/cli.ts", "src/context.ts", "src/cache.ts", "index.ts", "src/json-output.test.ts"]
+      },
+      {
+        "title": "Gate — accept the first distill batch",
+        "kind": "gate",
+        "risk": "medium",
+        "blocking": true,
+        "prereqs": ["Memory usefulness"],
+        "notes": "Human checkpoint, not a build phase — nothing is specced, built, or committed here. Run sessions distill for real against your own history, read the proposals, accept or reject. Criterion 13's bar is at least half accepted; below that the selection or the prompt is wrong and Memory usefulness is not done, whatever the mechanical checks report. It depends only on Memory usefulness and blocks nothing downstream, so it is listed last rather than interleaved — that keeps the five build phases numbered 1-5 in step with spec-phase-1..5.md.",
+        "files": []
+      }
+    ],
+    "agentTeamPrompt": "Two phases genuinely parallelize once Durability hygiene lands: Memory usefulness (phase 2) and Grow the eval corpus (phase 3). Phase 2 is the only build phase that does not claim src/cache.ts, which is what makes the overlap possible at all.\n\nCoordinate on shared files — only one teammate may hold a shared file at a time:\n  · src/cache.ts — claimed by Durability hygiene, Grow the eval corpus, AND JSON surface. Three-way collision; these three never run together.\n  · src/memory.ts — Durability hygiene and Memory usefulness.\n  · src/cli.ts, index.ts, src/context.ts — Memory usefulness and JSON surface.\n\nOrder that respects both the graph and the collisions: Durability hygiene alone → Memory usefulness ‖ Grow the eval corpus → JSON surface alone → the human gate. Do not attempt a wider fan-out; the file claims make any other pairing serialize anyway, and a wave label saying otherwise is reporting an upper bound, not a promise."
+  }
+}
