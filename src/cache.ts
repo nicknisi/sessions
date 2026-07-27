@@ -90,6 +90,39 @@ interface RefreshResult {
   updated: number;
 }
 
+/**
+ * The tuned ranking constants, hoisted out of searchSessions so the eval can revert
+ * them one at a time. Every value here is what searchSessions used inline before the
+ * hoist — moving them changed no number in docs/eval-baseline.md.
+ *
+ * Mutating this in production is unsupported: it exists so `src/eval/mutation.test.ts`
+ * can prove the fixture corpus is sensitive enough to notice when one of them changes.
+ * A hand-tuned constant with no regression signal is a constant nobody can ever touch
+ * again; this record is what gives them one.
+ */
+export const RANKING = {
+  /** bm25 column weights for session_fts, in declaration order:
+   *  file_path, headline, commands, paths, context_text, thinking.
+   *  Favor headline/commands/paths; de-emphasize verbose thinking so it adds recall
+   *  without dominating. Message text ranks via message_fts separately. */
+  sessionRank: [0.0, 10.0, 6.0, 5.0, 2.0, 0.5] as number[],
+  /** A user turn outranks an assistant turn saying the same thing. bm25 is
+   *  more-negative-is-better, so a multiplier > 1 improves a hit. */
+  userHitBoost: 1.5,
+  /** Below this length a hit is damped toward minDamping. FTS5's length
+   *  normalization (b=0.75) is generous enough that a one-line aside sharing a term
+   *  outranks the long analysis that actually answers the question. */
+  substantiveChars: 240,
+  /** Floor of the short-message damping curve — a demotion, not an exclusion, because
+   *  a short message can still be the answer ("use the raw body, not the parsed one"). */
+  minDamping: 0.25,
+  /** Whether finalRank sums the two bm25 scores (today) or takes the better one.
+   *  'best' is reachable only from the mutation harness — no production caller sets it.
+   *  It exists because the sum is one of the four things the corpus must be able to
+   *  notice, and a mutant that flips a flag beats one that patches source text. */
+  finalRankMode: 'sum' as 'sum' | 'best',
+};
+
 export function clearCache(): void {
   const dbPath = getDbPath();
   // The parsed-event cache is a rebuildable projection of the same transcripts, so it goes
@@ -776,11 +809,9 @@ export async function searchSessions(query: string, opts: SearchOptions = {}): P
     // match) and message_fts aggregated by file_path (content match). Fetch both,
     // join in JS on file_path, combine ranks, sort, slice to limit.
 
-    // bm25 weights map to session_fts columns in declaration order:
-    // file_path, headline, commands, paths, context_text, thinking.
-    // Favor headline/commands/paths; de-emphasize verbose thinking so it adds
-    // recall without dominating. Message text ranks via message_fts below.
-    const SESSION_RANK = 'bm25(session_fts, 0.0, 10.0, 6.0, 5.0, 2.0, 0.5)';
+    // bm25 weights map to session_fts columns in declaration order — see RANKING at
+    // module scope for the weights themselves and why they are shaped that way.
+    const SESSION_RANK = `bm25(session_fts, ${RANKING.sessionRank.join(', ')})`;
     interface SessionHitRow {
       file_path: string;
       srank: number;
@@ -819,24 +850,17 @@ export async function searchSessions(query: string, opts: SearchOptions = {}): P
       .all(ftsQuery);
 
     // Role weighting replaces the old user_content 3.0 / assistant_content 2.0
-    // column weights: bm25 can't weight by row, so boost user-turn ranks 1.5× in JS
-    // (bm25 is more-negative-is-better; multiplying a negative rank improves it).
-    const USER_HIT_BOOST = 1.5;
-    // FTS5's length normalization (b=0.75) is generous enough that a one-line aside
-    // sharing a term outranks the long analysis that actually answers the question.
-    // Scale a hit's rank down toward MIN_DAMPING as its message gets shorter than
-    // SUBSTANTIVE_CHARS — a demotion, not an exclusion, because a short message can
-    // still be the answer ("use the raw body, not the parsed one").
-    const SUBSTANTIVE_CHARS = 240;
-    const MIN_DAMPING = 0.25;
+    // column weights: bm25 can't weight by row, so boost user-turn ranks in JS.
+    // Short hits are then damped toward minDamping. Both constants live in RANKING.
+    const { userHitBoost, substantiveChars, minDamping } = RANKING;
     interface MessageAgg {
       best: number; // best (most negative) weighted rank across the session's hits
       hits: { hit: MessageHit; rank: number }[];
     }
     const msgAgg = new Map<string, MessageAgg>();
     for (const m of messageRows) {
-      const damping = Math.max(MIN_DAMPING, Math.min(1, m.mlen / SUBSTANTIVE_CHARS));
-      const rank = (m.role === 'user' ? m.mrank * USER_HIT_BOOST : m.mrank) * damping;
+      const damping = Math.max(minDamping, Math.min(1, m.mlen / substantiveChars));
+      const rank = (m.role === 'user' ? m.mrank * userHitBoost : m.mrank) * damping;
       let agg = msgAgg.get(m.file_path);
       if (!agg) {
         agg = { best: 0, hits: [] };
@@ -889,11 +913,14 @@ export async function searchSessions(query: string, opts: SearchOptions = {}): P
         .sort((a, b) => a.rank - b.rank)
         .slice(0, 3)
         .map((h) => h.hit);
+      const srank = s?.srank ?? 0;
+      const mrank = agg?.best ?? 0;
       return {
         meta,
         hits,
         snippet: hits[0]?.snippet ?? s?.ssnippet ?? null,
-        finalRank: (s?.srank ?? 0) + (agg?.best ?? 0),
+        // 'best' is the mutation harness's alternative, never a production setting.
+        finalRank: RANKING.finalRankMode === 'best' ? Math.min(srank, mrank) : srank + mrank,
       };
     });
     merged.sort((a, b) => a.finalRank - b.finalRank || b.meta.date.localeCompare(a.meta.date));

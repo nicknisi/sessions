@@ -2,46 +2,19 @@
 // what we want — the job is to make a regression visible, so any drop fails here and
 // any gain is recorded by re-running `bun run eval > docs/eval-baseline.md`. Payload
 // ceilings sit beside the recall floors so a recall gain has to show its token cost.
+// The numbers themselves live in ./floors, shared with src/eval/mutation.test.ts, which
+// reverts each tuned ranking constant and asserts the corpus notices.
 import { test, expect, beforeAll } from 'bun:test';
 import { runEval, CLASSES, CORPUS_SIZE, K, type EvalReport } from './run';
-import { QUERIES, type QueryClass } from './queries';
+import { RECALL_FLOOR, PAYLOAD_CEILING, EPSILON } from './floors';
+import { QUERIES } from './queries';
 
-interface RecallFloor {
-  recallAt5: number;
-  recallAt1: number;
-  mrr: number;
-}
-
-// Measured 2026-07-25 against the fixture corpus. recall@5 saturates at this corpus
-// size; recall@1 and MRR are the numbers that move when the ranking constants do.
-// The negative class has no answer to rank, so it has no recall floor — only a ceiling.
-// These floors survived adding s21 (a /private/tmp throwaway) to the corpus only
-// because searchSessions removes junk cwds: unfiltered, s21 takes rank 1 from
-// err-stripe-signature and path-stripe-webhook and both classes drop to 80%/0.90.
-const RECALL_FLOOR: Record<Exclude<QueryClass, 'negative'>, RecallFloor> = {
-  'exact-error-string': { recallAt5: 1, recallAt1: 1, mrr: 1 },
-  'file-path': { recallAt5: 1, recallAt1: 1, mrr: 1 },
-  command: { recallAt5: 1, recallAt1: 0.8, mrr: 0.9 },
-  'multi-word-natural-language': { recallAt5: 1, recallAt1: 0.8, mrr: 0.9 },
-  scoped: { recallAt5: 1, recallAt1: 1, mrr: 1 },
-};
-
-/** Serialized chars of the worst top-5 page in each class, as measured. Every class is
- *  ~4 chars per result above the previous record: `filesTotal`/`commandsTotal` were
- *  renamed to `filesIndexed`/`commandsIndexed`, which is two characters each. */
-const PAYLOAD_CEILING: Record<QueryClass, number> = {
-  'exact-error-string': 5826,
-  'file-path': 937,
-  command: 4352,
-  'multi-word-natural-language': 6506,
-  scoped: 2177,
-  negative: 5391,
-};
-
-// What the OR-join returns for queries nothing in the corpus answers. Three of five
-// come back with a full page of irrelevant sessions; the two that abstain do so only
-// because every one of their terms is absent from the index. Recorded, not desired —
-// this is the input to an abstention design, so a change here is a decision, not a bug.
+// What the OR-join returns for queries nothing in the corpus answers. Three of five come
+// back with a full page of irrelevant sessions; the two that abstain do so only because
+// every one of their terms is absent from the index — which makes this an exact equality
+// that any new fixture can break by introducing one of those terms. Recorded, not
+// desired: this is the input to an abstention design, so a change here is a decision,
+// not a bug.
 const NEGATIVE_RESULTS: Record<string, number> = {
   'neg-kubernetes': 0,
   'neg-swiftui': 5,
@@ -49,8 +22,6 @@ const NEGATIVE_RESULTS: Record<string, number> = {
   'neg-elasticsearch': 5,
   'neg-nonce': 0,
 };
-
-const EPSILON = 1e-9; // float means; compare with slack rather than exactly
 
 let report: EvalReport;
 

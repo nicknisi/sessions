@@ -161,6 +161,14 @@ export const QUERIES: EvalQuery[] = [
     expect: ['s19-release-pr-automation'],
     competes: 's12 and s18 both run the plain gh pr create --fill',
   },
+  {
+    id: 'cmd-aws-logs-tail',
+    class: 'command',
+    query: 'aws logs tail /aws/lambda/roundup-sender',
+    expect: ['s26-lambda-log-retention'],
+    competes:
+      's27 never ran the command — it weighs up running it, at length, in a thinking block, so the two sessions match in different session_fts columns (commands at bm25 6.0 against thinking at 0.5) and nowhere else',
+  },
 
   // ——— multi-word-natural-language: what the MCP caller actually sends ———
   {
@@ -197,6 +205,30 @@ export const QUERIES: EvalQuery[] = [
     query: 'adding rate limiting to the public API',
     expect: ['s16-public-api-rate-limiting'],
     competes: 's05 and s06 both talk about the queue and backoff',
+  },
+  {
+    id: 'nl-digest-duplicate-recipients',
+    class: 'multi-word-natural-language',
+    query: 'why is the weekly digest reaching a recipient more than once',
+    expect: ['s22-digest-duplicate-sends'],
+    competes:
+      's23 is debugging the SMTP pool and notes the same duplicate send in a single passing line — the whole of its overlap with the question is that one aside, which is what short-message damping exists to demote',
+  },
+  {
+    id: 'nl-unsubscribe-token-lifetime',
+    class: 'multi-word-natural-language',
+    query: 'how long does an unsubscribe token stay valid after we mint it',
+    expect: ['s24-unsubscribe-token-expiry'],
+    competes:
+      's25 restates the same 72-hour expiry from the assistant side while writing up key rotation; s24 has it as the question the user typed, which is the only thing separating them',
+  },
+  {
+    id: 'nl-social-preview-stale',
+    class: 'multi-word-natural-language',
+    query: 'what makes the social preview image go stale after a deploy',
+    expect: ['s28-social-preview-stale'],
+    competes:
+      's29 covers the same staleness in one dense message and nowhere in its metadata; s28 matches both indexes weakly, so it wins on the sum and loses on best-of',
   },
 
   // ——— scoped: a filter narrows the corpus before ranking ———

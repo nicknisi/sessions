@@ -1,8 +1,10 @@
 // Retrieval quality harness: index the synthetic corpus in `__fixtures__`, run every
-// query in queries.ts, and report recall@5 and payload size per query class. The
-// ranking constants in cache.ts (bm25 column weights, USER_HIT_BOOST, the finalRank
-// sum) are hand-tuned and otherwise have no regression signal — this is that signal.
-// Run it standalone with `bun run eval`; eval.test.ts asserts the recorded baseline.
+// query in queries.ts, and report recall@5 and payload size per query class. The ranking
+// constants in cache.ts (the `RANKING` record — bm25 column weights, the user-hit boost,
+// short-message damping, the finalRank sum) are hand-tuned and otherwise have no
+// regression signal — this is that signal. Run it standalone with `bun run eval`;
+// eval.test.ts asserts the recorded baseline against ./floors, and mutation.test.ts
+// reverts each constant in turn and asserts one of those floors breaks.
 //
 // Fixtures live at __fixtures__/<tool>/<project-dir>/<session-id>.jsonl in the shapes
 // each tool actually writes, so the whole indexing path runs unmodified. The filename
@@ -18,7 +20,7 @@ import { HARNESS_ONLY_TERM, NOISE_ONLY_TERM, QUERIES, type EvalQuery, type Query
 
 export const CORPUS_DIR = join(import.meta.dir, '__fixtures__');
 /** Transcripts in the corpus. Asserted, so a fixture that stops parsing is loud. */
-export const CORPUS_SIZE = 21;
+export const CORPUS_SIZE = 30;
 
 /** The k in recall@k — and the page a caller pays for, so payload is measured here too. */
 export const K = 5;
@@ -45,7 +47,7 @@ export interface QueryOutcome {
   ranks: (number | null)[];
   /** Share of expected ids inside the top k. Always 1 for the negative class (nothing to find). */
   recall: number;
-  /** Share of expected ids at rank 1. recall@5 saturates on a 20-session corpus; this does not. */
+  /** Share of expected ids at rank 1. recall@5 saturates on a corpus this size; this does not. */
   recallAt1: number;
   /** 1/rank of the best-placed expected id, 0 if none was found. The rank-sensitive metric. */
   reciprocalRank: number;
