@@ -5,9 +5,12 @@
 //
 // Two constraints shape everything below.
 //
-// PROPOSALS ARE NEVER ACTIVE. Every distilled lesson lands as status 'proposed', which
-// the primer does not serve. A bad model pass costs one review pass instead of silently
-// polluting the context every future session reads.
+// THE RUN WRITES NOTHING. Candidates are printed and offered once, in the same sitting;
+// only what a human says yes to is saved, and it is saved through the ordinary
+// rememberLesson path so an overlap still lands in the conflict quarantine. Persisting
+// them as rows first would size a review queue for a job this one is not: the whole pass
+// is a single bounded CLI call, so re-running it costs less than the machinery needed to
+// resume it — and nothing unreviewed can pollute the primer if nothing is ever written.
 //
 // THE SUBPROCESS MUST BE SIDE-EFFECT-FREE. roast.ts feeds its child STATS ONLY and says
 // so (roast.ts:45) — that is the only reason its unsandboxed `claude -p` / `codex exec`
@@ -23,14 +26,7 @@ import { basename, join } from 'node:path';
 import { searchSessions } from './cache';
 import { C } from './colors';
 import { buildSessionDigest, DIGEST_MAX_CHARS, renderDigestMarkdown } from './digest';
-import {
-  DETAIL_MAX_CHARS,
-  LESSON_MAX_CHARS,
-  proposeLessons,
-  quarantinedStores,
-  type ProposeBatch,
-  type ProposeInput,
-} from './memory';
+import { DETAIL_MAX_CHARS, LESSON_MAX_CHARS, quarantinedStores, rememberLesson, type RememberInput } from './memory';
 import { resolveRepo } from './repo';
 import { readSessionLines, toolForSession } from './session-io';
 import type { SessionResult, Tool } from './types';
@@ -337,7 +333,7 @@ export function coerceProposals(raw: unknown, sources: DistillSource[]): Distill
  * A cwd that no longer resolves to a repo (deleted, moved) falls back to global rather
  * than being dropped: the claim is still true, it just cannot be pinned to a checkout.
  */
-export function toProposeInputs(proposals: DistillProposal[], now?: string): ProposeInput[] {
+export function toLessonDrafts(proposals: DistillProposal[], now?: string): RememberInput[] {
   const repos = new Map<string, { container: string; remote: string } | null>();
   const repoFor = (cwd: string): { container: string; remote: string } | null => {
     if (!repos.has(cwd)) {
@@ -374,6 +370,10 @@ export function toProposeInputs(proposals: DistillProposal[], now?: string): Pro
 
 export interface DistillArgs extends DistillOptions {
   here?: boolean;
+  /** Emit drafts as JSON on stdout and save nothing. */
+  json?: boolean;
+  /** Decide every draft without prompting — what makes the walk testable. */
+  save?: 'save' | 'skip';
 }
 
 function die(msg: string): never {
@@ -382,12 +382,15 @@ function die(msg: string): never {
 }
 
 function help(): never {
-  process.stderr.write(`sessions distill — mine past sessions for lessons, for a human to review
+  process.stderr.write(`sessions distill — mine past sessions for lessons and print them
 
 Reads a small, ranked selection of indexed sessions, asks an installed agent CLI to
-extract the durable lessons in them, and writes each one as a PROPOSAL. Nothing it
-writes is ever served: proposals are withheld from the context primer until accepted
-with \`sessions lessons review\`.
+extract the durable lessons in them, and PRINTS what it found. The run writes nothing
+on its own: each candidate is offered once, in the same sitting, and only what you
+say yes to is saved.
+
+Saving goes through the ordinary save path, so a candidate overlapping a lesson you
+already have lands in the conflict quarantine rather than becoming a second copy.
 
 The child process is restricted — plan/read-only mode, no write tools, and an empty
 working directory — because transcripts carry arbitrary text and the model is being
@@ -396,6 +399,7 @@ asked to read it.
 Usage:
   sessions distill                 Mine the ${DEFAULT_DISTILL_LIMIT} most recent sessions
   sessions distill --query "auth"  Mine the top-ranked matches instead
+  sessions distill --json          Print candidates as JSON; save nothing
 
 Options:
   --query <text>   Rank the selection against this query (default: most recent)
@@ -403,6 +407,8 @@ Options:
                    prompt is capped at ${Math.round(MAX_PROMPT_BYTES / 1024)}KB, so a large limit may mine fewer)
   --days <n>       Only sessions from the last n days
   --here           Scope to the current git repo
+  --json           Emit candidates on stdout as a versioned envelope; never saves
+  --save <x>       Decide every candidate non-interactively: save|skip
   --with <tool>    Which agent CLI to use: claude, codex
   -h, --help       Show this help
 `);
@@ -438,6 +444,15 @@ export function parseDistillArgs(argv: string[]): DistillArgs {
       case '--here':
         args.here = true;
         break;
+      case '--json':
+        args.json = true;
+        break;
+      case '--save': {
+        const v = argv[++i] ?? '';
+        if (v !== 'save' && v !== 'skip') die('--save must be save|skip');
+        args.save = v;
+        break;
+      }
       case '--with': {
         const v = argv[++i] ?? '';
         if (v !== 'claude' && v !== 'codex') die('--with must be claude or codex');
@@ -458,13 +473,56 @@ export interface DistillResult {
   /** Selected but left out of the prompt to stay under MAX_PROMPT_BYTES. */
   dropped: number;
   proposals: number;
-  batch: ProposeBatch | null;
+  /** What the run would save, in the order printed. Nothing here is in the store. */
+  drafts: RememberInput[];
+  /** Rows actually written, which only ever happens through the interactive save below. */
+  saved: number;
 }
 
-/** A run that wrote nothing, as a FRESH object every time. A shared constant returned by
+/** A run that produced nothing, as a FRESH object every time. A shared constant returned by
  *  reference is one caller's mutation away from rewriting the result of every later run. */
 function nothing(over: Partial<DistillResult> = {}): DistillResult {
-  return { selected: 0, unreadable: 0, dropped: 0, proposals: 0, batch: null, ...over };
+  return { selected: 0, unreadable: 0, dropped: 0, proposals: 0, drafts: [], saved: 0, ...over };
+}
+
+/** One draft as the human reads it: the claim, the specifics, and where to go check. */
+function renderDraft(d: RememberInput, n: number): string {
+  const src = d.source?.sessionId ? `${d.source.tool || 'session'} ${d.source.sessionId.slice(0, 8)}` : 'unattributed';
+  const lines = [`${C.bold}${n}.${C.reset} ${d.lesson}`];
+  if (d.detail) lines.push(`   ${C.dim}${d.detail}${C.reset}`);
+  lines.push(`   ${C.dim}${d.scope} scope · ${src}${d.source?.verified ? '' : ' · unverifiable'}${C.reset}`);
+  return lines.join('\n');
+}
+
+/**
+ * Offer each draft once, in one sitting.
+ *
+ * Saving goes through `rememberLesson`, so a draft overlapping a live lesson still lands
+ * in the conflict quarantine — the same protection the old `proposed` row bought, without
+ * the row. A non-TTY saves nothing rather than guessing, matching `sessions lessons review`.
+ */
+function offerDrafts(drafts: RememberInput[], log: (m: string) => void, auto?: 'save' | 'skip'): number {
+  if (!auto && !process.stdin.isTTY) {
+    log(`${C.dim}Not a TTY — nothing was saved. Re-run in a terminal, or use --json.${C.reset}`);
+    return 0;
+  }
+  let saved = 0;
+  for (const [i, d] of drafts.entries()) {
+    log('\n' + renderDraft(d, i + 1));
+    let choice = auto;
+    if (!choice) {
+      process.stderr.write(`   ${C.dim}[s]ave / [n]ext / [q]uit? ${C.reset}`);
+      const answer = (prompt('') ?? '').trim().toLowerCase();
+      if (answer === 'q' || answer === 'quit') break;
+      choice = answer === 's' || answer === 'save' ? 'save' : 'skip';
+    }
+    if (choice === 'skip') continue;
+    const r = rememberLesson(d);
+    const mark = r.outcome === 'rejected' ? `${C.red}✗${C.reset}` : `${C.green}✓${C.reset}`;
+    log(`   ${mark} ${r.message}`);
+    if (r.outcome !== 'rejected') saved++;
+  }
+  return saved;
 }
 
 /**
@@ -562,37 +620,88 @@ export async function runDistill(args: DistillArgs = {}, project = ''): Promise<
     rmSync(sandbox, { recursive: true, force: true });
   }
 
-  const proposals = coerceProposals(extractJsonArray(out), sources);
+  const parsed = extractJsonArray(out);
+  const proposals = coerceProposals(parsed, sources);
   if (proposals.length === 0) {
+    const empty = nothing({ selected: sources.length, unreadable: unreadable.length, dropped: dropped.length });
     // A killed child still resolves with whatever it had written, so an empty result
     // after the full timeout is a timeout — saying "returned nothing usable" there
     // sends the reader looking for a model problem that isn't one.
-    const timedOut = Date.now() - started >= timeoutMs;
-    const why = timedOut ? `timed out after ${Math.round(timeoutMs / 1000)}s` : 'returned nothing usable';
+    if (Date.now() - started >= timeoutMs) {
+      log(
+        `warning: distill: ${tool.label} timed out after ${Math.round(timeoutMs / 1000)}s${stderr ? ` — ${stderr.split('\n')[0]}` : ''}`,
+      );
+      return empty;
+    }
+    // An empty array is the answer the prompt ASKS for when a batch holds no lesson
+    // ("Extract ZERO rather than padding"), so it is reported as a result, not a
+    // failure. Calling it a warning — and pinning the first line of the child's stderr
+    // to it, which is routinely an unrelated notice — sends the reader hunting a broken
+    // model or broken auth when the run did exactly what it was told.
+    if (Array.isArray(parsed) && parsed.length === 0) {
+      log(
+        `${C.dim}No lessons found in ${sources.length} session${sources.length === 1 ? '' : 's'} — most sessions hold none.${C.reset}`,
+      );
+      return empty;
+    }
+    // Items came back and every one was dropped: over-length, empty, or unrecognizable.
+    // That is a real problem with the output and worth the stderr line.
+    const why = Array.isArray(parsed)
+      ? `returned ${parsed.length} item${parsed.length === 1 ? '' : 's'}, none of them usable (over ${LESSON_MAX_CHARS}/${DETAIL_MAX_CHARS} chars, or missing a lesson)`
+      : 'returned output that is not a JSON array';
     log(`warning: distill: ${tool.label} ${why}; nothing was written${stderr ? ` — ${stderr.split('\n')[0]}` : ''}`);
-    return nothing({ selected: sources.length, unreadable: unreadable.length, dropped: dropped.length });
+    return empty;
   }
 
-  const batch = proposeLessons(toProposeInputs(proposals));
-  for (const path of quarantinedStores()) {
-    log(
-      `warning: distill: the lesson store was corrupt and was moved aside — proposals went into a fresh one:\n    ${path}`,
-    );
-  }
-
-  const bits = [`${C.green}✓${C.reset} ${batch.proposed} proposal${batch.proposed === 1 ? '' : 's'} written`];
-  if (batch.duplicate > 0) bits.push(`${batch.duplicate} already on file`);
-  if (batch.rejected > 0) bits.push(`${batch.rejected} unusable`);
-  log(`${bits.join(', ')} from ${sources.length} session${sources.length === 1 ? '' : 's'}.`);
-  if (batch.proposed > 0) {
-    log(`${C.dim}  Nothing is served until you accept it — run \`sessions lessons review\`.${C.reset}`);
-  }
-
-  return {
+  const drafts = toLessonDrafts(proposals, args.now?.toISOString());
+  const base = {
     selected: sources.length,
     unreadable: unreadable.length,
     dropped: dropped.length,
     proposals: proposals.length,
-    batch,
+    drafts,
   };
+
+  // --json is the scriptable contract: stdout carries the drafts and nothing else, and
+  // the run never writes. Everything human goes to stderr, as with `search --json`.
+  if (args.json) {
+    process.stdout.write(
+      JSON.stringify(
+        {
+          generator: 'sessions',
+          version: 1,
+          selected: sources.length,
+          drafts: drafts.map((d) => ({
+            lesson: d.lesson,
+            detail: d.detail,
+            scope: d.scope,
+            session: d.source?.sessionId ?? null,
+            transcript: d.source?.transcript ?? null,
+            verified: d.source?.verified ?? false,
+          })),
+        },
+        null,
+        2,
+      ) + '\n',
+    );
+    return { ...base, saved: 0 };
+  }
+
+  log(
+    `\n${drafts.length} candidate${drafts.length === 1 ? '' : 's'} from ${sources.length} ` +
+      `session${sources.length === 1 ? '' : 's'}. ${C.dim}Nothing is saved unless you say so.${C.reset}`,
+  );
+  const saved = offerDrafts(drafts, log, args.save);
+
+  // Only meaningful once something was written — a run that saves nothing never opens the store.
+  if (saved > 0) {
+    for (const path of quarantinedStores()) {
+      log(
+        `warning: distill: the lesson store was corrupt and was moved aside — saves went into a fresh one:\n    ${path}`,
+      );
+    }
+  }
+  log(`\n${C.green}✓${C.reset} ${saved} saved, ${drafts.length - saved} discarded.`);
+
+  return { ...base, saved };
 }

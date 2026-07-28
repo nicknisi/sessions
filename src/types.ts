@@ -133,9 +133,6 @@ export interface ContextPrimer {
   lessons: ContextLesson[];
   /** Lessons quarantined as conflicting. A count only — a contested belief is never served as fact. */
   lessonsFlagged: number;
-  /** Unreviewed proposals from `sessions distill`. Counted apart from lessonsFlagged so
-   *  "conflicts withheld" never silently means "things nobody has looked at yet". */
-  lessonsProposed: number;
   /** Active in-scope lessons, so a capped list can say how many it left out. */
   lessonsTotal: number;
   /** Corrupt lesson stores moved aside. Non-empty means lessons are missing, not absent. */

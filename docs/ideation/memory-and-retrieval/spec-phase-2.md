@@ -10,7 +10,9 @@ The lesson store holds exactly one row, written by hand to prove the plumbing. `
 
 Two hard constraints shape the whole design.
 
-**Proposals are never active.** Every distilled lesson lands in review. That makes a bad model pass cost one review pass instead of silently polluting the primer, and it makes the phase testable — assert zero rows land `active`. But `needs_review` is currently the *conflict quarantine*: `reviewGroups()` (src/memory.ts:815) returns only rows whose `review_group` is non-NULL, and the primer counts every `needs_review` row as `flagged`. A group-less proposal would be invisible to `sessions lessons review` while still inflating the conflict nag. So proposals need their own status, not a borrowed one.
+**The run writes nothing.** Candidates are printed and offered once, in the same sitting; only what the human says yes to is saved, through the ordinary `rememberLesson` path so an overlap still lands in the conflict quarantine. This supersedes the original design, which persisted every candidate as a `proposed` row for a later `sessions lessons review` pass — see the amendment below.
+
+**Amendment (superseding the `proposed` status).** The persistence existed so an interrupted review would not waste the mining run. But mining is one prompt, ≤96 KB, ten sessions, a single CLI call. The row-based design bought a new status in the state vocabulary, five propose/accept/reject functions, primer counting so proposals did not inflate the conflict nag, FTS deletion on reject to avoid phantom conflicts, and **three branches inside `saveLesson`** — `shortlist`'s `includeProposed`, the supersedes-a-proposal refusal, and the `displaced` exact-hash path — all to protect a one-minute job from being re-run. The contract had already bounded distill away from the 4,400-session run that would have justified it. `distill` was also the only command in the tool that was a job rather than a question, and it needed a scheduler the contract explicitly refused to add. Print-only *strengthens* the safety property the `proposed` status was built for: nothing unreviewed can pollute the primer because nothing is written at all.
 
 **The subprocess must be side-effect-free.** `src/wrapped/roast.ts:25` runs `claude -p`, `codex exec`, and `pi -p` through `Bun.spawn` with no sandbox, no cwd restriction, and the user's own auth. That seam is safe today only because `roastDigest` (roast.ts:45) feeds it *stats only* — its comment says so explicitly: "the model gets numbers to riff on, never transcript prose." Distill inverts that premise. Transcripts contain arbitrary text an agent once read from the web, from files, from tool output. Feeding that to an unsandboxed agent with write access is a prompt-injection path onto the user's machine. Distill therefore builds its **own** restricted argv and does not reuse the roast tool table as-is.
 
@@ -18,8 +20,9 @@ Two hard constraints shape the whole design.
 
 _Carried from the contract; consult before making gap decisions._
 
-- **`sessions distill` always proposes and never writes an active row** — rejected: auto-saving like `remember_lesson` does. A bad model pass costs one review pass instead of silently polluting the primer, and it makes the phase testable.
-- **Proposals get an explicit surfacing mechanism rather than reusing bare `needs_review`** — rejected: writing proposals as plain `needs_review` rows. `reviewGroups()` only returns rows with a non-NULL `review_group` (memory.ts:823), so group-less proposals would be invisible to `sessions lessons review` while still inflating the primer's flagged count — reviewable in name only.
+- **`sessions distill` prints candidates and writes nothing; each is offered once in the same run** — rejected: persisting them as `proposed` rows for a later review pass. The persistence protected a one-minute job from being re-run, at the cost of a status, five functions, and three branches in `saveLesson`. Nothing unreviewed can pollute the primer if nothing is written.
+- **`sessions distill` never writes an active row unasked** — rejected: auto-saving like `remember_lesson` does. A bad model pass costs one read-through instead of silently polluting the primer.
+- **`sessions lessons review` stays conflict arbitration only** — rejected: giving it a second verb set for proposals. A conflict is arbitrated (new/old/both); with no machine-authored rows in the store, `needs_review` means exactly one thing again.
 - **distill reads a bounded ranked selection (`--query`/`--limit`/`--days`), defaulting small** — rejected: all history, or a watermark. 4,400 indexed sessions × one agent-CLI call each is hours and a lot of tokens; a watermark's first run is still unbounded and invites a cron that quietly burns tokens.
 - **Distill success is measured mechanically; quality is a judgment criterion with an explicit bar** — rejected: asserting it finds known lessons in the eval fixtures. Those fixtures are synthetic, so the test would measure whether it can mine fake sessions.
 - **A side-effect-free invocation contract, verified against the production argv** — rejected: reusing the roast tool table unchanged. That seam is only safe because roast feeds it numbers; distill feeds prose.
@@ -38,16 +41,16 @@ _Carried from the contract; consult before making gap decisions._
 
 | File Path | Purpose |
 | --- | --- |
-| `src/distill.ts` | Selection, prompt construction, restricted argv, proposal writing |
-| `src/distill.test.ts` | Bounded selection, proposal status, review visibility, fail-open |
+| `src/distill.ts` | Selection, prompt construction, restricted argv, rendering candidates, the inline save walk, `--json` |
+| `src/distill.test.ts` | Bounded selection, writes-nothing-by-default, `--save`, `--json`, fail-open |
 | `src/distill.sandbox.test.ts` | Asserts the **production** argv restricts the subprocess |
 
 ### Modified Files
 
 | File Path | Changes |
 | --- | --- |
-| `src/memory.ts` | Add `'proposed'` status; `proposeLesson()`; exclude proposals from the primer's `flagged` count; include them in a review listing |
-| `src/lessons.ts` | `sessions lessons review` surfaces proposals as their own group with accept/reject |
+| `src/memory.ts` | **Amended**: no new status. The `'proposed'` status and its five functions were removed, along with `shortlist`'s `includeProposed`, the supersedes-a-proposal refusal, and the `displaced` branch in `saveLesson` |
+| `src/lessons.ts` | **Amended**: `review` stays conflict arbitration only; `--proposals` and the proposal walk removed |
 | `src/wrapped/roast.ts` | Export the `RoastTool` shape and `spawnRunner` so distill can reuse the mechanism with a different, restricted tool table |
 | `src/cli.ts` | Parse `distill` args: `--query`, `--limit`, `--days`, `--with` |
 | `index.ts` | Dispatch the `distill` command |
@@ -136,7 +139,7 @@ export const DEFAULT_DISTILL_LIMIT = 10;
 
 ### 3. Proposals as a first-class status
 
-**Overview**: A new `status = 'proposed'`, distinct from `needs_review`, so proposals are reviewable without colliding with the conflict quarantine.
+**Overview**: ~~A new `status = 'proposed'`, distinct from `needs_review`.~~ **Superseded by the amendment above** — distill writes nothing, so there is no machine-authored row to give a status to. Retained below for the reasoning trail only; none of it shipped.
 
 ```typescript
 export function proposeLesson(input: ProposeInput): ProposeResult

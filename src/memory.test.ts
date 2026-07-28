@@ -916,6 +916,62 @@ describe('the migration ladder', () => {
     check.close();
   });
 
+  // A store written before `proposed` was removed still holds those rows, and the two
+  // guards that made them safe are gone with it. Left in place they are landmines: the
+  // shortlist would offer them as near-duplicate candidates, so a genuine save whose
+  // wording overlaps a machine guess nobody read comes back quarantined.
+  test('the v3 rung retires leftover proposals and takes them out of the shortlist', () => {
+    const keep = save('The staging limiter counts preflight requests against the budget.');
+    expect(keep.outcome).toBe('saved');
+    mem.closeMemoryDb();
+
+    // Forge a store that still has a proposal in it, exactly as a pre-removal build left
+    // one: a row with the dead status AND a live lessons_fts entry.
+    const legacy = new Database(dbPath);
+    legacy.run(
+      `INSERT INTO lessons (content_hash, lesson, detail, scope, repo_container, repo_remote, files, tool,
+                            source_session, source_transcript, source_tool_use_id, provenance, source_verified,
+                            status, created_at, last_seen_at)
+       VALUES ('deadbeef', ?, '', 'repo', ?, ?, '[]', 'claude', NULL, NULL, NULL, 'distilled', 0,
+               'proposed', '2026-07-01T00:00:00Z', '2026-07-01T00:00:00Z')`,
+      ['The retry budget is counted per-endpoint and not per-account at all.', REPO, REMOTE],
+    );
+    const id = legacy.query<{ id: number }, []>('SELECT last_insert_rowid() AS id').get()!.id;
+    legacy.run('INSERT INTO lessons_fts (id, lesson, detail) VALUES (?, ?, ?)', [
+      id,
+      'The retry budget is counted per-endpoint and not per-account at all.',
+      '',
+    ]);
+    legacy.run('PRAGMA user_version = 2');
+    legacy.close();
+
+    // Reopening runs the ladder.
+    const rows = mem.listLessons({ all: true });
+    const migrated = rows.find((r) => r.id === id)!;
+    expect(migrated.status).toBe('retired');
+    // Kept, never deleted — still readable, still exported, still owns its content_hash.
+    expect(migrated.lesson).toContain('per-endpoint');
+    expect(mem.exportLessons().some((l) => l.id === id)).toBe(true);
+    expect(rows.find((r) => r.id === keep.id)!.status).toBe('active');
+
+    // The assertion the rung exists for: overlapping text from a real agent saves
+    // cleanly instead of being quarantined against the retired machine guess.
+    const genuine = save('The retry budget is counted per-endpoint, not per-account.');
+    expect(genuine.outcome).toBe('saved');
+    expect(genuine.status).toBe('active');
+    expect(mem.readLessonsForRepo(REPO, REMOTE, 10).flagged).toBe(0);
+
+    mem.closeMemoryDb();
+    const check = new Database(dbPath, { readonly: true });
+    expect(check.query<{ n: number }, [number]>('SELECT COUNT(*) AS n FROM lessons_fts WHERE id = ?').get(id)?.n).toBe(
+      0,
+    );
+    expect(check.query<{ user_version: number }, []>('PRAGMA user_version').get()?.user_version).toBe(
+      mem.MEMORY_SCHEMA_VERSION,
+    );
+    check.close();
+  });
+
   test('a file newer than the build is served read-only, never rewritten', () => {
     save('A lesson from the future build.');
     mem.closeMemoryDb();

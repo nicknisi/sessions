@@ -6,14 +6,11 @@ import { getClaudeDir, getMemoryDbPath } from './paths';
 import { sessionIdFor } from './session-id';
 import { writeStdoutFully } from './stdout';
 import {
-  acceptProposal,
   deferredLessons,
   exportLessons,
   listLessons,
-  listProposals,
   quarantinedStores,
   recoverLesson,
-  rejectProposal,
   resolveReview,
   reviewGroups,
   retireLesson,
@@ -23,9 +20,6 @@ import {
 
 export type LessonsAction = 'list' | 'review' | 'export' | 'audit' | 'retire';
 
-/** What `review` does with a distilled proposal when nobody is at a terminal. */
-export type ProposalChoice = 'accept' | 'reject';
-
 export interface LessonsArgs {
   action: LessonsAction;
   all: boolean;
@@ -33,8 +27,6 @@ export interface LessonsArgs {
   id?: number;
   /** Non-interactive resolution for `review`, so the walk is scriptable and testable. */
   keep?: ReviewChoice;
-  /** The same, for the proposal queue — which needs accept/reject, not new/old/both. */
-  proposals?: ProposalChoice;
 }
 
 function die(msg: string): never {
@@ -52,7 +44,7 @@ survive --clear-cache, cleanup, and uninstall.
 Usage:
   sessions lessons                 Lessons in scope for the current repo
   sessions lessons --all           Every lesson, every repo
-  sessions lessons review          Resolve conflicts and distilled proposals
+  sessions lessons review          Resolve conflicting lessons
   sessions lessons export          Print every lesson as JSON
   sessions lessons audit           Trace deferred provenance back to a session
   sessions lessons retire <id>     Take one lesson out of service (never deleted)
@@ -61,8 +53,6 @@ Options:
   --all            Ignore repo scope
   --out <path>     Write export output to a file instead of stdout
   --keep <which>   review: resolve every conflict non-interactively (new|old|both)
-  --proposals <x>  review: decide every distilled proposal non-interactively
-                   (accept|reject)
   -h, --help       Show this help
 `);
   process.exit(0);
@@ -104,12 +94,6 @@ export function parseLessonsArgs(argv: string[]): LessonsArgs {
         args.keep = v;
         break;
       }
-      case '--proposals': {
-        const v = argv[++i] ?? '';
-        if (v !== 'accept' && v !== 'reject') die('--proposals must be accept|reject');
-        args.proposals = v;
-        break;
-      }
       default:
         die(`unknown option: ${a}`);
     }
@@ -137,8 +121,6 @@ function statusLabel(row: LessonRow): string {
       return 'retired';
     case 'superseded':
       return `superseded by #${row.superseded_by}`;
-    case 'proposed':
-      return 'proposed, awaiting review';
   }
 }
 
@@ -176,7 +158,6 @@ async function runList(args: LessonsArgs): Promise<void> {
 
   const active = rows.filter((r) => r.status === 'active');
   const flagged = rows.filter((r) => r.status === 'needs_review');
-  const proposed = rows.filter((r) => r.status === 'proposed');
   const gone = rows.filter((r) => r.status === 'superseded' || r.status === 'retired');
 
   if (rows.length === 0) {
@@ -193,17 +174,6 @@ async function runList(args: LessonsArgs): Promise<void> {
         `${C.dim}— withheld from the primer until resolved. Run \`sessions lessons review\`.${C.reset}`,
     );
   }
-  // Distilled proposals are listed in full, not as a count: unlike a conflict, there is
-  // nothing to arbitrate — the only way to decide one is to read it. A row that matched
-  // none of these buckets would be counted by the `rows.length === 0` guard above and
-  // then printed nowhere, which is how a whole distill run goes invisible.
-  if (proposed.length > 0) {
-    out.push(
-      `\n${C.yellow}${proposed.length} distilled proposal${proposed.length === 1 ? '' : 's'} awaiting review${C.reset} ` +
-        `${C.dim}— never served until accepted. Run \`sessions lessons review\`.${C.reset}`,
-    );
-    for (const row of proposed) out.push(formatRow(row));
-  }
   // A row can leave service without anyone watching — a review, a retire, or a
   // supersedes from an agent. Listing them is what makes that reversible.
   if (gone.length > 0) {
@@ -214,48 +184,17 @@ async function runList(args: LessonsArgs): Promise<void> {
 }
 
 async function runReview(args: LessonsArgs): Promise<void> {
-  // Same scope rule as `sessions lessons`: --all or the repo you are standing in. A
-  // review queue that ignored scope would walk proposals mined out of another checkout
-  // while the listing beside it showed only this one's.
-  const repo = resolveRepo(process.cwd());
-  const scope = { all: args.all, container: repo?.container ?? '', remote: repo?.remote ?? '' };
-  const proposals = listProposals(scope);
+  // Read BEFORE warning: opening the store is what moves a corrupt file aside, so a
+  // warnQuarantined() that runs first has nothing to report and the failure goes silent.
+  const groups = reviewGroups();
   warnQuarantined();
 
-  if (proposals.length === 0 && reviewGroups().length === 0) {
-    process.stderr.write(`${C.dim}No conflicting lessons or proposals to review.${C.reset}\n`);
+  if (groups.length === 0) {
+    process.stderr.write(`${C.dim}No conflicting lessons to review.${C.reset}\n`);
     return;
   }
 
-  // Proposals first, and as their own pass. A conflict is arbitration between rival
-  // claims (new/old/both); a proposal is a machine's guess nobody has read yet, and the
-  // only question is whether it earns a place at all.
-  for (const row of proposals) {
-    process.stderr.write(`\n${C.bold}Proposal${C.reset} ${C.dim}(from \`sessions distill\`)${C.reset}\n`);
-    process.stderr.write(`${formatRow(row)}\n`);
-
-    const choice = args.proposals ?? askProposal();
-    if (!choice) {
-      process.stderr.write(`  ${C.dim}skipped${C.reset}\n`);
-      continue;
-    }
-    if (choice === 'reject') {
-      rejectProposal(row.id);
-      process.stderr.write(`  ${C.green}✓${C.reset} rejected — retired, not deleted\n`);
-      continue;
-    }
-    // Accepting runs the ordinary save path, so a proposal that overlaps a live lesson
-    // lands in the conflict quarantine rather than becoming a second copy of it.
-    const result = acceptProposal(row.id);
-    const mark = result.outcome === 'rejected' ? `${C.red}✗${C.reset}` : `${C.green}✓${C.reset}`;
-    process.stderr.write(`  ${mark} ${result.message}\n`);
-  }
-
-  // Re-read AFTER the proposal walk, never before it. Accepting a proposal that overlaps
-  // a live lesson routes through saveLesson and OPENS a conflict group; a snapshot taken
-  // up front would not contain it, so the decision the accept just created would sit
-  // there unoffered until somebody thought to run review again.
-  for (const group of reviewGroups()) {
+  for (const group of groups) {
     process.stderr.write(`\n${C.bold}Conflict${C.reset} ${C.dim}(group ${group.group})${C.reset}\n`);
     for (const row of group.rows) process.stderr.write(`${formatRow(row)}\n`);
     // A group can carry rows that are only there to explain it — a retired lesson the
@@ -287,17 +226,6 @@ function askChoice(): ReviewChoice | null {
   if (answer === 'n' || answer === 'new') return 'new';
   if (answer === 'o' || answer === 'old') return 'old';
   if (answer === 'b' || answer === 'both') return 'both';
-  return null;
-}
-
-/** Same contract as askChoice: a non-TTY skips rather than guessing, and `--proposals`
- *  is what makes the walk scriptable — and therefore testable. */
-function askProposal(): ProposalChoice | null {
-  if (!process.stdin.isTTY) return null;
-  process.stderr.write(`  ${C.dim}[a]ccept / [r]eject / [s]kip? ${C.reset}`);
-  const answer = (prompt('') ?? '').trim().toLowerCase();
-  if (answer === 'a' || answer === 'accept') return 'accept';
-  if (answer === 'r' || answer === 'reject') return 'reject';
   return null;
 }
 

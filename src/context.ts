@@ -152,12 +152,7 @@ export const LESSONS_MAX_CHARS_FULL = 3000;
 
 /** `## Lessons`: what was learned here, ahead of what merely happened here. */
 function renderLessons(primer: ContextPrimer, maxChars: number): string[] {
-  if (
-    primer.lessons.length === 0 &&
-    primer.lessonsFlagged === 0 &&
-    primer.lessonsProposed === 0 &&
-    primer.lessonsQuarantined.length === 0
-  ) {
+  if (primer.lessons.length === 0 && primer.lessonsFlagged === 0 && primer.lessonsQuarantined.length === 0) {
     return [];
   }
 
@@ -189,13 +184,6 @@ function renderLessons(primer: ContextPrimer, maxChars: number): string[] {
   if (primer.lessonsFlagged > 0) {
     out.push(
       `- _${primer.lessonsFlagged} lesson${primer.lessonsFlagged === 1 ? '' : 's'} flagged as conflicting and withheld — run \`sessions lessons review\`_`,
-    );
-  }
-  // Never mixed into the flagged line: a conflict is two claims fighting, a proposal is
-  // a machine's guess nobody has read. Neither is served, for different reasons.
-  if (primer.lessonsProposed > 0) {
-    out.push(
-      `- _${primer.lessonsProposed} distilled proposal${primer.lessonsProposed === 1 ? '' : 's'} awaiting review — never served until accepted; run \`sessions lessons review\`_`,
     );
   }
   out.push('');
@@ -289,7 +277,6 @@ const EMPTY_PRIMER: ContextPrimer = {
   headlines: [],
   lessons: [],
   lessonsFlagged: 0,
-  lessonsProposed: 0,
   lessonsTotal: 0,
   lessonsQuarantined: [],
   isEmpty: true,

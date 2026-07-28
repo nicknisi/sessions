@@ -7,7 +7,7 @@
 // process start), so a spawning test would reach the developer's real index and real
 // lesson store no matter what this file sets.
 
-import { describe, test, expect, beforeAll, beforeEach, afterAll, spyOn } from 'bun:test';
+import { describe, test, expect, beforeAll, beforeEach, afterAll } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -387,15 +387,15 @@ describe('what the model returns is validated, never trusted', () => {
   });
 
   test('a session whose cwd is no longer a repo scopes global rather than being dropped', () => {
-    const [input] = distill.toProposeInputs(distill.coerceProposals([{ lesson: 'A claim.', session: 's1' }], sources));
+    const [input] = distill.toLessonDrafts(distill.coerceProposals([{ lesson: 'A claim.', session: 's1' }], sources));
     expect(input!.scope).toBe('global');
     expect(input!.source.provenance).toBe('distilled');
     expect(input!.source.sessionId).toBe('s1');
   });
 });
 
-describe('every distilled lesson lands as a proposal and nothing lands active', () => {
-  test('proposals are written, counted apart from conflicts, and never served', async () => {
+describe('a distill run writes nothing on its own', () => {
+  test('candidates are returned and printed, and the store is left untouched', async () => {
     const { runner } = runnerFor(
       JSON.stringify([
         { lesson: 'The retry budget is per-endpoint, not per-account.', detail: 'src/retry.ts' },
@@ -403,253 +403,45 @@ describe('every distilled lesson lands as a proposal and nothing lands active', 
         { lesson: 'The staging limiter counts preflight requests.', detail: 'src/limiter.ts' },
       ]),
     );
-    const res = await distill.runDistill({ runner, log: () => {} });
-    expect(res.batch!.proposed).toBe(3);
+    const res = await distill.runDistill({ runner, log: () => {}, save: 'skip' });
+    expect(res.drafts).toHaveLength(3);
+    expect(res.saved).toBe(0);
 
-    const proposals = memory.listProposals({ all: true });
-    expect(proposals).toHaveLength(3);
-    expect(proposals.every((p) => p.status === 'proposed')).toBe(true);
-    expect(memory.listLessons({ all: true, status: 'active' })).toHaveLength(0);
-
-    // The primer counts them separately: "2 conflicts withheld" must never silently
-    // mean "2 things nobody has looked at".
+    // The point of the whole design: a mining pass that nobody acted on leaves no trace.
+    expect(memory.listLessons({ all: true })).toHaveLength(0);
     const served = memory.readLessonsForRepo('/whatever', '', 5);
     expect(served.lessons).toHaveLength(0);
     expect(served.flagged).toBe(0);
-    expect(served.proposed).toBe(3);
   });
 
-  test('a second run over the same sessions inserts nothing', async () => {
+  test('--save save routes each candidate through the ordinary save path', async () => {
     const { runner } = runnerFor(oneProposal);
-    const first = await distill.runDistill({ runner, log: () => {} });
-    expect(first.batch!.proposed).toBe(1);
+    const first = await distill.runDistill({ runner, log: () => {}, save: 'save' });
+    expect(first.saved).toBe(1);
+    expect(memory.listLessons({ all: true, status: 'active' })).toHaveLength(1);
 
-    const second = await distill.runDistill({ runner, log: () => {} });
-    expect(second.batch!.proposed).toBe(0);
-    expect(second.batch!.duplicate).toBe(1);
-    expect(memory.listProposals({ all: true })).toHaveLength(1);
-  });
-
-  test('a pending proposal does not poison a genuine remember_lesson save', async () => {
-    const { runner } = runnerFor(
-      JSON.stringify([{ lesson: 'The retry budget is per-endpoint, not per-account.', detail: 'src/retry.ts' }]),
-    );
-    await distill.runDistill({ runner, log: () => {} });
-
-    // Overlapping text from a real agent (Jaccard 0.83 over content words, well above
-    // the review band). If proposals were near-duplicate candidates, this would come
-    // back `conflict`, put BOTH rows into needs_review, serve neither, and raise the
-    // primer's flagged count over something nobody has read.
-    const saved = memory.rememberLesson({
-      lesson: 'The retry budget is counted per-endpoint, not per-account.',
-      scope: 'global',
-      source: { sessionId: null, transcript: null, toolUseId: null, provenance: 'none', verified: false, tool: '' },
-    });
-    expect(saved.outcome).toBe('saved');
-    expect(saved.status).toBe('active');
-    expect(memory.readLessonsForRepo('/whatever', '', 5).flagged).toBe(0);
-  });
-
-  test('a byte-identical genuine save displaces the proposal instead of bouncing off it', async () => {
-    const text = 'The retry budget is per-endpoint, not per-account.';
-    const { runner } = runnerFor(JSON.stringify([{ lesson: text, detail: 'src/retry.ts' }]));
-    await distill.runDistill({ runner, log: () => {} });
-    const [proposal] = memory.listProposals({ all: true });
-
-    // The same failure as the near-duplicate case, by the other route: a proposal owns
-    // the content_hash for its (lesson, scope, repo), so the exact-hash lookup answers
-    // "already known", inserts nothing, and the real lesson never enters service behind
-    // a row nobody has read.
-    const saved = memory.rememberLesson({
-      lesson: text,
-      scope: 'global',
-      source: { sessionId: null, transcript: null, toolUseId: null, provenance: 'none', verified: false, tool: '' },
-    });
-    expect(saved.outcome).toBe('saved');
-    expect(saved.status).toBe('active');
-    expect(saved.message).toContain(`proposal #${proposal!.id}`);
-
-    // One row, in service, and nothing left sitting in the queue for it.
-    expect(memory.listProposals({ all: true })).toHaveLength(0);
-    expect(memory.readLessonsForRepo('/whatever', '', 5).lessons).toHaveLength(1);
-    expect(memory.readLessonsForRepo('/whatever', '', 5).proposed).toBe(0);
+    // Exact re-save is idempotent by content_hash — it bumps last_seen_at, inserts nothing.
+    const second = await distill.runDistill({ runner, log: () => {}, save: 'save' });
+    expect(second.saved).toBe(1);
     expect(memory.listLessons({ all: true })).toHaveLength(1);
   });
 
-  test('a rejected proposal is not a landmine under the next genuine save', async () => {
-    const { runner } = runnerFor(
-      JSON.stringify([{ lesson: 'The retry budget is per-endpoint, not per-account.', detail: 'src/retry.ts' }]),
-    );
-    await distill.runDistill({ runner, log: () => {} });
-    const [proposal] = memory.listProposals({ all: true });
-    expect(memory.rejectProposal(proposal!.id)).toBe(true);
-
-    // A retired near-duplicate is `context`, and any context row forces conflict. If a
-    // rejected proposal stayed a near-duplicate candidate, a machine's discarded guess
-    // would quarantine this human-sourced lesson into needs_review and serve nobody.
-    const saved = memory.rememberLesson({
-      lesson: 'The retry budget is counted per-endpoint, not per-account.',
-      scope: 'global',
-      source: { sessionId: null, transcript: null, toolUseId: null, provenance: 'none', verified: false, tool: '' },
-    });
-    expect(saved.outcome).toBe('saved');
-    expect(saved.status).toBe('active');
-    expect(memory.readLessonsForRepo('/whatever', '', 5).lessons).toHaveLength(1);
-    expect(memory.readLessonsForRepo('/whatever', '', 5).flagged).toBe(0);
-    // Still on file and still out of service — rejection stays as visible and as
-    // reversible as any other row that left service.
-    expect(memory.exportLessons().filter((e) => e.status === 'retired')).toHaveLength(1);
-  });
-
-  test("a human's retirement still counts against a later overlapping save", async () => {
-    const first = memory.rememberLesson({
-      lesson: 'The retry budget is per-endpoint, not per-account.',
-      scope: 'global',
-      source: { sessionId: null, transcript: null, toolUseId: null, provenance: 'none', verified: false, tool: '' },
-    });
-    expect(memory.retireLesson(first.id!)).toBe(true);
-
-    // The contrast with the test above: dropping a REJECTED proposal out of the
-    // near-duplicate index must not also drop a lesson a person retired on purpose.
-    const saved = memory.rememberLesson({
-      lesson: 'The retry budget is counted per-endpoint, not per-account.',
-      scope: 'global',
-      source: { sessionId: null, transcript: null, toolUseId: null, provenance: 'none', verified: false, tool: '' },
-    });
-    expect(saved.outcome).toBe('conflict');
-    expect(saved.status).toBe('needs_review');
-  });
-});
-
-describe('review is where a proposal becomes a lesson, or does not', () => {
-  async function propose(lessons: { lesson: string; detail?: string }[]): Promise<void> {
-    const { runner } = runnerFor(JSON.stringify(lessons));
-    await distill.runDistill({ runner, log: () => {} });
-  }
-
-  test('accepting routes through the ordinary save path', async () => {
-    await propose([{ lesson: 'The retry budget is per-endpoint, not per-account.', detail: 'src/retry.ts' }]);
-    const [proposal] = memory.listProposals({ all: true });
-
-    const result = memory.acceptProposal(proposal!.id);
-    expect(result.outcome).toBe('saved');
-    expect(result.status).toBe('active');
-    expect(memory.listProposals({ all: true })).toHaveLength(0);
-    expect(memory.listLessons({ all: true, status: 'active' })).toHaveLength(1);
-  });
-
-  test('accepting a proposal that overlaps an active lesson lands in the quarantine, not in service', async () => {
-    memory.rememberLesson({
-      lesson: 'The retry budget is per-account, not per-endpoint.',
-      scope: 'global',
-      source: { sessionId: null, transcript: null, toolUseId: null, provenance: 'none', verified: false, tool: '' },
-    });
-    await propose([{ lesson: 'The retry budget is per-endpoint, not per-account.' }]);
-    const [proposal] = memory.listProposals({ all: true });
-
-    const result = memory.acceptProposal(proposal!.id);
-    expect(result.outcome).toBe('conflict');
-    expect(result.status).toBe('needs_review');
-    // Both sides withheld, and now reachable from `sessions lessons review`.
-    expect(memory.readLessonsForRepo('/whatever', '', 5).lessons).toHaveLength(0);
-    expect(memory.reviewGroups()).toHaveLength(1);
-  });
-
-  test('rejecting keeps the text retrievable but never serves it', async () => {
-    await propose([{ lesson: 'A proposal nobody wants to keep, about the limiter.' }]);
-    const [proposal] = memory.listProposals({ all: true });
-
-    expect(memory.rejectProposal(proposal!.id)).toBe(true);
-    expect(memory.listProposals({ all: true })).toHaveLength(0);
-    expect(memory.readLessonsForRepo('/whatever', '', 5).lessons).toHaveLength(0);
-    expect(memory.readLessonsForRepo('/whatever', '', 5).proposed).toBe(0);
-
-    const exported = memory.exportLessons();
-    expect(exported).toHaveLength(1);
-    expect(exported[0]!.status).toBe('retired');
-    expect(exported[0]!.lesson).toContain('nobody wants to keep');
-  });
-
-  test('`sessions lessons review --proposals reject` walks the queue without a TTY', async () => {
-    await propose([{ lesson: 'One claim about the limiter.' }, { lesson: 'Another claim about the deploy lock.' }]);
-    const lessons = await import('./lessons');
-    const quiet = spyOn(process.stderr, 'write').mockImplementation(() => true);
+  test('--json prints an envelope and saves nothing even with a TTY', async () => {
+    const { runner } = runnerFor(oneProposal);
+    const write = process.stdout.write;
+    let out = '';
+    process.stdout.write = ((s: string) => ((out += s), true)) as typeof process.stdout.write;
     try {
-      await lessons.runLessons({ action: 'review', all: true, proposals: 'reject' });
+      const res = await distill.runDistill({ runner, log: () => {}, json: true });
+      expect(res.saved).toBe(0);
     } finally {
-      quiet.mockRestore();
+      process.stdout.write = write;
     }
-    expect(memory.listProposals({ all: true })).toHaveLength(0);
-    expect(memory.listLessons({ all: true, status: 'retired' })).toHaveLength(2);
-  });
-
-  test('a conflict an accept just created is offered in the same review pass', async () => {
-    memory.rememberLesson({
-      lesson: 'The retry budget is per-account, not per-endpoint.',
-      scope: 'global',
-      source: { sessionId: null, transcript: null, toolUseId: null, provenance: 'none', verified: false, tool: '' },
-    });
-    await propose([{ lesson: 'The retry budget is per-endpoint, not per-account.' }]);
-    expect(memory.reviewGroups()).toHaveLength(0);
-
-    const lessons = await import('./lessons');
-    const quiet = spyOn(process.stderr, 'write').mockImplementation(() => true);
-    try {
-      // Accepting opens a conflict group. Reading reviewGroups() before the proposal
-      // walk would miss it, and the user would be left with an unresolved quarantine
-      // and no prompt — having just run the command that exists to clear them.
-      await lessons.runLessons({ action: 'review', all: true, proposals: 'accept', keep: 'new' });
-    } finally {
-      quiet.mockRestore();
-    }
-    expect(memory.listProposals({ all: true })).toHaveLength(0);
-    expect(memory.reviewGroups()).toHaveLength(0);
-    expect(memory.listLessons({ all: true, status: 'active' })).toHaveLength(1);
-  });
-
-  test('review honors repo scope the same way the listing does', async () => {
-    const elsewhere = memory.proposeLesson({
-      lesson: 'A claim mined out of a completely different checkout.',
-      scope: 'repo',
-      container: '/repo/somewhere-else',
-      remote: 'github.com/someone/else',
-      source: {
-        sessionId: 'x',
-        transcript: null,
-        toolUseId: null,
-        provenance: 'distilled',
-        verified: false,
-        tool: 'claude',
-      },
-    });
-    expect(elsewhere.outcome).toBe('proposed');
-
-    const lessons = await import('./lessons');
-    const quiet = spyOn(process.stderr, 'write').mockImplementation(() => true);
-    try {
-      // Scoped: another repo's queue is not this repo's business.
-      await lessons.runLessons({ action: 'review', all: false, proposals: 'reject' });
-      expect(memory.listProposals({ all: true })).toHaveLength(1);
-      // --all: everything, exactly as `sessions lessons --all` lists it.
-      await lessons.runLessons({ action: 'review', all: true, proposals: 'reject' });
-    } finally {
-      quiet.mockRestore();
-    }
-    expect(memory.listProposals({ all: true })).toHaveLength(0);
-  });
-
-  test('an unreviewed proposal cannot be superseded out from under the review', async () => {
-    await propose([{ lesson: 'A claim waiting on a human, about the retry budget.' }]);
-    const [proposal] = memory.listProposals({ all: true });
-    const attempt = memory.rememberLesson({
-      lesson: 'A replacement claim about the retry budget entirely.',
-      scope: 'global',
-      supersedes: proposal!.id,
-      source: { sessionId: null, transcript: null, toolUseId: null, provenance: 'none', verified: false, tool: '' },
-    });
-    expect(attempt.outcome).toBe('rejected');
-    expect(attempt.message).toContain('unreviewed proposal');
-    expect(memory.listProposals({ all: true })).toHaveLength(1);
+    const parsed = JSON.parse(out);
+    expect(parsed.generator).toBe('sessions');
+    expect(parsed.version).toBe(1);
+    expect(parsed.drafts).toHaveLength(1);
+    expect(memory.listLessons({ all: true })).toHaveLength(0);
   });
 });
 
@@ -694,8 +486,29 @@ describe('every failure fails open, and none of them writes a store', () => {
     const warnings: string[] = [];
     const res = await distill.runDistill({ runner, log: (m) => warnings.push(m) });
     expect(res.proposals).toBe(0);
-    expect(memory.listProposals({ all: true })).toHaveLength(0);
-    expect(warnings.some((w) => w.includes('returned nothing usable'))).toBe(true);
+    expect(memory.listLessons({ all: true })).toHaveLength(0);
+    expect(warnings.some((w) => w.includes('not a JSON array'))).toBe(true);
+  });
+
+  // The prompt asks for `[]` when a batch holds no lesson. Reporting the answer it asked
+  // for as a warning — with the child's unrelated stderr pinned to it — is what sends a
+  // reader hunting broken auth after a run that did exactly what it was told.
+  test('an empty array is a result, not a warning', async () => {
+    const { runner } = runnerFor('[]');
+    const lines: string[] = [];
+    const res = await distill.runDistill({ runner, log: (m) => lines.push(m) });
+    expect(res.proposals).toBe(0);
+    expect(lines.some((l) => l.includes('No lessons found'))).toBe(true);
+    expect(lines.some((l) => l.includes('warning'))).toBe(false);
+  });
+
+  test('items that all fail validation are a warning, and the count is named', async () => {
+    const tooLong = 'x'.repeat(400);
+    const { runner } = runnerFor(JSON.stringify([{ lesson: tooLong }, { lesson: '' }]));
+    const warnings: string[] = [];
+    const res = await distill.runDistill({ runner, log: (m) => warnings.push(m) });
+    expect(res.proposals).toBe(0);
+    expect(warnings.some((w) => w.includes('returned 2 items, none of them usable'))).toBe(true);
   });
 
   test('a runner that throws is a warning, not a crash', async () => {
@@ -722,6 +535,6 @@ describe('every failure fails open, and none of them writes a store', () => {
     const { runner } = runnerFor('```json\n[]\n```');
     const res = await distill.runDistill({ runner, log: () => {} });
     expect(res.proposals).toBe(0);
-    expect(memory.listProposals({ all: true })).toHaveLength(0);
+    expect(memory.listLessons({ all: true })).toHaveLength(0);
   });
 });

@@ -29,15 +29,11 @@ import type { ContextLesson, Provenance } from './types';
 
 export type Scope = 'repo' | 'global';
 /**
- * `proposed` is deliberately its own status rather than a borrowed `needs_review`.
- * `needs_review` is the CONFLICT quarantine: reviewGroups() only returns rows with a
- * non-NULL review_group, and the primer counts every needs_review row as flagged. A
- * group-less proposal there would be invisible to `sessions lessons review` while
- * still inflating the conflict nag — reviewable in name only. It also needs a
- * different verb set: a conflict is arbitrated (new/old/both), a proposal is
- * accepted or rejected.
+ * Every row here was put there by a person. `sessions distill` prints its candidates
+ * and writes none of them, so there is no machine-authored state to quarantine — which
+ * is what lets `needs_review` mean exactly one thing: two claims disagree, arbitrate.
  */
-export type LessonStatus = 'active' | 'needs_review' | 'superseded' | 'retired' | 'proposed';
+export type LessonStatus = 'active' | 'needs_review' | 'superseded' | 'retired';
 
 /** Bounded at write, not at read: the read budget stays honest and the verbose entries never land. */
 export const LESSON_MAX_CHARS = 280;
@@ -109,9 +105,9 @@ const MIGRATIONS: Migration[] = [
           source_verified    INTEGER NOT NULL DEFAULT 0,
           -- Deliberately unconstrained: LessonStatus is enforced in TypeScript, and a
           -- CHECK here would make every new status a rebuild of the one table nothing
-          -- can regenerate (SQLite cannot alter a CHECK in place). That is why adding
-          -- 'proposed' needed no DDL — only the v2 version bump below, which is about
-          -- what an older build does with a file it cannot fully render.
+          -- can regenerate (SQLite cannot alter a CHECK in place). Adding or removing a
+          -- status therefore needs no DDL — only a version bump when an older build
+          -- would mis-render what it finds.
           status             TEXT NOT NULL DEFAULT 'active',
           review_group       INTEGER,
           supersedes_id      INTEGER REFERENCES lessons(id),
@@ -136,16 +132,31 @@ const MIGRATIONS: Migration[] = [
   },
   {
     to: 2,
-    // No DDL, and that is the whole point: `status` never had a CHECK to extend (see
-    // the column comment above), so writing 'proposed' needs no schema change. What it
-    // does need is a version the OLD build can recognize. A v1 binary opening a store
-    // that contains proposals sees `user_version = 1`, opens it read-write, and renders
-    // every proposal through a statusLabel switch that has no arm for it — the rows are
-    // never surfaced, and a `remember_lesson` of the same text answers "already known"
-    // pointing at a row the user cannot see. Bumping the version routes that build down
-    // getMemoryDb's newer-file path instead: reads served, writes refused, nothing
-    // rewritten by a build that does not understand what is in there.
+    // Historical, and kept forever: this bump shipped alongside a `proposed` status that
+    // has since been removed, and stores in the wild are already at v2. It carries no DDL
+    // — `status` never had a CHECK to extend (see the column comment above) — so the step
+    // is a no-op by design. Deleting it would renumber the ladder and make every existing
+    // store look like it came from a newer build than it did.
     up() {},
+  },
+  {
+    to: 3,
+    // `proposed` was removed, but stores written before that still hold those rows — and
+    // both guards that made them safe went with it. `shortlist` no longer excludes them,
+    // so each one is a live near-duplicate candidate: a genuine save whose wording
+    // overlaps a machine guess nobody read would be quarantined as a conflict against it.
+    // And `saveLesson` no longer displaces an exact-hash collision, so re-saving that
+    // text answers "already known — lesson #N" pointing at a row nothing ever serves.
+    //
+    // Retire them and drop their shortlist entries: exactly what rejecting one used to
+    // do, applied once. Nothing is deleted — a retired row stays readable, stays in
+    // `sessions lessons`, stays in the export, and keeps its content_hash. And a
+    // proposal is the one thing in this store that was always re-derivable, so if the
+    // claim was any good `sessions distill` finds it again.
+    up(db) {
+      db.run("DELETE FROM lessons_fts WHERE id IN (SELECT id FROM lessons WHERE status = 'proposed')");
+      db.run("UPDATE lessons SET status = 'retired' WHERE status = 'proposed'");
+    },
   },
 ];
 
@@ -392,16 +403,13 @@ export interface RepoLessons {
   lessons: ContextLesson[];
   /** Rows quarantined as conflicting. Surfaced as a count, never as content. */
   flagged: number;
-  /** Unreviewed machine proposals. Counted apart from `flagged` so "2 conflicts
-   *  withheld" never silently means "2 things nobody has looked at yet". */
-  proposed: number;
   /** Active in-scope rows, so a capped primer can say how many it left out. */
   total: number;
   /** Corrupt stores moved aside. Non-empty means lessons are missing, not absent. */
   quarantined: string[];
 }
 
-export const NO_LESSONS: RepoLessons = { lessons: [], flagged: 0, proposed: 0, total: 0, quarantined: [] };
+export const NO_LESSONS: RepoLessons = { lessons: [], flagged: 0, total: 0, quarantined: [] };
 
 function toContextLesson(r: LessonRow): ContextLesson {
   return {
@@ -464,16 +472,7 @@ export function readLessonsForRepo(container: string, remote: string, limit: num
         )
         .get(container, remote)?.n ?? 0;
 
-    // A separate count, not a filter: `flagged` already keys off status = 'needs_review',
-    // so a distinct 'proposed' status is excluded from it for free.
-    const proposed =
-      db
-        .query<{ n: number }, [string, string]>(
-          `SELECT COUNT(*) AS n FROM lessons WHERE status = 'proposed' AND ${SCOPE_PREDICATE}`,
-        )
-        .get(container, remote)?.n ?? 0;
-
-    return { lessons: rows.map(toContextLesson), flagged, proposed, total, quarantined };
+    return { lessons: rows.map(toContextLesson), flagged, total, quarantined };
   } catch {
     // The primer must never fail because of the lesson store.
     return { ...NO_LESSONS, quarantined: quarantinedStores() };
@@ -528,8 +527,6 @@ function statusNote(row: LessonRow): string {
       return ` Note: that lesson was superseded by #${row.superseded_by} and is not served.`;
     case 'needs_review':
       return ' Note: that lesson is flagged as conflicting and is withheld until a human resolves it.';
-    case 'proposed':
-      return ' Note: that is an unreviewed proposal from `sessions distill`, not a saved lesson — it is not served until a human accepts it with `sessions lessons review`.';
   }
 }
 
@@ -562,40 +559,25 @@ function insertFts(db: Database, id: number, lesson: string, detail: string): vo
 /**
  * Rows in the same scope bucket that share indexed tokens with `lesson`.
  *
- * Every status but `superseded` and `proposed` is a candidate. Scanning only the active
+ * Every status but `superseded` is a candidate. Scanning only the active
  * rows is how a rewording walks around a retirement, and how a third phrasing of a
  * contested claim gets served as fact while its two rivals sit withheld in review.
  * Superseded rows are excluded because whatever replaced them is live and matches in
  * their place.
  *
- * `proposed` is excluded from the SAVE path for a different reason: a machine proposal
- * nobody has read is not a rival claim. Counting it as one would let a single distill
- * run put ten unreviewed rows in the way of genuine saves — an agent recording a real
- * lesson that happens to overlap one would get `conflict`, BOTH rows would go
- * needs_review, neither would be served, and the primer would nag about a conflict with
- * a machine. `includeProposed` turns them back on for the propose path, where the point
- * is precisely not to re-propose what is already sitting in the queue.
- *
  * Ordered so the in-service rows come first — a same-statement match should be
  * recognized as the row that is actually being served, not as a retired ancestor.
  */
-function shortlist(
-  db: Database,
-  lesson: string,
-  scope: Scope,
-  container: string,
-  includeProposed = false,
-): LessonRow[] {
+function shortlist(db: Database, lesson: string, scope: Scope, container: string): LessonRow[] {
   const match = ftsQuery(lesson);
   if (!match) return [];
   const bucket = scope === 'global' ? "l.scope = 'global'" : "l.scope = 'repo' AND l.repo_container = ?";
   const params: (string | number)[] = scope === 'global' ? [match] : [match, container];
-  const excluded = includeProposed ? "('superseded')" : "('superseded', 'proposed')";
   try {
     return db
       .query<LessonRow, any[]>(
         `SELECT l.* FROM lessons_fts f JOIN lessons l ON l.id = f.id
-         WHERE lessons_fts MATCH ? AND l.status NOT IN ${excluded} AND ${bucket}
+         WHERE lessons_fts MATCH ? AND l.status NOT IN ('superseded') AND ${bucket}
          ORDER BY CASE l.status WHEN 'active' THEN 0 WHEN 'needs_review' THEN 1 ELSE 2 END, l.id`,
       )
       .all(...params);
@@ -665,29 +647,12 @@ function saveLesson(input: RememberInput): RememberResult {
     if (target.superseded_by !== null) {
       return reject(`lesson #${input.supersedes} was already superseded by #${target.superseded_by}.`);
     }
-    // A proposal was never in service, so there is nothing to supersede — and accepting
-    // one deletes the row, which would leave a dangling supersedes_id behind it.
-    if (target.status === 'proposed') {
-      return reject(
-        `lesson #${input.supersedes} is an unreviewed proposal, not a lesson in service — accept or reject it with \`sessions lessons review\` instead of superseding it.`,
-      );
-    }
   }
 
   // Exact re-save: the highest-volume junk source is the same agent saving the same
   // lesson every session. Bump the recurrence signal, insert nothing.
-  //
-  // Except against an unreviewed proposal. A machine's guess owns the content_hash for
-  // its (lesson, scope, repo) too, so a genuine save whose text happens to be
-  // byte-identical would answer "already known", insert nothing, and leave the real
-  // lesson out of service behind a row nobody has read — the same failure `shortlist`'s
-  // includeProposed=false prevents on the near-duplicate path, arriving by the exact-hash
-  // route. The human's save wins: the proposal is displaced (distill regenerates it, and
-  // it is the one row in this store that anything can) and the text goes through the
-  // ordinary insert, near-duplicate scan included.
   const existing = db.query<LessonRow, [string]>('SELECT * FROM lessons WHERE content_hash = ?').get(hash);
-  const displaced = existing?.status === 'proposed' ? existing : null;
-  if (existing && !displaced) {
+  if (existing) {
     db.run('UPDATE lessons SET last_seen_at = ? WHERE id = ?', [now, existing.id]);
     return knownResult(existing, `already known — lesson #${existing.id}, last seen bumped. Nothing inserted.`, target);
   }
@@ -747,13 +712,6 @@ function saveLesson(input: RememberInput): RememberResult {
   const src = input.source;
 
   const insert = db.transaction(() => {
-    // Inside the transaction, so a failed insert puts the proposal back rather than
-    // consuming it. Safe to delete for the same reason acceptProposal's delete is: a
-    // proposal is never in service and nothing can point a supersedes at one.
-    if (displaced) {
-      db.run('DELETE FROM lessons_fts WHERE id = ?', [displaced.id]);
-      db.run('DELETE FROM lessons WHERE id = ?', [displaced.id]);
-    }
     db.run(
       `INSERT INTO lessons (content_hash, lesson, detail, scope, repo_container, repo_remote, files, tool,
                             source_session, source_transcript, source_tool_use_id, provenance, source_verified,
@@ -868,9 +826,7 @@ function saveLesson(input: RememberInput): RememberResult {
   }
 
   const note = supersedeNow ? ` It supersedes #${target!.id}.` : '';
-  const took = displaced
-    ? ` It replaced unreviewed proposal #${displaced.id}, which said exactly this — nothing was waiting on review.`
-    : '';
+  const took = '';
   return {
     outcome: 'saved',
     id,
@@ -879,272 +835,6 @@ function saveLesson(input: RememberInput): RememberResult {
     verified: src.verified,
     message: `saved lesson #${id} (${scope} scope, provenance ${src.provenance}${src.verified ? ', verified' : ''}).${note}${took}`,
   };
-}
-
-/**
- * Proposals: machine-mined lessons, parked in front of a human.
- *
- * A proposal is the only row in this store that IS re-derivable — re-running
- * `sessions distill` produces it again — which is what makes deleting one on accept
- * (below) acceptable where deleting a lesson never is. Nothing here is ever served:
- * the primer reads `status = 'active'` only, so the worst a bad model pass can cost is
- * one review pass.
- */
-export interface ProposeInput {
-  lesson: string;
-  detail?: string;
-  scope?: Scope;
-  /** resolveRepo().container of the MINED session's cwd, not the caller's. */
-  container?: string;
-  remote?: string;
-  files?: string[];
-  source: SessionProvenance;
-  now?: string;
-}
-
-export type ProposeOutcome = 'proposed' | 'duplicate' | 'rejected';
-
-export interface ProposeResult {
-  outcome: ProposeOutcome;
-  id?: number;
-  message: string;
-}
-
-/**
- * Write one proposal, or say why it was not written.
- *
- * Reuses the write bounds and the content-hash idempotency deliberately: a proposal
- * that the accept path could never save is a row that can only ever be rejected, and a
- * second distill pass over the same sessions must bump `last_seen_at` rather than pile
- * up another ten copies. It deliberately does NOT reuse the near-duplicate quarantine —
- * an overlap is exactly what the human review is for, and flagging it here would put a
- * proposal and a live lesson into the same conflict group before anyone had read either.
- */
-export function proposeLesson(input: ProposeInput): ProposeResult {
-  const lesson = input.lesson.trim();
-  const detail = (input.detail ?? '').trim();
-  const scope: Scope = input.scope ?? 'repo';
-  const container = input.container ?? '';
-  const remote = input.remote ?? '';
-
-  if (!lesson) return { outcome: 'rejected', message: 'lesson is empty.' };
-  if (lesson.length > LESSON_MAX_CHARS) {
-    return { outcome: 'rejected', message: `lesson is ${lesson.length} chars, over the ${LESSON_MAX_CHARS} limit.` };
-  }
-  if (detail.length > DETAIL_MAX_CHARS) {
-    return { outcome: 'rejected', message: `detail is ${detail.length} chars, over the ${DETAIL_MAX_CHARS} limit.` };
-  }
-  if (scope === 'repo' && !container) {
-    return { outcome: 'rejected', message: 'scope "repo" needs the mined session to resolve to a git repo.' };
-  }
-
-  const db = getMemoryDb({ create: true });
-  if (!db) return { outcome: 'rejected', message: 'could not open the lesson store.' };
-  if (_readonly) {
-    return {
-      outcome: 'rejected',
-      message: `${getMemoryDbPath()} was written by a newer sessions build; upgrade before writing to it.`,
-    };
-  }
-
-  const now = input.now ?? new Date().toISOString();
-  const repoKey = scope === 'global' ? '' : container;
-  const hash = contentHash(lesson, scope, repoKey);
-
-  const existing = db.query<LessonRow, [string]>('SELECT * FROM lessons WHERE content_hash = ?').get(hash);
-  if (existing) {
-    db.run('UPDATE lessons SET last_seen_at = ? WHERE id = ?', [now, existing.id]);
-    return { outcome: 'duplicate', id: existing.id, message: `already on file as #${existing.id}; nothing inserted.` };
-  }
-
-  // Reworded restatements of something already here — including of a proposal still in
-  // the queue, which is why this call includes them. Same bar as the save path: the same
-  // content words in the same order, so a negation flip is never treated as a duplicate.
-  for (const row of shortlist(db, lesson, scope, container, true)) {
-    if (jaccard(lesson, row.lesson) >= SAME_LESSON_JACCARD && sameStatement(lesson, row.lesson)) {
-      db.run('UPDATE lessons SET last_seen_at = ? WHERE id = ?', [now, row.id]);
-      return { outcome: 'duplicate', id: row.id, message: `#${row.id} already says this; nothing inserted.` };
-    }
-  }
-
-  const src = input.source;
-  let id: number;
-  try {
-    id = db.transaction(() => {
-      db.run(
-        `INSERT INTO lessons (content_hash, lesson, detail, scope, repo_container, repo_remote, files, tool,
-                              source_session, source_transcript, source_tool_use_id, provenance, source_verified,
-                              status, created_at, last_seen_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'proposed', ?, ?)`,
-        [
-          hash,
-          lesson,
-          detail,
-          scope,
-          scope === 'global' ? '' : container,
-          scope === 'global' ? '' : remote,
-          JSON.stringify(input.files ?? []),
-          src.tool,
-          src.sessionId,
-          src.transcript,
-          src.toolUseId,
-          src.provenance,
-          src.verified ? 1 : 0,
-          now,
-          now,
-        ],
-      );
-      const newId = db.query<{ id: number }, []>('SELECT last_insert_rowid() AS id').get()!.id;
-      insertFts(db, newId, lesson, detail);
-      return newId;
-    })();
-  } catch (e) {
-    // Two identical proposals inside one batch, or two distill runs at once: the UNIQUE
-    // content_hash caught what the SELECT above missed. That is the duplicate path
-    // arriving the hard way, not an error to abort the batch on.
-    if (!isUniqueViolation(e)) throw e;
-    const raced = db.query<LessonRow, [string]>('SELECT * FROM lessons WHERE content_hash = ?').get(hash);
-    if (!raced) throw e;
-    return { outcome: 'duplicate', id: raced.id, message: `already on file as #${raced.id}; nothing inserted.` };
-  }
-
-  return { outcome: 'proposed', id, message: `proposed #${id} (${scope} scope), awaiting review.` };
-}
-
-export interface ProposeBatch {
-  results: ProposeResult[];
-  proposed: number;
-  duplicate: number;
-  rejected: number;
-}
-
-/**
- * A whole distill run's worth of proposals, with one backup at the end.
- *
- * `rememberLesson` snapshots per write, which is right for a hand-written lesson and
- * wrong for ten at once: ten `VACUUM INTO`s and ten full `lessons.jsonl` rewrites all
- * contending for the same cross-process lock, where a lost lock silently skips the
- * backup. One committed batch, one snapshot.
- */
-export function proposeLessons(inputs: ProposeInput[]): ProposeBatch {
-  const batch: ProposeBatch = { results: [], proposed: 0, duplicate: 0, rejected: 0 };
-  for (const input of inputs) {
-    const result = proposeLesson(input);
-    batch.results.push(result);
-    batch[result.outcome]++;
-  }
-  if (batch.proposed > 0 || batch.duplicate > 0) snapshotAfterWrite();
-  return batch;
-}
-
-/** Every unreviewed proposal, oldest first — the queue `sessions lessons review` walks. */
-export function listProposals(opts: ListOptions = {}): LessonRow[] {
-  const db = getMemoryDb();
-  if (!db) return [];
-  const conditions = ["status = 'proposed'"];
-  const params: (string | number)[] = [];
-  if (!opts.all) {
-    conditions.push(SCOPE_PREDICATE);
-    params.push(opts.container ?? '', opts.remote ?? '');
-  }
-  return db
-    .query<LessonRow, any[]>(`SELECT * FROM lessons WHERE ${conditions.join(' AND ')} ORDER BY id`)
-    .all(...params);
-}
-
-/** Thrown to roll the accept transaction back; never escapes acceptProposal. */
-class ProposalRefused extends Error {
-  constructor(readonly result: RememberResult) {
-    super(result.message);
-  }
-}
-
-/**
- * Accept a proposal by re-saving its text through the ordinary save path.
- *
- * The row is dropped first, and it has to be. A proposal already owns the content_hash
- * for its own (lesson, scope, repo), so re-saving that text would match ITSELF, answer
- * "already known — lesson #N", insert nothing, and leave the row proposed forever —
- * with the near-duplicate quarantine never reached. Dropping it is safe here and only
- * here: a proposal is machine-derived and `sessions distill` regenerates it.
- *
- * Routing through saveLesson rather than a bare UPDATE is the point: an accepted
- * proposal that overlaps a live lesson lands in the conflict quarantine like any other
- * newcomer, instead of quietly becoming a second copy of a belief already in service.
- */
-export function acceptProposal(id: number): RememberResult {
-  const db = getMemoryDb();
-  if (!db) return reject('could not open the lesson store.');
-  if (_readonly) {
-    return reject(`${getMemoryDbPath()} was written by a newer sessions build; upgrade before writing to it.`);
-  }
-  const row = db.query<LessonRow, [number]>("SELECT * FROM lessons WHERE id = ? AND status = 'proposed'").get(id);
-  if (!row) return reject(`no proposal #${id} awaiting review.`);
-
-  let result: RememberResult;
-  try {
-    result = db.transaction(() => {
-      db.run('DELETE FROM lessons_fts WHERE id = ?', [row.id]);
-      db.run('DELETE FROM lessons WHERE id = ?', [row.id]);
-      const saved = saveLesson({
-        lesson: row.lesson,
-        detail: row.detail,
-        scope: row.scope,
-        container: row.repo_container,
-        remote: row.repo_remote,
-        files: parseFiles(row.files),
-        source: {
-          sessionId: row.source_session,
-          transcript: row.source_transcript,
-          toolUseId: row.source_tool_use_id,
-          provenance: row.provenance,
-          verified: row.source_verified === 1,
-          tool: row.tool as SessionProvenance['tool'],
-        },
-      });
-      // Nothing committed, so put the proposal back by rolling the whole thing over.
-      if (saved.outcome === 'rejected') throw new ProposalRefused(saved);
-      return saved;
-    })();
-  } catch (e) {
-    if (e instanceof ProposalRefused) return e.result;
-    throw e;
-  }
-
-  snapshotAfterWrite();
-  return result;
-}
-
-/**
- * Reject a proposal: retired, not deleted — and taken out of the shortlist index.
- *
- * `retired` is the store's existing "somebody decided against this" state — it is out
- * of the primer, it still prints under `sessions lessons`, it is still in the export,
- * and it still owns its content_hash, so re-proposing the same text is still a
- * duplicate. A rejection should be exactly as visible and as reversible as any other
- * row taken out of service.
- *
- * The `lessons_fts` row goes, though, and that is not bookkeeping. `shortlist` reads
- * that index, `saveLesson` files a retired near-duplicate under `context`, and any
- * `context` row forces `conflict = true` (see the band below it). Leave the entry in
- * place and every proposal a human threw away becomes a landmine: the next genuine save
- * of overlapping text is quarantined into `needs_review` and withheld from the primer
- * because a machine once guessed something similar and was told no. Dropping the index
- * row and nothing else is what keeps a human's retirement counting while a machine's
- * discarded guess does not — without inventing a status for it, and without touching
- * rows that were accepted first and retired later by a person.
- */
-export function rejectProposal(id: number): boolean {
-  const db = getMemoryDb();
-  if (!db || _readonly) return false;
-  const rejected = db.transaction(() => {
-    db.run("UPDATE lessons SET status = 'retired' WHERE id = ? AND status = 'proposed'", [id]);
-    if ((db.query<{ n: number }, []>('SELECT changes() AS n').get()?.n ?? 0) === 0) return false;
-    db.run('DELETE FROM lessons_fts WHERE id = ?', [id]);
-    return true;
-  })();
-  if (rejected) snapshotAfterWrite();
-  return rejected;
 }
 
 export interface ListOptions {
@@ -1174,15 +864,15 @@ export function listLessons(opts: ListOptions = {}): LessonRow[] {
 }
 
 /**
- * Rows a purge would destroy for good. Proposals are excluded on purpose: the uninstall
- * warning this feeds says "N lessons that nothing can regenerate", and an unreviewed
- * machine proposal is the one thing in here that `sessions distill` regenerates.
+ * Rows a purge would destroy for good — every row counts now that nothing in the store
+ * is machine-generated. `sessions distill` prints its candidates and writes none of them,
+ * so anything here was put there by a human and nothing can regenerate it.
  */
 export function countLessons(): number {
   const db = getMemoryDb();
   if (!db) return 0;
   try {
-    return db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM lessons WHERE status <> 'proposed'").get()?.n ?? 0;
+    return db.query<{ n: number }, []>('SELECT COUNT(*) AS n FROM lessons').get()?.n ?? 0;
   } catch {
     return 0;
   }
