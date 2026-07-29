@@ -1,7 +1,7 @@
 // Where sessions keeps durable, non-cache state on disk.
 //
-// This is deliberately a neutral module rather than part of src/shards/store.ts:
-// the installer (src/setup.ts) and the shard store both own things inside the data
+// This is deliberately a neutral module rather than part of src/memory/store.ts:
+// the installer (src/setup.ts) and the memory store both own things inside the data
 // dir, and having the installer import a path from a feature module inverts the
 // dependency and drags bun:sqlite into the setup/uninstall path. Path resolution
 // living beside its consumers is the same shape as getCacheDir/getDbPath in
@@ -20,7 +20,7 @@ export function getDataDir(): string {
   return process.env.SESSIONS_DATA_DIR || join(homedir(), '.local', 'share', 'sessions');
 }
 
-/** The shard store. Deliberately outside the cache dir — see src/shards/store.ts. */
-export function getShardsDbPath(): string {
-  return join(getDataDir(), 'shards.db');
+/** The memory store. Deliberately outside the cache dir — see src/memory/store.ts. */
+export function getMemoryDbPath(): string {
+  return join(getDataDir(), 'memory.db');
 }

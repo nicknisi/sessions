@@ -38,15 +38,15 @@ Generate a weekly summary of the user's AI coding sessions.
 
    **Themes:** Recurring work streams or focus areas (e.g., "SDK development", "infrastructure", "bug fixes").
 
-6. **Surface new shard candidates.** Run `sessions shards mine --all --since-last --json`, then `sessions shards pending --json`. The mine picks up only transcripts that changed since the last run, so this is cheap; `--all` is deliberate — a weekly summary spans every project, not whichever repo you happen to be sitting in.
+6. **Surface new memory candidates.** Run `sessions memory mine --all --since-last --json`, then `sessions memory pending --json`. The mine picks up only transcripts that changed since the last run, so this is cheap; `--all` is deliberate — a weekly summary spans every project, not whichever repo you happen to be sitting in.
 
-   `--all` advances the watermark for **every** repo, not just this one. That is the point (nothing gets skipped), but it means a later `sessions shards mine --since-last` inside any single repo reports nothing changed until that repo's transcripts move again — this step has already mined them. Say nothing about it here; it is noted so the interaction is not rediscovered as a bug.
+   `--all` advances the watermark for **every** repo, not just this one. That is the point (nothing gets skipped), but it means a later `sessions memory mine --since-last` inside any single repo reports nothing changed until that repo's transcripts move again — this step has already mined them. Say nothing about it here; it is noted so the interaction is not rediscovered as a bug.
 
-   `pending` prints `{"count": N, "preview": [{"id", "text"}]}`. **If the count is zero, say nothing.** Do not add an empty section, do not write "no new shards", do not mention that you checked. Most weeks have nothing, and a recurring empty section trains the user to skim past the whole summary.
+   `pending` prints `{"count": N, "preview": [{"id", "text"}]}`. **If the count is zero, say nothing.** Do not add an empty section, do not write "no new memory", do not mention that you checked. Most weeks have nothing, and a recurring empty section trains the user to skim past the whole summary.
 
-   Otherwise close the summary with a short block: the count, up to **three** candidate texts from the preview (the preview holds five; showing three is deliberate), and one line saying to run `/shards` to triage. Do not triage here and never approve, reject, or snooze anything — this is a nudge, not the workflow.
+   Otherwise close the summary with a short block: the count, up to **three** candidate texts from the preview (the preview holds five; showing three is deliberate), and one line saying to run `/memory` to triage. Do not triage here and never approve, reject, or snooze anything — this is a nudge, not the workflow.
 
-   **This step must never damage the summary.** Unlike `/shards`, which stops loudly when the binary is missing, this one fails silently: if `sessions` is not installed, either command exits non-zero, or the output does not parse, skip the block entirely and finish the summary as written. The summary already succeeded before this step ran.
+   **This step must never damage the summary.** Unlike `/memory`, which stops loudly when the binary is missing, this one fails silently: if `sessions` is not installed, either command exits non-zero, or the output does not parse, skip the block entirely and finish the summary as written. The summary already succeeded before this step ran.
 
 ## Guidelines
 

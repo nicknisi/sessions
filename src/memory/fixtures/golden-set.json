@@ -1,0 +1,205 @@
+[
+  {
+    "text": "Always keep credentials in the OS keychain rather than a dotfile whenever the machine has one available.",
+    "label": "memory",
+    "reason": "A standing security constraint that holds in every session and every project, not a step in one task.",
+    "expectedKind": "instruction"
+  },
+  {
+    "text": "Remember that this project branches off the long-lived integration branch, never off the default branch.",
+    "label": "memory",
+    "reason": "A durable fact about how this repository is organized; true tomorrow and for anyone who joins.",
+    "expectedKind": "information"
+  },
+  {
+    "text": "Never tell me a change is finished until the whole test suite has been run, not just the file you touched.",
+    "label": "memory",
+    "reason": "A standing definition of done that applies to every task, restated across unrelated projects.",
+    "expectedKind": "instruction"
+  },
+  {
+    "text": "No, don't rename that folder — put it back the way it was before the last edit.",
+    "label": "chaff",
+    "reason": "A correction to one specific edit in one session; nothing generalizes past the next commit."
+  },
+  {
+    "text": "Stop, that's the wrong file — I meant the one in the sibling directory, not this one.",
+    "label": "chaff",
+    "reason": "Corrective grammar, but the content is a pointer to a single file in a single conversation."
+  },
+  {
+    "text": "The syntax highlighting isn't loading in the preview pane, something is clearly wrong with the theme.",
+    "label": "chaff",
+    "reason": "A bug report phrased as a correction. The mine's corrective terms catch it; it states no durable rule."
+  },
+  {
+    "text": "For this ticket only, always attach the full stack trace to the comment thread before you close it.",
+    "label": "chaff",
+    "reason": "The plausible-but-transient case: reads like a standing rule but is explicitly scoped to one ticket."
+  },
+  {
+    "text": "Don't open a second pull request for this, fold the change into the one that is already up for review.",
+    "label": "chaff",
+    "reason": "A workflow decision about one in-flight change, not a policy about how work is split."
+  },
+  {
+    "text": "Remember to leave the debug flag on until we finish reproducing the crash this afternoon.",
+    "label": "chaff",
+    "reason": "Explicitly time-boxed to a debugging session that has already ended."
+  },
+  {
+    "text": "You are a helpful assistant. Always answer concisely and never speculate beyond the provided context.",
+    "label": "chaff",
+    "reason": "The boilerplate case: a pasted system prompt from an eval harness, not something the user told an agent about their work."
+  },
+  {
+    "text": "That's wrong — the total should be twelve, not fourteen; recount the rows in the sample output.",
+    "label": "chaff",
+    "reason": "A factual correction about one computed result; carries no instruction that outlives the calculation."
+  },
+  {
+    "text": "Never mind, undo the last three edits and go back to what we had before the refactor started.",
+    "label": "chaff",
+    "reason": "A rollback request bound to a specific point in one conversation."
+  },
+  {
+    "text": "Stop adding a comment to every line of this one function, it is already readable as written.",
+    "label": "chaff",
+    "reason": "Scoped to a single function. The generalizable version would name a commenting policy; this does not."
+  },
+  {
+    "text": "Don't touch the generated file, I will regenerate it myself after this branch merges.",
+    "label": "chaff",
+    "reason": "A temporary hands-off instruction tied to one branch, not a rule about generated files in general."
+  },
+  {
+    "text": "Instead of a table here, use a bulleted list — the table is too wide for this particular page.",
+    "label": "chaff",
+    "reason": "A formatting choice for one document section, justified by that section's width."
+  },
+  {
+    "text": "Always use the exact wording from the ticket in the commit message for this task.",
+    "label": "chaff",
+    "reason": "Reads like a convention but is scoped to one task; the durable version would say it for all commits."
+  },
+  {
+    "text": "Remember the reviewer asked for smaller commits on this branch, so split the last one up.",
+    "label": "chaff",
+    "reason": "Relays one reviewer's request about one branch; no standing rule survives the merge."
+  },
+  {
+    "text": "That's the wrong port — the local server is on the other one we set up this morning.",
+    "label": "chaff",
+    "reason": "A transient environment detail that changes between machines and between days."
+  },
+  {
+    "text": "Don't run the migration yet, I want to read the diff before anything touches the database.",
+    "label": "chaff",
+    "reason": "A hold on one specific migration; the phrasing is corrective but the scope is a single action."
+  },
+  {
+    "text": "Stop the watcher, it is rebuilding on every keystroke and eating the entire processor.",
+    "label": "chaff",
+    "reason": "An operational request about a process running right now."
+  },
+  {
+    "text": "Given the following document, extract every named entity and return them as JSON with no explanation.",
+    "label": "chaff",
+    "reason": "The boilerplate case again: a task template pasted into a session, indistinguishable from an eval fixture."
+  },
+  {
+    "text": "Instead of deleting the old test, mark it skipped for now until we decide what to do with it.",
+    "label": "chaff",
+    "reason": "An interim decision about one test, explicitly framed as temporary."
+  },
+  {
+    "text": "Never mind the styling, just get the data flowing end to end before the demo tomorrow.",
+    "label": "chaff",
+    "reason": "A priority call for one deadline, not a standing preference about styling."
+  },
+  {
+    "text": "The dropdown doesn't close when you click outside of it, which is obviously wrong behavior.",
+    "label": "chaff",
+    "reason": "A bug report in corrective grammar; describes a defect, not a durable fact about the system."
+  },
+  {
+    "text": "Don't add a dependency just for this one helper, we are deleting the whole module next week.",
+    "label": "chaff",
+    "reason": "Sounds like a dependency policy, but the justification is a deletion already scheduled."
+  },
+  {
+    "text": "Always ask me before pushing to that branch today, the release is being cut this afternoon.",
+    "label": "chaff",
+    "reason": "A gate that expires the moment the release is cut; the word 'always' is doing no durable work."
+  },
+  {
+    "text": "Stop, I gave you the wrong path — it is under the other folder, try that one instead.",
+    "label": "chaff",
+    "reason": "The user correcting their own input inside one exchange."
+  },
+  {
+    "text": "Remember we agreed to ship this behind a flag, so don't turn it on by default in this change.",
+    "label": "chaff",
+    "reason": "A decision about one feature's rollout, not a rule about how features are rolled out."
+  },
+  {
+    "text": "That's wrong, the heading should use the shorter title we settled on in the meeting.",
+    "label": "chaff",
+    "reason": "A copy correction for one heading, with no rule stated behind it."
+  },
+  {
+    "text": "Instead of rewriting the whole function, change only the branch that is actually misbehaving.",
+    "label": "chaff",
+    "reason": "Scoped to one function under one bug; the generalizable version would name a minimal-diff preference."
+  },
+  {
+    "text": "Don't summarize the entire file, I only care about the part that handles retries right here.",
+    "label": "chaff",
+    "reason": "A narrowing instruction for the next reply in one conversation."
+  },
+  {
+    "text": "Always output valid JSON and nothing else. If you cannot answer, return an empty object instead.",
+    "label": "chaff",
+    "reason": "The boilerplate case: an output-format contract from a harness prompt, repeated verbatim across runs."
+  },
+  {
+    "text": "Never mind that error, it is left over from the old build — clear the cache and run it again.",
+    "label": "chaff",
+    "reason": "A dismissal of one stale error message in one run."
+  },
+  {
+    "text": "Stop guessing at the shape of that response, read the fixture I pasted above and use it.",
+    "label": "chaff",
+    "reason": "Plausible-but-transient: the durable version would be a rule about reading source; this points at one fixture."
+  },
+  {
+    "text": "The counter resets every time you switch tabs, which is wrong — it should keep counting.",
+    "label": "chaff",
+    "reason": "A bug report using corrective grammar; states expected behavior for one defect, not a standing rule."
+  },
+  {
+    "text": "Don't bother with a changelog entry on this one, it is an internal cleanup commit.",
+    "label": "chaff",
+    "reason": "An exemption for a single commit; the standing rule it excepts is the memory, not this."
+  },
+  {
+    "text": "Instead of three separate scripts, put them all in one file for now and we can split later.",
+    "label": "chaff",
+    "reason": "An explicitly provisional structure decision, marked as such by 'for now'."
+  },
+  {
+    "text": "Always run it with the verbose flag while we are still debugging this particular failure.",
+    "label": "chaff",
+    "reason": "Conditional on an active debugging session; the condition has already passed."
+  },
+  {
+    "text": "Remember I asked for the numbers in a table, not a paragraph — redo that last section.",
+    "label": "chaff",
+    "reason": "A restated formatting request about one section of one response."
+  },
+  {
+    "text": "That's the wrong sort order, put the newest entries at the top of this list instead.",
+    "label": "chaff",
+    "reason": "A correction to one list rendering; the durable version would state a sorting convention for the product."
+  }
+]

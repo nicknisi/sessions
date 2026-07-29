@@ -42,25 +42,25 @@ ${C.bold}Commands:${C.reset}
   wrapped          Your year with AI agents, Spotify-Wrapped style (opens in
                    browser). --year <YYYY> wraps a past year; --out/--stdout,
                    --tool, --extras <json> add agent-authored slides
-  shards mine      Mine past sessions for durable facts worth remembering and
+  memory mine      Mine past sessions for durable facts worth remembering and
                    print the candidate batch as JSON. --repo <path> scopes to one
                    repo container (default: the current repo); --all mines every
                    repo in the index; --since-last mines only transcripts changed
                    since the previous mine
-  shards pending   Count the candidates awaiting triage and preview a few of
+  memory pending   Count the candidates awaiting triage and preview a few of
                    them, as JSON. Reads the store only; it never mines
-  shards approve   Record a triage decision for one candidate, by id from the
-  shards reject    mine's batch. Rejected candidates stop being emitted; snoozed
-  shards snooze    ones stay hidden until their date passes AND new distinct
+  memory approve   Record a triage decision for one candidate, by id from the
+  memory reject    mine's batch. Rejected candidates stop being emitted; snoozed
+  memory snooze    ones stay hidden until their date passes AND new distinct
                    phrasings appear — no mine can produce that bump yet, so a
                    snooze currently hides a candidate indefinitely.
-                   approve takes --always-on (return this shard for every topic,
+                   approve takes --always-on (return this memory for every topic,
                    and first) and --scope group:<name> (assign a project group
                    from ~/.local/share/sessions/groups.json)
-  shards export    Write approved shards as a portable bundle on stdout (--out
+  memory export    Write approved memories as a portable bundle on stdout (--out
                    <path> writes a file instead). Carries no local paths and no
                    triage state; there is no transport, the file is the seam
-  shards import    Merge another author's bundle in as candidates to triage.
+  memory import    Merge another author's bundle in as candidates to triage.
                    Never overwrites your own approve/reject decisions
   setup            Install plugin and configure MCP for detected tools
                    --hooks opts in to SessionStart auto-injection (off by

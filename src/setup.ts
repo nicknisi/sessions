@@ -7,7 +7,7 @@ import { enableSessionHook, disableSessionHook } from './hooks';
 import { getDataDir } from './paths';
 
 const home = homedir();
-/** The sessions data dir. Single source of truth is getDataDir() — the shard store
+/** The sessions data dir. Single source of truth is getDataDir() — the memory store
  *  lives in the same directory, and the two must never disagree about where it is. */
 function sessionsDir(): string {
   return getDataDir();
@@ -19,7 +19,7 @@ function pluginDest(): string {
  * The only paths the installer creates inside the data dir. Uninstall removes
  * exactly these — NOT the directory itself.
  *
- * The data dir also holds shards.db, whose approve/reject/snooze rows are human
+ * The data dir also holds memory.db, whose approve/reject/snooze rows are human
  * judgments no re-mine can reconstruct. `sessions cleanup` routes through
  * runUninstall() (index.ts:28-34), so an `rm -rf` of the whole directory would
  * silently destroy every triage decision the user ever made — the same disposability
@@ -260,7 +260,7 @@ export function runSetup(opts: SetupOptions = {}): void {
   w(`    ${C.cyan}/standup${C.reset}           Yesterday + today activity for standups\n`);
   w(`    ${C.cyan}/recall${C.reset}            What did I do on a specific project?\n`);
   w(`    ${C.cyan}/session-metrics${C.reset}   Usage dashboard with tool breakdown\n`);
-  w(`    ${C.cyan}/shards${C.reset}            Triage durable facts mined from past sessions\n`);
+  w(`    ${C.cyan}/memory${C.reset}            Triage durable facts mined from past sessions\n`);
   w(`\n  ${C.dim}Run \`sessions setup\` again after upgrading to update skills.${C.reset}\n\n`);
 }
 

@@ -90,9 +90,9 @@ if (command === 'digest') {
   process.exit(0);
 }
 
-if (command === 'shards') {
-  const { runShards } = await import('./src/shards/cli.ts');
-  await runShards(Bun.argv.slice(3));
+if (command === 'memory') {
+  const { runMemory } = await import('./src/memory/cli.ts');
+  await runMemory(Bun.argv.slice(3));
   process.exit(0);
 }
 
