@@ -41,3 +41,6 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 # `sessions report` default output artifacts
 usage-report.json
 report.html
+
+# ideation planning artifacts (kept local)
+docs/ideation/
