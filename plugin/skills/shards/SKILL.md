@@ -14,7 +14,7 @@ Turn mined candidate turns into a small set of durable facts worth remembering.
 
 ## Steps
 
-1. **Run the mine.** `sessions shards mine --repo <path> --json` (omit `--repo` for the current repo; `--all` mines every repo in the index). stdout is a JSON array of candidate records; progress goes to stderr. If the command is not found, say so and stop — do not substitute a search. If the array is empty, say there is nothing to triage and stop; never invent candidates.
+1. **Run the mine.** `sessions shards mine --repo <path> --json` (omit `--repo` for the current repo; `--all` mines every repo in the index; add `--since-last` to mine only transcripts that changed since the previous mine, which is what the weekly summary uses). stdout is a JSON array of candidate records; progress goes to stderr. If the command is not found, say so and stop — do not substitute a search. If the array is empty, say there is nothing to triage and stop; never invent candidates.
 
 2. **Cluster paraphrases.** Group candidates whose texts assert the same fact in different words — "use canary as the base branch" and "we branch off canary" are one shard in two phrasings. A cluster's `distinctPhrasings` is the number of distinct member texts. Keep the clearest phrasing as the cluster's `text`; the rest are evidence, not separate shards. Byte-identical repeats were already collapsed upstream, so every member you see is genuinely a different wording.
 
@@ -42,7 +42,7 @@ Turn mined candidate turns into a small set of durable facts worth remembering.
 ## Guidelines
 
 - Propose only what passes the rubric. Dumping every narrowed candidate on the user is the failure mode that trains people to reject the whole list without reading it — a short, high-precision proposal is the point.
-- Records already carry a `state`. Triage the `candidate` ones; a `snoozed` record in the batch has resurfaced (its snooze expired _and_ new phrasings appeared), so say so when you present it. Leave `approved` records alone unless the user asks to revisit them. Rejected candidates never appear.
+- Records already carry a `state`. Triage the `candidate` ones and leave `approved` records alone unless the user asks to revisit them. Rejected candidates never appear, and in practice neither do snoozed ones: resurface needs a record's distinct-phrasing count to grow, and the mine gives every phrasing its own record, so the count never grows. If a `snoozed` record ever does reach the batch, it has resurfaced — say so when you present it.
 - `repo` and `workflow` scope are derived from evidence and are shown, not edited. The one assignable scope is `group`, and only because no derivation can reach it — the index cannot tell "these four repos share a convention" from "this is universal".
 - Never paste raw session text you did not get from the batch — records deliberately carry no verbatim quotes.
-- Snooze means "not now, and stop asking". A snoozed candidate returns only when it keeps being said in new words, so prefer it over reject when the fact might be real but the evidence is thin.
+- Snooze means "not now, and stop asking". It is designed to return a candidate that keeps being said in new words, but that trigger is not implemented yet, so today a snooze hides the candidate indefinitely. Still prefer it over reject when the fact might be real but the evidence is thin — snooze records no verdict, and tell the user it will not come back on its own so the choice is informed.

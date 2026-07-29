@@ -15,6 +15,9 @@ import { getIndexDb } from '../cache';
 import { globPrefix, resolveRepo, type RepoInfo } from '../repo';
 import { buildRecord, gitAuthorEmail, normalizeText } from './record';
 import type { ShardRecord, ShardScope } from './types';
+// Type-only, so nothing here reaches into the store at runtime and `mine()` stays the
+// pure read its header promises.
+import type { WatermarkEntry } from './watermark';
 
 /**
  * Length band for a candidate turn. Below the floor is "yes", "go on", a filename;
@@ -51,7 +54,24 @@ export interface MineOptions {
   repo?: string;
   /** Minimum distinct phrasings for a cluster to be emitted. Default 1 for backfill. */
   minPhrasings?: number;
+  /**
+   * Incremental mode: emit only phrasings that appear in at least one of these session
+   * files. Absent means the full backfill; an EMPTY array means nothing changed and
+   * the mine is a no-op, which is why this is `files?: string[]` and not a falsy check.
+   *
+   * The restriction narrows WHICH phrasings are emitted, never the evidence behind
+   * them — see the two-pass comment in `mine`.
+   */
+  files?: string[];
 }
+
+/**
+ * How many changed file paths to bind per statement. SQLite caps host parameters at
+ * 999 by default and the query already binds 3 plus 2 per worktree root, so this
+ * leaves room for a repo with an implausible number of worktrees. Same shape as
+ * src/shards/store.ts's getPersistedStates and src/cache.ts's id chunking.
+ */
+export const FILE_CHUNK = 400;
 
 /**
  * The directory tree spanning every worktree of a repo.
@@ -170,6 +190,44 @@ interface Cluster {
   dates: Set<string>;
 }
 
+/** The cwd predicate for a repo scope, plus the container every row must resolve to. */
+function scopeClause(repo: string | undefined): { container?: string; clause?: string; params: string[] } {
+  if (!repo) return { params: [] };
+  const scope = repoScope(repo);
+  const params: string[] = [];
+  for (const root of scope.roots) params.push(root, globPrefix(root));
+  return {
+    container: scope.container,
+    clause: `(${scope.roots.map(() => 's.cwd = ? OR s.cwd GLOB ?').join(' OR ')})`,
+    params,
+  };
+}
+
+/**
+ * The session inventory the watermark compares against, scoped exactly the way the
+ * mine that follows will be.
+ *
+ * Scoping matters more than it looks: `shards mine` defaults to the current repo, so
+ * handing `advanceWatermark` the whole index would mark every other repo's changed
+ * sessions as mined without examining them. This returns only what the same
+ * `--repo`/`--all` choice will actually look at, so a narrow mine advances a narrow
+ * watermark. See src/shards/watermark.ts.
+ */
+export async function indexedSessions(opts: MineOptions = {}): Promise<WatermarkEntry[]> {
+  const db = await getIndexDb();
+  const scope = scopeClause(opts.repo);
+  const rows = db
+    .query<{ filePath: string; mtime: number; size: number; cwd: string }, any[]>(
+      `SELECT file_path AS filePath, mtime, size, cwd FROM sessions s${scope.clause ? ` WHERE ${scope.clause}` : ''}`,
+    )
+    .all(...scope.params);
+  if (!scope.container) return rows.map(({ filePath, mtime, size }) => ({ filePath, mtime, size }));
+  const containerOf = createContainerResolver();
+  return rows
+    .filter((row) => containerOf(row.cwd) === scope.container)
+    .map(({ filePath, mtime, size }) => ({ filePath, mtime, size }));
+}
+
 /**
  * Mine the index for candidate shards.
  *
@@ -192,19 +250,71 @@ export async function mine(opts: MineOptions = {}): Promise<ShardRecord[]> {
 
   // Every worktree of the target repo, then an exact container check per row: the
   // prefixes are the cheap narrowing, the container is the definition. See repoScope.
-  let container: string | undefined;
-  if (opts.repo) {
-    const scope = repoScope(opts.repo);
-    container = scope.container;
-    conditions.push(`(${scope.roots.map(() => 's.cwd = ? OR s.cwd GLOB ?').join(' OR ')})`);
-    for (const root of scope.roots) params.push(root, globPrefix(root));
+  const scope = scopeClause(opts.repo);
+  const container = scope.container;
+  if (scope.clause) {
+    conditions.push(scope.clause);
+    params.push(...scope.params);
   }
 
-  const stmt = db.query<CandidateRow, any[]>(`
-    SELECT m.file_path AS filePath, m.text AS text, s.cwd AS cwd, s.date AS date
-    FROM message_fts m JOIN sessions s ON s.file_path = m.file_path
-    WHERE ${conditions.join(' AND ')}
-  `);
+  const scan = (extra: string[], extraParams: (string | number)[], onRow: (row: CandidateRow) => void): void => {
+    const stmt = db.query<CandidateRow, any[]>(`
+      SELECT m.file_path AS filePath, m.text AS text, s.cwd AS cwd, s.date AS date
+      FROM message_fts m JOIN sessions s ON s.file_path = m.file_path
+      WHERE ${[...conditions, ...extra].join(' AND ')}
+    `);
+    for (const row of stmt.iterate(...params, ...extraParams)) onRow(row);
+  };
+
+  /** The normalized text a row contributes, or null when the row is out of scope. */
+  const acceptedText = (row: CandidateRow): string | null => {
+    if (container && containerOf(row.cwd) !== container) return null;
+    const text = normalizeText(row.text);
+    // The band that counts is the one over the text we store: a whitespace-padded
+    // turn clears the raw floor in SQL and falls under it once collapsed.
+    if (text.length < MIN_TEXT_LENGTH || text.length > MAX_TEXT_LENGTH) return null;
+    return text;
+  };
+
+  // Incremental mode is TWO passes, not one narrowed pass, and the difference is the
+  // whole correctness argument.
+  //
+  // Pass 1 asks the cheap question: which phrasings appear in a session that changed
+  // since the last mine? Pass 2 then rebuilds those phrasings' clusters over the FULL
+  // corpus. Restricting the single pass instead would build each record from its
+  // changed slice alone — and `upsertCandidates` overwrites `evidence` wholesale
+  // (src/shards/store.ts's ON CONFLICT), so one new session would replace a
+  // ten-session evidence list, reset firstSeen to today, and shrink what `quorum`
+  // counts and `shards export` carries. Scope is the same failure one level louder:
+  // `deriveScope` reads how many containers contributed, so a workflow-scoped fact
+  // would be demoted to `repo` the moment only one repo's session changed.
+  //
+  // The rejected alternative was merging each fresh record against its stored row.
+  // That needs containers the store does not keep (evidence holds session PATHS), a
+  // defined answer for paths the index has since pruned, and a `Math.max` on
+  // distinctPhrasings that would make snooze-resurface structurally impossible — the
+  // fresh count would equal the stored baseline by construction, so
+  // `shouldResurface`'s `fresh > stored` could never be true. One extra FTS scan buys
+  // exact evidence, exact dates, and exact scope with none of that.
+  //
+  // Pass 1 is `ceil(files.length / FILE_CHUNK)` scans, so a caller that would restrict
+  // to the ENTIRE inventory should pass `files: undefined` instead — the filter admits
+  // everything either way, and the restriction is then pure cost. `runMine` does that
+  // in src/shards/cli.ts's `mineRestriction`, which is what keeps a first
+  // `--since-last` run as cheap as the full backfill it is equivalent to.
+  let changedTexts: Set<string> | undefined;
+  if (opts.files) {
+    if (opts.files.length === 0) return [];
+    changedTexts = new Set<string>();
+    for (let i = 0; i < opts.files.length; i += FILE_CHUNK) {
+      const chunk = opts.files.slice(i, i + FILE_CHUNK);
+      scan([`m.file_path IN (${chunk.map(() => '?').join(',')})`], chunk, (row) => {
+        const text = acceptedText(row);
+        if (text !== null) changedTexts!.add(text);
+      });
+    }
+    if (changedTexts.size === 0) return [];
+  }
 
   // Collapse before counting. Grouping on the normalized text is a strict superset
   // of the byte-exact collapse the design calls for — it additionally folds pure
@@ -212,12 +322,10 @@ export async function mine(opts: MineOptions = {}): Promise<ShardRecord[]> {
   // to the same id. One eval fixture prompt appeared 14 times byte-identical in the
   // real corpus; without this it would have been the top candidate.
   const clusters = new Map<string, Cluster>();
-  for (const row of stmt.iterate(...params)) {
-    if (container && containerOf(row.cwd) !== container) continue;
-    const text = normalizeText(row.text);
-    // The band that counts is the one over the text we store: a whitespace-padded
-    // turn clears the raw floor in SQL and falls under it once collapsed.
-    if (text.length < MIN_TEXT_LENGTH || text.length > MAX_TEXT_LENGTH) continue;
+  scan([], [], (row) => {
+    const text = acceptedText(row);
+    if (text === null) return;
+    if (changedTexts && !changedTexts.has(text)) return;
     let cluster = clusters.get(text);
     if (!cluster) {
       cluster = { text, sessions: new Map(), dates: new Set() };
@@ -225,15 +333,32 @@ export async function mine(opts: MineOptions = {}): Promise<ShardRecord[]> {
     }
     cluster.sessions.set(row.filePath, row.cwd);
     cluster.dates.add(row.date);
-  }
+  });
 
   const author = gitAuthorEmail();
   const minPhrasings = opts.minPhrasings ?? 1;
 
   const records: ShardRecord[] = [];
   for (const cluster of clusters.values()) {
-    // A Phase 1 cluster is exactly one distinct phrasing: grouping paraphrases is an
-    // LLM judgment and belongs to Phase 2, which merges records and recomputes this.
+    // A cluster is exactly one distinct phrasing: grouping paraphrases is an LLM
+    // judgment and belongs to the /shards triage skill, which merges records and
+    // recomputes this.
+    //
+    // Phase 6 deliberately does NOT change that, and that is a RECORDED SPEC AMENDMENT
+    // rather than an omission: see "Amendments recorded during implementation" and the
+    // matching Open Item in docs/ideation/context-shards/spec-phase-6.md. An incremental
+    // mine cannot make this number grow: a record is content-addressed on its own text
+    // (src/shards/record.ts:105-110), so a genuinely new wording is a NEW record with a
+    // new id, not a bump on an existing one. Counting occurrences or contributing
+    // sessions instead is the "raw volume counting" the contract rejected — one eval
+    // fixture prompt appeared 14 times byte-identical and would have topped the batch.
+    //
+    // The consequence is user-visible and documented as such: the resurface predicate's
+    // second condition (src/shards/triage.ts) cannot fire through the shipped pipeline,
+    // so a snooze currently hides a candidate indefinitely. Closing the gap needs a
+    // clustering write-back — a surface for the /shards skill to record "these three
+    // phrasings are one fact" — which no phase specifies. `src/shards/stream.test.ts`
+    // locks this behavior so a future write-back has to change the test on purpose.
     const distinctPhrasings = 1;
     if (distinctPhrasings < minPhrasings) continue;
 

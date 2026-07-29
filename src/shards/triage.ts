@@ -55,12 +55,20 @@ export function snoozeUntil(todayIso: string): string {
  * resurface by accident, so the null is an explicit guard rather than a `>=` against
  * `'null'`.
  *
- * KNOWN LIMIT: `mine()` hardcodes `distinctPhrasings = 1` per cluster
- * (src/shards/mine.ts:234-237) because paraphrase clustering happens in the agent's
- * context and has no write-back path yet, so `freshPhrasings` is 1 for every record
- * the real pipeline produces and this condition cannot fire outside a test. That is
- * a Phase 6 dependency, not a bug here — the predicate is correct the moment merged
- * evidence reaches the store.
+ * KNOWN LIMIT — read this before trusting the second condition. `mine()` hardcodes
+ * `distinctPhrasings = 1` per cluster (see the comment above that literal in
+ * src/shards/mine.ts) because paraphrase clustering happens in the agent's context and
+ * has no write-back path, so `freshPhrasings` is 1 for every record the real pipeline
+ * produces and `1 > 1` is false: this condition CANNOT fire outside a test, and a
+ * snoozed candidate therefore stays hidden indefinitely rather than for 30 days.
+ *
+ * Phase 6 was the phase this was deferred to and it did not close the gap; the
+ * departure is recorded as an amendment and an Open Item in
+ * docs/ideation/context-shards/spec-phase-6.md, and the user-facing copy in README.md,
+ * src/cli.ts, src/shards/cli.ts and plugin/skills/shards/SKILL.md says so plainly. The
+ * predicate itself stays as written — it is correct the moment merged evidence reaches
+ * the store, and weakening it would turn snooze into a 30-day delay, which is the
+ * failure mode the second condition exists to prevent.
  */
 export function shouldResurface(record: ShardRecord, freshPhrasings: number, todayIso: string): boolean {
   if (record.state !== 'snoozed') return false;

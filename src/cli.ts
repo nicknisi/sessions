@@ -45,10 +45,15 @@ ${C.bold}Commands:${C.reset}
   shards mine      Mine past sessions for durable facts worth remembering and
                    print the candidate batch as JSON. --repo <path> scopes to one
                    repo container (default: the current repo); --all mines every
-                   repo in the index
+                   repo in the index; --since-last mines only transcripts changed
+                   since the previous mine
+  shards pending   Count the candidates awaiting triage and preview a few of
+                   them, as JSON. Reads the store only; it never mines
   shards approve   Record a triage decision for one candidate, by id from the
   shards reject    mine's batch. Rejected candidates stop being emitted; snoozed
-  shards snooze    ones return after 30 days only if new phrasings appeared.
+  shards snooze    ones stay hidden until their date passes AND new distinct
+                   phrasings appear — no mine can produce that bump yet, so a
+                   snooze currently hides a candidate indefinitely.
                    approve takes --always-on (return this shard for every topic,
                    and first) and --scope group:<name> (assign a project group
                    from ~/.local/share/sessions/groups.json)

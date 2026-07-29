@@ -7,14 +7,18 @@ import {
   parseExportArgs,
   parseImportArgs,
   parseMineArgs,
+  parsePendingArgs,
   parseTriageArgs,
+  pendingBatch,
+  PENDING_PREVIEW,
   runShards,
   UsageError,
+  type PendingBatch,
 } from './cli';
 import { buildRecord } from './record';
-import { listShards, setAlwaysOn, setScope, setState, upsertCandidates } from './store';
+import { getShardsDb, listShards, setAlwaysOn, setScope, setState, upsertCandidates } from './store';
 import type { ShardRecord } from './types';
-import { closeDatabases, makeTmp, setShardEnv, userTurn, writeSession } from './fixtures';
+import { captureStreams, closeDatabases, makeTmp, setShardEnv, userTurn, writeSession } from './fixtures';
 
 const FACT = 'Always run the whole test suite before you tell me a change is finished';
 
@@ -40,27 +44,8 @@ afterAll(() => {
 });
 
 /** Run the CLI with both streams captured, so a test can assert on the batch. */
-async function capture(argv: string[]): Promise<{ stdout: string; stderr: string }> {
-  const out: string[] = [];
-  const err: string[] = [];
-  const realOut = process.stdout.write;
-  const realErr = process.stderr.write;
-  const sink =
-    (into: string[]) =>
-    (chunk: unknown, cb?: unknown): boolean => {
-      into.push(String(chunk));
-      if (typeof cb === 'function') (cb as () => void)();
-      return true;
-    };
-  process.stdout.write = sink(out) as typeof process.stdout.write;
-  process.stderr.write = sink(err) as typeof process.stderr.write;
-  try {
-    await runShards(argv);
-  } finally {
-    process.stdout.write = realOut;
-    process.stderr.write = realErr;
-  }
-  return { stdout: out.join(''), stderr: err.join('') };
+function capture(argv: string[]): Promise<{ stdout: string; stderr: string }> {
+  return captureStreams(() => runShards(argv));
 }
 
 describe('parseMineArgs', () => {
@@ -152,6 +137,64 @@ describe('shards mine', () => {
     const third = JSON.parse((await capture(['mine', '--repo', repo])).stdout) as ShardRecord[];
     expect(third.find((r) => r.id === mined!.id)).toBeUndefined();
     expect(listShards().find((r) => r.id === mined!.id)!.state).toBe('rejected');
+  });
+});
+
+describe('shards pending', () => {
+  function candidate(n: number): ShardRecord {
+    return buildRecord({
+      text: `Always run the number ${n} verification step before you cut a release`,
+      scope: { type: 'repo', key: '/repos/app' },
+      author: 'dev@example.com',
+      sessions: ['/s/a.jsonl'],
+      dates: ['2026-06-01'],
+      distinctPhrasings: 1,
+    });
+  }
+
+  beforeEach(() => {
+    getShardsDb().run('DELETE FROM shards');
+  });
+
+  test('--json is accepted and changes nothing; anything else is a usage error', () => {
+    expect(parsePendingArgs([])).toEqual({ help: false });
+    expect(parsePendingArgs(['--json'])).toEqual({ help: false });
+    expect(parsePendingArgs(['-h']).help).toBe(true);
+    expect(() => parsePendingArgs(['--all'])).toThrow('unknown option: --all');
+    // No positional either — `pending` takes no id.
+    expect(() => parsePendingArgs(['sha256:abc'])).toThrow('unknown option: sha256:abc');
+  });
+
+  test('an empty store reports zero rather than erroring — the skill parses this', async () => {
+    const { stdout } = await capture(['pending']);
+    expect(JSON.parse(stdout)).toEqual({ count: 0, preview: [] });
+  });
+
+  test('the count is the true total and the preview is capped, which is the whole point', async () => {
+    const all = Array.from({ length: PENDING_PREVIEW + 2 }, (_, i) => candidate(i));
+    upsertCandidates(all);
+    const batch = JSON.parse((await capture(['pending'])).stdout) as PendingBatch;
+    expect(batch.count).toBe(PENDING_PREVIEW + 2);
+    expect(batch.preview).toHaveLength(PENDING_PREVIEW);
+    expect(batch.count).not.toBe(batch.preview.length);
+  });
+
+  test('only untriaged candidates count — approved and rejected rows are not a backlog', async () => {
+    const [pendingOne, approved, rejected] = [candidate(1), candidate(2), candidate(3)];
+    upsertCandidates([pendingOne!, approved!, rejected!]);
+    setState(approved!.id, 'approved');
+    setState(rejected!.id, 'rejected');
+    const batch = JSON.parse((await capture(['pending'])).stdout) as PendingBatch;
+    expect(batch.count).toBe(1);
+    expect(batch.preview[0]!.id).toBe(pendingOne!.id);
+  });
+
+  test('the preview keeps listShards order and carries nothing but id and text', () => {
+    // listShards is already ORDER BY id — arbitrary but stable. The projection must not
+    // re-sort (which would invent a second ordering) and must not leak evidence into a
+    // payload a skill pastes into a summary.
+    const records = [candidate(1), candidate(2), candidate(3)];
+    expect(pendingBatch(records).preview).toEqual(records.map((r) => ({ id: r.id, text: r.text })));
   });
 });
 

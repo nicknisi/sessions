@@ -7,6 +7,7 @@ import { buildRecord } from './record';
 import { getShardsDbPath } from '../paths';
 import { getShardsDb, listShards, setState, upsertCandidates } from './store';
 import { closeDatabases, makeTmp, setShardEnv } from './fixtures';
+import { advanceWatermark, readWatermark } from './watermark';
 import { SHARD_SCHEMA_VERSION } from './types';
 
 // This file is the contract's fifth criterion in test form: a triage decision is a
@@ -140,11 +141,39 @@ describe('store schema handling', () => {
   });
 
   test('opening an already-migrated store repeatedly is a no-op, not a duplicate column', () => {
+    advanceWatermark([{ filePath: '/s/a.jsonl', mtime: 1785329334744.8967, size: 205 }]);
     for (let i = 0; i < 3; i++) {
       closeDatabases();
       getShardsDb();
     }
     expect(listShards()[0]!.state).toBe('approved');
+    // The watermark table is created with IF NOT EXISTS beside `shards`, so repeat
+    // opens must neither throw `table already exists` nor reset what it holds.
+    expect(readWatermark().get('/s/a.jsonl')!.mtime).toBe(1785329334744.8967);
+  });
+
+  test('a user_version = 0 reopen re-runs migrate() against a live watermark table', () => {
+    advanceWatermark([{ filePath: '/s/a.jsonl', mtime: 1, size: 1 }]);
+    getShardsDb().run('PRAGMA user_version = 0');
+    closeDatabases();
+    expect(readWatermark().size).toBe(1);
+  });
+});
+
+describe('the mine watermark survives index invalidation', () => {
+  // Counter-intuitive and correct: --clear-cache rebuilds the index from the SAME
+  // transcript files, which still report the same mtime and size, so the surviving
+  // watermark still matches and no spurious re-mine happens. A watermark that lived in
+  // index.db would instead re-emit the entire backfill on the next --since-last run.
+  test('--clear-cache leaves it intact, so the next incremental mine stays incremental', () => {
+    advanceWatermark([{ filePath: '/s/a.jsonl', mtime: 1785329334744.8967, size: 205 }]);
+    clearCache();
+    closeDatabases();
+    expect(readWatermark().get('/s/a.jsonl')).toEqual({
+      filePath: '/s/a.jsonl',
+      mtime: 1785329334744.8967,
+      size: 205,
+    });
   });
 });
 

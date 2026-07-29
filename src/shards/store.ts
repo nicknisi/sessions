@@ -48,6 +48,27 @@ function migrate(db: Database): void {
     )
   `);
 
+  // Phase 6's incremental-mine watermark (src/shards/watermark.ts).
+  //
+  // A whole new table needs no `PRAGMA table_info` guard and no `user_version` bump:
+  // IF NOT EXISTS is already idempotent, and the column guard below exists only
+  // because ALTER TABLE is not. It sits here, beside the table it is a sibling of,
+  // rather than inside the version gate — every store written before this phase
+  // already reports user_version = 1, so a gated CREATE would never run on them.
+  //
+  // `mtime` is REAL, matching src/cache.ts:129-130. The value is `stat.mtimeMs`, which
+  // carries sub-millisecond precision (1785329334744.8967 on a real transcript); an
+  // INTEGER column would truncate it, the `===` comparison in `changedSessions` would
+  // never match, and every file would look changed forever.
+  db.run(`
+    CREATE TABLE IF NOT EXISTS mine_watermark (
+      file_path TEXT PRIMARY KEY,
+      mtime     REAL NOT NULL,
+      size      INTEGER NOT NULL,
+      mined_at  TEXT NOT NULL
+    )
+  `);
+
   // Phase 5's additive column, for a table that already exists.
   //
   // The guard is `PRAGMA table_info`, NOT the `user_version` gate below, and that is

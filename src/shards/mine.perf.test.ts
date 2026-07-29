@@ -18,6 +18,8 @@ const TURNS_PER_SESSION = 8;
 const CWDS = ['/perf/one', '/perf/two', '/perf/three', '/perf/four', '/perf/five'];
 
 let tmp: string;
+/** Every fixture transcript, in write order — the "everything changed" set. */
+const sessionPaths: string[] = [];
 
 function setPerfEnv(): void {
   setShardEnv(tmp);
@@ -37,7 +39,7 @@ beforeAll(async () => {
         `2026-06-01T10:${String(t).padStart(2, '0')}:00Z`,
       ),
     );
-    writeSession(tmp, `perf-${s}`, CWDS[s % CWDS.length]!, turns);
+    sessionPaths.push(writeSession(tmp, `perf-${s}`, CWDS[s % CWDS.length]!, turns));
   }
 
   closeDatabases();
@@ -62,6 +64,28 @@ describe('mine performance', () => {
     const records = await mine({});
     const elapsedMs = (Bun.nanoseconds() - started) / 1_000_000;
 
+    expect(records.length).toBe(SESSIONS * TURNS_PER_SESSION);
+    expect(elapsedMs).toBeLessThan(BUDGET_MS);
+  });
+
+  test(`mines a restricted changed set in under ${BUDGET_MS}ms`, async () => {
+    // The incremental path (`files`) costs `ceil(files.length / FILE_CHUNK)` restricted
+    // MATCH scans for pass 1 PLUS the unconditional full-corpus pass 2 — the two-pass
+    // shape mine.ts's comment argues for. That is the honest cost of a genuine subset,
+    // and it is what this measures: 120 paths is one chunk, so two scans.
+    //
+    // It is NOT what a first `--since-last` run costs. There the changed set IS the
+    // whole inventory, and `runMine` drops the restriction (`mineRestriction`,
+    // src/shards/cli.ts) so the run costs one scan rather than ceil(N/400)+1 — 13 of
+    // them at the author's ~4,498-session corpus. Without that short-circuit this
+    // budget would be the wrong guard entirely: the fixture is small enough that 13
+    // scans still fit inside it, while the real corpus would not.
+    const started = Bun.nanoseconds();
+    const records = await mine({ files: sessionPaths });
+    const elapsedMs = (Bun.nanoseconds() - started) / 1_000_000;
+
+    // Same output as the unrestricted mine above: a filter that admits every session
+    // admits every phrasing.
     expect(records.length).toBe(SESSIONS * TURNS_PER_SESSION);
     expect(elapsedMs).toBeLessThan(BUDGET_MS);
   });

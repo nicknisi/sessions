@@ -41,6 +41,37 @@ export function claudeDir(tmp: string): string {
   return join(tmp, 'claude');
 }
 
+/**
+ * Run something with both streams captured, so a test can assert on the batch the CLI
+ * writes to stdout.
+ *
+ * Takes a thunk rather than an argv so this file keeps importing nothing but cache.ts
+ * and store.ts. The sinks honor the callback argument because `writeStdoutFully`
+ * (src/stdout.ts) resolves only when it fires.
+ */
+export async function captureStreams(run: () => Promise<void> | void): Promise<{ stdout: string; stderr: string }> {
+  const out: string[] = [];
+  const err: string[] = [];
+  const realOut = process.stdout.write;
+  const realErr = process.stderr.write;
+  const sink =
+    (into: string[]) =>
+    (chunk: unknown, cb?: unknown): boolean => {
+      into.push(String(chunk));
+      if (typeof cb === 'function') (cb as () => void)();
+      return true;
+    };
+  process.stdout.write = sink(out) as typeof process.stdout.write;
+  process.stderr.write = sink(err) as typeof process.stderr.write;
+  try {
+    await run();
+  } finally {
+    process.stdout.write = realOut;
+    process.stderr.write = realErr;
+  }
+  return { stdout: out.join(''), stderr: err.join('') };
+}
+
 /** A genuine typed human turn: `promptSource: 'typed'` is what parser.ts requires. */
 export function userTurn(text: string, timestamp: string): Record<string, unknown> {
   return {

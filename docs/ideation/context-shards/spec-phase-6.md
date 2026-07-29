@@ -13,6 +13,8 @@ The watermark's design is the one genuinely tricky part. The naive implementatio
 
 This phase also gives snooze-resurface its second trigger. Phase 2 built resurface to fire on a manual re-mine; with incremental mining in place it fires whenever new phrasings arrive, which is what the mechanic was designed for.
 
+> **Amended during implementation — this paragraph did not survive contact.** The second trigger is NOT delivered, and cannot be by anything in this phase. See "Amendments recorded during implementation" below.
+
 ## Decisions Considered and Rejected
 
 _Carried from the contract; consult before making gap decisions._
@@ -23,6 +25,7 @@ _Carried from the contract; consult before making gap decisions._
 - **Collapse byte-identical repeats; only distinct phrasings count toward volume** — rejected: raw volume counting, which promoted a copy-pasted eval fixture.
 - **`sessions` gains zero LLM dependencies** — the mine stays deterministic; judgment remains agent-side.
 - **Shards stay out-of-band** — nothing in this phase writes into a repository.
+- **Merge each fresh record against its stored row before deriving scope** (this spec's Incremental-mine step 3) — rejected during implementation: a second full-corpus pass that rebuilds the changed phrasings' clusters from scratch. The merge approach needs containers the store does not keep (`evidence` holds session PATHS, not cwds), a defined answer for session paths the index has since pruned, and a `Math.max` on `distinctPhrasings` that would make snooze-resurface structurally impossible — the merged count would equal the stored baseline by construction, so `shouldResurface`'s `fresh > stored` could never be true. One extra FTS scan buys exact evidence, exact dates, and exact scope with none of that. The binding Key Decision (union evidence, no scope demotion) and its Failure Modes row are satisfied either way; only the mechanism changed. Rationale also lives at the two-pass comment in `src/shards/mine.ts`.
 
 ## Feedback Strategy
 
@@ -119,15 +122,16 @@ sessions shards mine [--repo <path>] [--since-last] [--json]
 
 - The narrowing query gains `AND m.file_path IN (...)` bound to the changed set. Chunk the binding at ~500 paths per statement; SQLite has a variable limit and the changed set is unbounded in principle.
 - An empty changed set exits 0 with an empty array. Nothing new is the common case at 4-5 facts per month, and it must not read as an error.
-- Deduplication against already-seen phrasings is **already handled** by Phase 1's `upsertCandidates`, which updates evidence and never overwrites state. An incremental mine that rediscovers a rejected phrasing leaves it rejected; one that finds a genuinely new phrasing for an existing shard bumps `distinctPhrasings`, which is exactly what feeds Phase 2's resurface predicate.
+- Deduplication against already-seen phrasings is **already handled** by Phase 1's `upsertCandidates`, which updates evidence and never overwrites state. An incremental mine that rediscovers a rejected phrasing leaves it rejected; ~~one that finds a genuinely new phrasing for an existing shard bumps `distinctPhrasings`, which is exactly what feeds Phase 2's resurface predicate~~ — **wrong, see Amendment 1**: a new phrasing is a new content-addressed record, so nothing bumps and the resurface predicate stays dead.
 - Scope derivation must run over the **union** of watermarked and fresh evidence, not the fresh subset alone. A fact seen in one repo today and two others last month is workflow-scoped; scoring only today's slice would mislabel it `repo`.
 
 **Implementation steps**:
 
 1. Add `--since-last` to the mine subcommand.
 2. When set, compute `changedSessions` and restrict the query.
-3. Merge fresh evidence with each record's stored evidence before deriving scope.
+3. ~~Merge fresh evidence with each record's stored evidence before deriving scope.~~ Replaced by a second full-corpus pass that rebuilds the changed phrasings' clusters — same union-evidence guarantee, none of the merge's hazards. The rejection is logged under "Decisions Considered and Rejected" above.
 4. Advance the watermark after `upsertCandidates` returns.
+5. When the changed set covers the entire scoped inventory (the first run), pass no file restriction at all: the filter would admit every row anyway, and pass 1 costs one FTS scan per 400-path chunk. This is what makes "the first run is equivalent to a full backfill" true of cost as well as of output.
 
 **Feedback loop**:
 
@@ -160,6 +164,8 @@ sessions shards pending [--json]    Candidates awaiting triage, with a count
 **Overview**: One additional step at the end of the existing skill.
 
 Step to append:
+
+(Amended: the shipped step runs `mine --all --since-last`, not `mine --since-last`. See Amendment 2.)
 
 > **N. Surface new shard candidates.** Run `sessions shards mine --since-last --json` followed by `sessions shards pending --json`. If the pending count is zero, say nothing — do not add an empty section. Otherwise close the summary with a short block: the count, up to three candidate texts, and one line telling the user to run `/shards` to triage. Do not triage here; this is a nudge, not the workflow.
 
@@ -204,7 +210,7 @@ CREATE TABLE IF NOT EXISTS mine_watermark (
 - A session missing from the watermark counts as changed.
 - Empty changed set exits 0 with `[]`, not an error.
 - A rediscovered phrasing on a `rejected` shard leaves it `rejected`.
-- A genuinely new phrasing bumps `distinctPhrasings` and can trigger resurface.
+- ~~A genuinely new phrasing bumps `distinctPhrasings` and can trigger resurface.~~ **Withdrawn — not reachable through the shipped pipeline (see Amendment 1).** Replaced by two regression tests that lock the actual behavior: a new wording becomes a NEW record rather than a bump, and a snoozed candidate stays hidden even with an expired date and a fresh paraphrase in the corpus.
 - Scope derived over union evidence: a shard previously `repo`-scoped widens to `workflow` when a new repo contributes.
 - Watermark is not advanced when the upsert throws.
 - Migration is idempotent across repeated opens.
@@ -239,9 +245,35 @@ bun test
 bun run build
 ```
 
+## Amendments recorded during implementation
+
+_Departures from the spec above, recorded here rather than only in source comments. Each one is deliberate._
+
+**1. Snooze-resurface does not get its second trigger, and the mechanic remains dead in the shipped pipeline.**
+
+The Technical Approach claimed incremental mining would make resurface "fire whenever new phrasings arrive", and Testing Requirements listed the matching test case. Neither is deliverable here. A shard record is content-addressed on its own normalized text (`src/shards/record.ts`), so a genuinely new wording of the same fact is a NEW record with a NEW id — never a bump on an existing one. `mine()` therefore emits `distinctPhrasings = 1` for every cluster, `shouldResurface`'s `freshPhrasings > record.evidence.distinctPhrasings` is `1 > 1`, and a snoozed candidate is hidden indefinitely rather than for 30 days.
+
+The two mechanical ways to make the number grow were both refused: counting occurrences or contributing sessions is the "raw volume counting" the contract rejected (one eval fixture prompt appeared 14 times byte-identical and would have topped the batch), and it contradicts `types.ts`'s definition of the field. What the mechanic actually needs is a **clustering write-back** — a surface for the `/shards` skill to record "these three phrasings are one fact" — which no phase of this project specifies. Phase 6 is the last phase, so `src/shards/triage.ts`'s forward reference to it has been rewritten to stop promising a fix that is not coming.
+
+What shipped instead:
+
+- Two regression tests in `src/shards/stream.test.ts` lock the 1-per-cluster behavior and the non-resurface, so a future write-back has to change them deliberately.
+- The user-facing copy that promised the mechanic is corrected in `README.md`, `src/cli.ts`, `src/shards/cli.ts`, and `plugin/skills/shards/SKILL.md`: a snooze is described as hiding a candidate indefinitely, with the missing bump named as the reason.
+- The gap is carried below as an Open Item rather than left in a source comment.
+
+**2. `weekly-summary` runs `mine --all --since-last`, not `mine --since-last`.**
+
+The quoted "Step to append" specified the unscoped form. A weekly summary spans every project the user worked in, and a bare `--since-last` would mine only whichever repo the agent's cwd happened to be in. The cost is unchanged (the watermark makes the run proportional to what actually changed), but the blast radius is not: `--all` advances the watermark for every repo, so a later `sessions shards mine --since-last` inside a single repo correctly reports nothing changed until that repo's transcripts move again. Nothing is lost — the material was already mined into the same store — but the interaction is non-obvious, so it is noted in the SKILL.md step and in `src/shards/watermark.ts`'s header.
+
+**3. The three plugin manifests are reformatted, and that is pre-existing drift, not phase churn.**
+
+`plugin/.claude-plugin/plugin.json`, `.codex-plugin/plugin.json`, and `.cursor-plugin/plugin.json` had their `keywords` arrays collapsed to one line, and the change is carried into the regenerated `src/plugin-files.ts`. Verified with `oxfmt --check` against the committed versions: they FAIL the check at HEAD, so `bun run format:check` — one of this spec's Validation Commands — cannot pass without the collapse. The reformat is a fix for drift that predates this phase; the committer should say so in the commit message.
+
 ## Open Items
 
 - [ ] At 4-5 facts per month, weekly may still be too frequent. If the shard block is empty most weeks, consider gating it on a minimum candidate count rather than on zero.
+- [ ] **Snooze-resurface has no live trigger** (Amendment 1). It needs a clustering write-back: a way for the `/shards` skill to record that several phrasings are one fact, so a merged record can carry `distinctPhrasings > 1` and a later mine can exceed it. Until that exists, `snooze` is "hide forever without a verdict" and the copy says so. Decide deliberately whether to build the write-back or to retire the second condition of `shouldResurface` — do not let the mechanic sit half-alive.
+- [ ] `shards pending` reports a RUNNING TOTAL of everything untriaged, not "new since last week" (see the KNOWN LIMIT on `pendingBatch`). Until the backlog is worked down, the weekly digest carries the same block every week — the skim-past failure the "silent when empty" rule exists to prevent, reached from the other side. A delta needs a per-row "first surfaced" timestamp the store does not keep.
 
 ---
 
