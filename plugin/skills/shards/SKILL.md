@@ -24,7 +24,7 @@ Turn mined candidate turns into a small set of durable facts worth remembering.
    - **Fails loudly** — text that reads like a copy-pasted prompt or eval fixture. A suspiciously boilerplate candidate is chaff, not signal.
    - Assign `kind`: `instruction` for "do this / don't do that", `information` for "this is how the world is".
 
-4. **Walk triage.** One `AskUserQuestion` per cluster, batching up to 4 independent clusters per call. For each, show the text, the derived scope (`repo` with its container, or `workflow`), `distinctPhrasings`, and the `firstSeen`–`lastSeen` range. Options: **Approve**, **Approve as always-on**, **Reject**, **Snooze 30 days**.
+4. **Walk triage.** One `AskUserQuestion` per cluster, batching up to 4 independent clusters per call. For each, show the text, the derived scope (`repo` with its container, or `workflow`), `distinctPhrasings`, and the `firstSeen`–`lastSeen` range. Options: **Approve**, **Approve as always-on**, **Reject**, **Snooze** (hide without a verdict).
 
    Offer **Approve as always-on** only when the fact is a standing constraint an agent must see no matter what it is working on — "canary is the mainline branch", "API keys go in the keychain". Retrieval is topic-conditional by default, so a normal approval means the shard comes back only when the task looks related. Always-on is the exception, and proposing it for everything defeats the filter.
 
