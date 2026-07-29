@@ -1,7 +1,23 @@
-import { test, expect, beforeAll, beforeEach, afterAll } from 'bun:test';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { describe, test, expect, beforeAll, beforeEach, afterAll } from 'bun:test';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import type { ZodType } from 'zod';
+import { version as pkgVersion } from '../package.json';
+import { buildRecord } from './memory/record';
+import { closeMemoryDb, setState, upsertCandidates } from './memory/store';
+import {
+  GetActivityDigestOutput,
+  GetContextPrimerOutput,
+  GetMemoryOutput,
+  GetSessionDigestOutput,
+  GetSessionMessagesOutput,
+  GetSessionMetricsOutput,
+  GrepSessionsOutput,
+  SearchSessionsOutput,
+} from './mcp-schemas';
 
 const j = (o: unknown): string => JSON.stringify(o);
 
@@ -13,12 +29,26 @@ let tmp: string;
 let mcp: typeof import('./mcp');
 let cache: typeof import('./cache');
 
+/**
+ * This repo, and therefore a real git repo `resolveRepo` will resolve. Sessions D and E
+ * below are indexed under it so `get_context_primer` has something to return — a temp
+ * mkdtemp dir is not a repo, and calling the primer against one only ever exercises the
+ * not-a-repo sentinel.
+ *
+ * realpathSync because git reports `--show-toplevel` resolved (macOS /var -> /private/var),
+ * and `getContextPrimer` matches the indexed `cwd` against that resolved container exactly.
+ */
+const REPO_ROOT = realpathSync(join(import.meta.dir, '..'));
+
 function setEnv(): void {
   process.env.SESSIONS_CACHE_DIR = join(tmp, 'cache');
   process.env.SESSIONS_CLAUDE_DIR = join(tmp, 'claude');
   process.env.SESSIONS_PI_DIR = join(tmp, 'pi');
   process.env.SESSIONS_CODEX_DIR = join(tmp, 'codex');
   process.env.SESSIONS_OPENCODE_DB = join(tmp, 'opencode.db'); // absent → no OpenCode sessions leak in
+  // Required now that tools/call reaches get_memory from this file: without it the memory
+  // store would open (and create) the developer's real ~/.local/share/sessions/memory.db.
+  process.env.SESSIONS_DATA_DIR = join(tmp, 'data');
 }
 
 beforeAll(async () => {
@@ -105,27 +135,126 @@ beforeAll(async () => {
     ].join('\n'),
   );
 
+  // Sessions D and E: cwd is THIS repo, so get_context_primer resolves it and returns a
+  // populated primer instead of a sentinel. Two of them, and E is trivia (2 messages, no
+  // edits, no artifact) while D is substantive — so with `limit: 1` D fills the detail
+  // tier and E is demoted into headlines, putting BOTH primer arrays under real data.
+  //
+  // D also carries 5 messages on purpose: getActivityDigest only builds sessionDetails
+  // for rows with message_count > 3 (src/cache.ts:1081-1083), and the fattest of A/B/C
+  // has 3 — so without D the digestSessionDetail schema is never exercised with an element.
+  //
+  // Nothing here may collide with the A/B/C assertions above: no 'kubectl', no 'flaky',
+  // no 'mangowurzel', no 'src/billing.ts', and no errored tool results.
+  writeFileSync(
+    join(dir, 'd.jsonl'),
+    [
+      j({
+        type: 'user',
+        cwd: REPO_ROOT,
+        gitBranch: 'phase-1-payload-diet',
+        timestamp: '2026-06-04T10:00:00Z',
+        message: { role: 'user', content: [{ type: 'text', text: 'bound the unbounded payload arrays' }] },
+        promptSource: 'typed',
+      }),
+      j({
+        type: 'assistant',
+        cwd: REPO_ROOT,
+        timestamp: '2026-06-04T10:01:00Z',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'tool_use', name: 'Edit', input: { file_path: `${REPO_ROOT}/src/cap-audit.ts` } }],
+        },
+      }),
+      j({
+        type: 'assistant',
+        cwd: REPO_ROOT,
+        timestamp: '2026-06-04T10:02:00Z',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'tool_use', name: 'Edit', input: { file_path: `${REPO_ROOT}/src/primer-cap.ts` } }],
+        },
+      }),
+      j({
+        type: 'user',
+        cwd: REPO_ROOT,
+        gitBranch: 'phase-1-payload-diet',
+        timestamp: '2026-06-04T10:03:00Z',
+        message: { role: 'user', content: [{ type: 'text', text: 'now measure the serialized size' }] },
+        promptSource: 'typed',
+      }),
+      j({
+        type: 'assistant',
+        cwd: REPO_ROOT,
+        timestamp: '2026-06-04T10:04:00Z',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'the capped payload is a fifth of the size' }] },
+      }),
+    ].join('\n'),
+  );
+
+  writeFileSync(
+    join(dir, 'e.jsonl'),
+    [
+      j({
+        type: 'user',
+        cwd: REPO_ROOT,
+        gitBranch: 'phase-1-payload-diet',
+        timestamp: '2026-06-05T10:00:00Z',
+        message: { role: 'user', content: [{ type: 'text', text: 'you around?' }] },
+        promptSource: 'typed',
+      }),
+      j({
+        type: 'assistant',
+        cwd: REPO_ROOT,
+        timestamp: '2026-06-05T10:01:00Z',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'yes' }] },
+      }),
+    ].join('\n'),
+  );
+
   cache = await import('./cache');
   cache.closeDb(); // drop any connection a prior test file opened on the shared module
   await cache.refreshIndex();
+
+  // One approved memory scoped to /repoA. Without it get_memory's conformance call hits
+  // the empty-store sentinel, and its populated projection (text / kind / scope) is never
+  // validated through tools/call — the empty payload has the same shape either way.
+  // Repo-scoped, not workflow-scoped, so it cannot leak into the empty-index block below
+  // (which uses its own SESSIONS_DATA_DIR and a cwd of /nowhere).
+  const memory = buildRecord({
+    text: 'Always run bun run typecheck before opening a pull request',
+    scope: { type: 'repo', key: '/repoA' },
+    author: 'dev@example.com',
+    sessions: ['/s/a.jsonl'],
+    dates: ['2026-06-01'],
+    distinctPhrasings: 1,
+  });
+  upsertCandidates([memory]);
+  setState(memory.id, 'approved');
+  closeMemoryDb();
+
   mcp = await import('./mcp');
 });
 
 beforeEach(() => {
   setEnv();
   cache.closeDb(); // next query reopens against our getDbPath()
+  closeMemoryDb();
 });
 
 afterAll(() => {
   cache.closeDb(); // release the handle before deleting the temp dir
+  closeMemoryDb();
   rmSync(tmp, { recursive: true, force: true });
 });
 
 test('search_sessions handler returns metadata + resumeCommand', async () => {
   const res = await mcp.runSearchSessions({ query: 'kubectl' });
+  // { results, count } envelope: structuredContent must be a JSON object, not an array.
   const parsed = JSON.parse(res.content[0]!.text);
-  expect(parsed[0].commands).toContain('kubectl apply');
-  expect(parsed[0].resumeCommand).toContain('claude --resume');
+  expect(parsed.count).toBe(parsed.results.length);
+  expect(parsed.results[0].commands).toContain('kubectl apply');
+  expect(parsed.results[0].resumeCommand).toContain('claude --resume');
 });
 
 test('search_sessions handler honors the errored filter', async () => {
@@ -138,11 +267,11 @@ test('search_sessions handler honors the errored filter', async () => {
 test('alignment: messageHits[0].index feeds get_session_messages(offset) to the matched text', async () => {
   const res = await mcp.runSearchSessions({ query: 'mangowurzel' });
   const parsed = JSON.parse(res.content[0]!.text);
-  const hit = parsed[0].messageHits[0];
+  const hit = parsed.results[0].messageHits[0];
   expect(hit.index).toBe(2);
   expect(hit.role).toBe('assistant');
 
-  const page = await mcp.runGetSessionMessages({ filePath: parsed[0].filePath, offset: hit.index, limit: 1 });
+  const page = await mcp.runGetSessionMessages({ filePath: parsed.results[0].filePath, offset: hit.index, limit: 1 });
   const paged = JSON.parse(page.content[0]!.text);
   expect(paged.returned).toBe(1);
   expect(paged.messages[0].text).toContain('mangowurzel');
@@ -151,7 +280,7 @@ test('alignment: messageHits[0].index feeds get_session_messages(offset) to the 
 test('search_sessions: a metadata-only match carries empty messageHits', async () => {
   const res = await mcp.runSearchSessions({ query: 'kubectl' }); // lives only in commands
   const parsed = JSON.parse(res.content[0]!.text);
-  const a = parsed.find((r: { sessionId: string }) => r.sessionId === 'a');
+  const a = parsed.results.find((r: { sessionId: string }) => r.sessionId === 'a');
   expect(a.messageHits).toEqual([]);
 });
 
@@ -160,9 +289,9 @@ test('search_sessions: a metadata-only match carries empty messageHits', async (
 test('search_sessions: files param reaches SearchOptions; result shape unchanged', async () => {
   const res = await mcp.runSearchSessions({ files: ['src/billing.ts'] });
   const parsed = JSON.parse(res.content[0]!.text);
-  expect(parsed.map((r: { sessionId: string }) => r.sessionId)).toEqual(['c']); // a and b excluded
-  expect(parsed[0].files).toContain('/repoC/src/billing.ts');
-  expect(parsed[0].resumeCommand).toContain('claude --resume'); // shape unchanged
+  expect(parsed.results.map((r: { sessionId: string }) => r.sessionId)).toEqual(['c']); // a and b excluded
+  expect(parsed.results[0].files).toContain('/repoC/src/billing.ts');
+  expect(parsed.results[0].resumeCommand).toContain('claude --resume'); // shape unchanged
 });
 
 test('search_sessions: a non-matching files filter returns no sessions', async () => {
@@ -291,3 +420,288 @@ test('server exits when the client closes stdin instead of lingering as an orpha
   if (result === 'orphaned') proc.kill();
   expect(result).toBe(0);
 }, 15000);
+
+// ——— protocol surface (phase 1) tests — additive ———
+//
+// Everything below goes through tools/list and tools/call over the SDK's in-memory
+// transport, because that is the ONLY path that runs the SDK's output validation. The
+// run* seams asserted above bypass it, so a tool whose structuredContent does not match
+// its declared outputSchema would ship green without these.
+//
+// Mind what a failure looks like here: the SDK does not reject. McpServer catches its own
+// McpError and returns an ordinary result with isError:true, so "the call did not throw"
+// is a vacuous assertion that stays green even when every tool is broken. Asserting
+// isError is falsy AND that the declared schema parses structuredContent is the real test.
+
+async function connect(): Promise<Client> {
+  const server = mcp.createServer();
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: 'sessions-test', version: '0' });
+  await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
+  return client;
+}
+
+const TOOL_NAMES = [
+  'get_activity_digest',
+  'get_context_primer',
+  'get_memory',
+  'get_session_digest',
+  'get_session_messages',
+  'get_session_metrics',
+  'grep_sessions',
+  'search_sessions',
+];
+
+/** Fold the failure detail into the compared value: a bare `success` boolean tells you a
+ *  tool drifted from its schema but not which field. */
+function conforms(name: string, schema: ZodType, structuredContent: unknown): string {
+  const parsed = schema.safeParse(structuredContent);
+  return parsed.success ? 'ok' : `${name}: ${parsed.error.message}`;
+}
+
+test('version: the server reports the package.json version, not a hardcoded literal', async () => {
+  const client = await connect();
+  const info = client.getServerVersion();
+  expect(info?.name).toBe('sessions');
+  expect(info?.version).toBe(pkgVersion);
+  expect(info?.version).not.toBe('1.2.0'); // the stale literal this replaced
+  await client.close();
+});
+
+test('tool surface: 8 tools, each with a title, annotations, and an object outputSchema', async () => {
+  const client = await connect();
+  const { tools } = await client.listTools();
+
+  // A name list, not a count: a count is also satisfied by leaving a tool un-annotated.
+  expect(tools.map((t) => t.name).sort()).toEqual(TOOL_NAMES);
+
+  for (const t of tools) {
+    expect(typeof t.title).toBe('string');
+    expect(t.title!.length).toBeGreaterThan(0);
+    expect(t.description!.length).toBeGreaterThan(80); // the tuned prose survived the migration
+    expect(t.annotations).toEqual({ readOnlyHint: true, openWorldHint: false });
+    // A top-level-array outputSchema is dropped from tools/list without a word of
+    // warning, so presence here is the cheap tripwire for the envelope mistake.
+    expect(t.outputSchema).toBeDefined();
+    expect(t.outputSchema!.type).toBe('object');
+  }
+  await client.close();
+});
+
+test('tool surface: two createServer() instances in one process both connect', async () => {
+  const a = await connect();
+  const b = await connect();
+  expect((await a.listTools()).tools).toHaveLength(8);
+  expect((await b.listTools()).tools).toHaveLength(8);
+  await a.close();
+  await b.close();
+});
+
+test('schema conformance: every tool validates against its declared outputSchema', async () => {
+  const client = await connect();
+  const sessionB = join(tmp, 'claude', 'proj', 'b.jsonl');
+  const calls: { name: string; args: Record<string, unknown>; schema: ZodType }[] = [
+    { name: 'get_memory', args: { cwd: '/repoA' }, schema: GetMemoryOutput },
+    // 'retry' rather than 'kubectl': it matches message text, so messageHits comes back
+    // with elements. 'kubectl' lives only in a command, and an all-empty messageHits
+    // leaves the nested messageHit shape unvalidated.
+    { name: 'search_sessions', args: { query: 'retry' }, schema: SearchSessionsOutput },
+    { name: 'grep_sessions', args: { pattern: 'flaky' }, schema: GrepSessionsOutput },
+    { name: 'get_session_messages', args: { filePath: sessionB }, schema: GetSessionMessagesOutput },
+    { name: 'get_session_digest', args: { filePath: sessionB }, schema: GetSessionDigestOutput },
+    {
+      name: 'get_activity_digest',
+      args: { startDate: '2026-06-01', endDate: '2026-06-30', detail: 'highlights' },
+      schema: GetActivityDigestOutput,
+    },
+    {
+      name: 'get_session_metrics',
+      args: { startDate: '2026-06-01', endDate: '2026-06-30' },
+      schema: GetSessionMetricsOutput,
+    },
+    // REPO_ROOT, not `tmp`: a bare mkdtemp dir is not a git repo, so resolveRepo returns
+    // null there and this "populated" call would silently re-test the not-a-repo sentinel.
+    // limit:1 splits sessions D and E across the two tiers so recent[] AND headlines[]
+    // both carry elements.
+    { name: 'get_context_primer', args: { cwd: REPO_ROOT, limit: 1 }, schema: GetContextPrimerOutput },
+  ];
+  expect(calls.map((c) => c.name).sort()).toEqual(TOOL_NAMES); // no tool quietly skipped
+
+  const got = new Map<string, unknown>();
+  for (const { name, args, schema } of calls) {
+    const res = await client.callTool({ name, arguments: args });
+    expect(res.isError).toBeFalsy();
+    expect(res.structuredContent).toBeDefined();
+    expect(conforms(name, schema, res.structuredContent)).toBe('ok');
+    // The text block is the same payload, for clients that ignore structured output.
+    const text = (res.content as { type: string; text: string }[])[0]!.text;
+    if (text.startsWith('{')) expect(JSON.parse(text)).toEqual(res.structuredContent);
+    got.set(name, res.structuredContent);
+  }
+
+  // Non-vacuity. Every array in mcp-schemas.ts admits `[]` — it has to, or the sentinel
+  // paths would throw — so 'ok' above is also what a call that quietly returned its empty
+  // payload reports. Without these assertions the nested shapes (messageHit,
+  // digestSessionDetail, the primer's recent/headlines) are never validated against real
+  // data, which is exactly the schema-drift risk this file exists to catch.
+  const search = SearchSessionsOutput.parse(got.get('search_sessions'));
+  expect(search.results.length).toBeGreaterThan(0);
+  expect(search.results.flatMap((r) => r.messageHits ?? []).length).toBeGreaterThan(0);
+
+  expect(GetMemoryOutput.parse(got.get('get_memory')).results.length).toBeGreaterThan(0);
+  expect(GrepSessionsOutput.parse(got.get('grep_sessions')).hits.length).toBeGreaterThan(0);
+  expect(GetSessionMessagesOutput.parse(got.get('get_session_messages')).messages.length).toBeGreaterThan(0);
+  expect(GetSessionDigestOutput.parse(got.get('get_session_digest')).exchanges.length).toBeGreaterThan(0);
+
+  const digest = GetActivityDigestOutput.parse(got.get('get_activity_digest'));
+  const details = digest.days.flatMap((d) => d.projects.flatMap((p) => p.sessionDetails ?? []));
+  expect(details.length).toBeGreaterThan(0); // detail:'highlights' needs a >3-message row
+
+  const metrics = GetSessionMetricsOutput.parse(got.get('get_session_metrics'));
+  expect(metrics.projectBreakdown.length).toBeGreaterThan(0);
+  expect(metrics.dailyActivity.length).toBeGreaterThan(0);
+
+  const primer = GetContextPrimerOutput.parse(got.get('get_context_primer'));
+  expect(primer.isEmpty).toBe(false);
+  expect(primer.recent).toHaveLength(1);
+  expect(primer.headlines).toHaveLength(1); // session E, demoted out of the detail tier
+  // fileCount is the field ContextSession gained in this phase — the one most likely to
+  // drift out of the hand-mirrored schema unnoticed.
+  expect(primer.recent[0]!.fileCount).toBe(2);
+  expect(primer.recent[0]!.files).toHaveLength(2);
+
+  await client.close();
+});
+
+describe('empty results', () => {
+  // A second, deliberately empty fixture. The outer beforeEach re-points the shared cache
+  // module at the POPULATED index before every test, so this block has to take it back in
+  // its own beforeEach — otherwise these assertions silently run against real data.
+  let emptyTmp: string;
+  let loneSession: string;
+
+  function setEmptyEnv(): void {
+    process.env.SESSIONS_CACHE_DIR = join(emptyTmp, 'cache');
+    process.env.SESSIONS_CLAUDE_DIR = join(emptyTmp, 'claude');
+    process.env.SESSIONS_PI_DIR = join(emptyTmp, 'pi');
+    process.env.SESSIONS_CODEX_DIR = join(emptyTmp, 'codex');
+    process.env.SESSIONS_OPENCODE_DB = join(emptyTmp, 'opencode.db');
+    process.env.SESSIONS_DATA_DIR = join(emptyTmp, 'data');
+  }
+
+  beforeAll(async () => {
+    emptyTmp = mkdtempSync(join(tmpdir(), 'sessions-mcp-empty-'));
+    for (const d of ['claude', 'pi', 'codex', 'cache', 'data']) {
+      mkdirSync(join(emptyTmp, d), { recursive: true });
+    }
+    // get_session_messages and get_session_digest read a path directly rather than the
+    // index, so their empty case needs a file that exists but yields nothing: one
+    // injected (non-genuine) turn produces zero exchanges, and an out-of-range offset
+    // produces zero messages.
+    loneSession = join(emptyTmp, 'injected-only.jsonl');
+    writeFileSync(
+      loneSession,
+      j({
+        type: 'user',
+        timestamp: '2026-06-03T10:00:00Z',
+        message: { role: 'user', content: [{ type: 'text', text: 'injected hook context' }] },
+        promptSource: null,
+      }),
+    );
+    setEmptyEnv();
+    cache.closeDb();
+    closeMemoryDb();
+    await cache.refreshIndex();
+  });
+
+  beforeEach(() => {
+    setEmptyEnv();
+    cache.closeDb();
+    closeMemoryDb();
+  });
+
+  afterAll(() => {
+    cache.closeDb();
+    closeMemoryDb();
+    rmSync(emptyTmp, { recursive: true, force: true });
+  });
+
+  test('empty results: all 8 tools return a conforming payload alongside their sentinel', async () => {
+    const client = await connect();
+    const repoRoot = join(import.meta.dir, '..'); // a real git repo with no indexed sessions
+    const calls: { name: string; args: Record<string, unknown>; schema: ZodType; text?: string }[] = [
+      { name: 'get_memory', args: { cwd: '/nowhere' }, schema: GetMemoryOutput, text: 'No memories for this repo.' },
+      // These args deliberately MATCH the populated fixture: 'flaky' and the June range
+      // both return data there, so if this block ever loses the empty index to the outer
+      // beforeEach these assertions go red instead of passing for the wrong reason.
+      { name: 'search_sessions', args: {}, schema: SearchSessionsOutput, text: 'No sessions found.' },
+      {
+        name: 'grep_sessions',
+        args: { pattern: 'flaky' },
+        schema: GrepSessionsOutput,
+        text: 'No matching messages found.',
+      },
+      { name: 'get_session_messages', args: { filePath: loneSession, offset: 99 }, schema: GetSessionMessagesOutput },
+      { name: 'get_session_digest', args: { filePath: loneSession }, schema: GetSessionDigestOutput },
+      {
+        name: 'get_activity_digest',
+        args: { startDate: '2026-06-01', endDate: '2026-06-30' },
+        schema: GetActivityDigestOutput,
+        text: 'No sessions found in that date range.',
+      },
+      {
+        name: 'get_session_metrics',
+        args: { startDate: '2026-06-01', endDate: '2026-06-30' },
+        schema: GetSessionMetricsOutput,
+        text: 'No sessions found in that date range.',
+      },
+      {
+        name: 'get_context_primer',
+        args: { cwd: repoRoot },
+        schema: GetContextPrimerOutput,
+        text: 'No past sessions found for this repo.',
+      },
+    ];
+    expect(calls.map((c) => c.name).sort()).toEqual(TOOL_NAMES);
+
+    for (const { name, args, schema, text } of calls) {
+      const res = await client.callTool({ name, arguments: args });
+      // isError on an empty result would be a validation bypass, not a design.
+      expect(res.isError).toBeFalsy();
+      expect(res.structuredContent).toBeDefined();
+      expect(conforms(name, schema, res.structuredContent)).toBe('ok');
+      // The sentinel prose survives: it tells a model something the payload does not.
+      if (text) expect((res.content as { text: string }[])[0]!.text).toBe(text);
+    }
+    await client.close();
+  });
+
+  test('empty results: get_context_primer outside a git repo keeps its own sentinel', async () => {
+    const client = await connect();
+    const res = await client.callTool({ name: 'get_context_primer', arguments: { cwd: emptyTmp } });
+    expect(res.isError).toBeFalsy();
+    expect((res.content as { text: string }[])[0]!.text).toBe('Not inside a git repository.');
+    expect(conforms('get_context_primer', GetContextPrimerOutput, res.structuredContent)).toBe('ok');
+    expect(res.structuredContent).toEqual({
+      repoLabel: '',
+      toolFilter: '',
+      recent: [],
+      headlines: [],
+      isEmpty: true,
+    });
+    await client.close();
+  });
+
+  test('empty results: a topic miss keeps its own sentence, distinct from the empty store', async () => {
+    const client = await connect();
+    const res = await client.callTool({
+      name: 'get_memory',
+      arguments: { cwd: '/nowhere', topic: 'kubernetes helm chart rollout' },
+    });
+    const text = (res.content as { text: string }[])[0]!.text;
+    expect(text).toContain('No memory matched this topic');
+    expect(text).not.toBe('No memories for this repo.');
+    expect(conforms('get_memory', GetMemoryOutput, res.structuredContent)).toBe('ok');
+    await client.close();
+  });
+});

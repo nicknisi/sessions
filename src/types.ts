@@ -87,7 +87,10 @@ export interface ContextSession {
   date: string;
   messageCount: number;
   intent: string; // first_prompt
-  files: string[]; // parsed files_touched
+  /** Parsed files_touched, capped at MAX_FILES — fileCount carries the true total. */
+  files: string[];
+  /** Total files touched before truncation, so a capped list never reads as complete. */
+  fileCount: number;
   opening: string; // first_prompt (verbatim opener)
   closing: { user: string; assistant: string };
 }

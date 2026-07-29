@@ -293,6 +293,48 @@ describe('searchSessions', () => {
 
 const ctx = await import('./context');
 
+describe('files cap', () => {
+  test('a 40-file session is capped in the primer while fileCount reports the true total', async () => {
+    const cwd = join(fixtureRoot, 'proj-filecap');
+    const edits = Array.from({ length: 40 }, (_, i) => `${cwd}/src/feature-${i}/index.ts`);
+    writeClaudeSession({ cwd, firstPrompt: 'touch everything', edits, createdAt: '2026-06-21T10:00:00.000Z' });
+
+    const primer = await cache.getContextPrimer(fakeRepo(cwd, {}), {});
+    const s = primer.recent[0]!;
+    expect(s.files).toHaveLength(10); // MAX_FILES from search-format
+    expect(s.fileCount).toBe(40);
+    // Cap, not sample: the kept paths are the head of the indexed list.
+    expect(s.files[0]).toBe(edits[0]);
+  });
+
+  test('the primer renderer counts hidden files from fileCount, not the capped array', () => {
+    const primer: ContextPrimer = {
+      repoLabel: 'r',
+      toolFilter: '',
+      isEmpty: false,
+      recent: [
+        {
+          sessionId: 's',
+          tool: 'claude',
+          branch: 'main',
+          date: '2026-06-21',
+          messageCount: 40,
+          intent: 'touch everything',
+          files: Array.from({ length: 10 }, (_, i) => `/r/f${i}.ts`), // already capped upstream
+          fileCount: 40,
+          opening: 'touch everything',
+          closing: { user: '', assistant: '' },
+        },
+      ],
+      headlines: [],
+    };
+    // 5 shown of 40 touched, not 5 of the 10 that survived the cap.
+    expect(ctx.renderMarkdown(primer, false)).toContain('(+35 more)');
+    // --full shows every file it was given and still admits the producer truncated.
+    expect(ctx.renderMarkdown(primer, true)).toContain('(+30 more)');
+  });
+});
+
 describe('cli', () => {
   test('renderMarkdown produces two-tier headings, intent, files, and earlier bullets', () => {
     const primer: ContextPrimer = {
@@ -308,6 +350,7 @@ describe('cli', () => {
           messageCount: 8,
           intent: 'wire up the renderer',
           files: ['/a/x.ts', '/a/y.ts'],
+          fileCount: 2,
           opening: 'wire up the renderer',
           closing: { user: 'is it done?', assistant: 'yes, tests pass' },
         },
@@ -354,6 +397,7 @@ describe('cli', () => {
           messageCount: 3,
           intent: 'short title',
           files,
+          fileCount: files.length,
           opening: 'a much longer verbatim opening prompt that differs from the title',
           closing: { user: '', assistant: '' },
         },

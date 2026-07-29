@@ -11,9 +11,10 @@ import type { MemoryRecord, MemoryScope } from './types';
 // simply proceeds without the context, and no error is raised anywhere. So every
 // case here is a "what must NOT come back" assertion as much as a positive one.
 //
-// All memory assertions live in this file rather than src/mcp.test.ts, whose setEnv()
-// deliberately does not set SESSIONS_DATA_DIR — a get_memory call from there would
-// open and create the developer's real ~/.local/share/sessions/memory.db.
+// The scoping matrix lives here, not in src/mcp.test.ts: that file seeds a single
+// approved memory only so get_memory's populated projection is validated through
+// tools/call, and both files must set SESSIONS_DATA_DIR — without it a get_memory call
+// opens (and creates) the developer's real ~/.local/share/sessions/memory.db.
 
 const REPO_A: MemoryScope = { type: 'repo', key: '/repos/app' };
 const REPO_A_V2: MemoryScope = { type: 'repo', key: '/repos/app-v2' };
@@ -210,23 +211,37 @@ describe('activeMemoryFor', () => {
   });
 });
 
+/** Memory entries ship inside a `{ results, count }` envelope: structuredContent must be
+ *  a JSON object, and a top-level array is not one. */
+function parse(res: { content: { text: string }[] }): {
+  results: { text: string; kind: string; scope: string }[];
+  count: number;
+} {
+  return JSON.parse(res.content[0]!.text);
+}
+
 describe('runGetMemory', () => {
   test('an empty store returns the plain sentence, not an error or []', async () => {
     getMemoryDb().run('DELETE FROM memory');
     const res = await mcp.runGetMemory({ cwd: '/repos/app' });
     expect(res.content[0]!.text).toBe('No memories for this repo.');
+    // The sentence is what a model reads; the empty payload is what output validation
+    // needs. Both ship — a sentinel with no structuredContent fails every call.
+    expect(res.isError).toBeUndefined();
+    expect(res.structuredContent).toEqual({ results: [], count: 0 });
   });
 
   test('returns a text/kind/scope projection and nothing else', async () => {
     const res = await mcp.runGetMemory({ cwd: '/repos/app' });
-    const parsed = JSON.parse(res.content[0]!.text) as { text: string; kind: string; scope: string }[];
-    expect(parsed).toEqual([
+    const parsed = parse(res);
+    expect(parsed.results).toEqual([
       { text: WORKFLOW_APPROVED.text, kind: 'instruction', scope: 'workflow' },
       { text: A_APPROVED.text, kind: 'instruction', scope: 'repo' },
     ]);
+    expect(parsed.count).toBe(2);
     // ids, evidence, and session paths are triage concerns — they must not be
     // spending the agent's context.
-    for (const entry of parsed) expect(Object.keys(entry).sort()).toEqual(['kind', 'scope', 'text']);
+    for (const entry of parsed.results) expect(Object.keys(entry).sort()).toEqual(['kind', 'scope', 'text']);
   });
 
   test('two calls with the same cwd return byte-identical output', async () => {
@@ -237,11 +252,12 @@ describe('runGetMemory', () => {
 
   test('a topic narrows the projection without changing its shape', async () => {
     const res = await mcp.runGetMemory({ cwd: '/repos/app', topic: 'run the migrations' });
-    const parsed = JSON.parse(res.content[0]!.text) as { text: string; kind: string; scope: string }[];
-    expect(parsed.map((p) => p.text)).toEqual([A_APPROVED.text]);
+    const parsed = parse(res);
+    expect(parsed.results.map((p) => p.text)).toEqual([A_APPROVED.text]);
+    expect(parsed.count).toBe(1);
     // No `score` and no `alwaysOn`: a relevance number invites the agent to
     // second-guess the filter, and standing-constraint status is carried by ordering.
-    for (const entry of parsed) expect(Object.keys(entry).sort()).toEqual(['kind', 'scope', 'text']);
+    for (const entry of parsed.results) expect(Object.keys(entry).sort()).toEqual(['kind', 'scope', 'text']);
   });
 
   test('an omitted topic returns exactly what Phase 3 returned', async () => {
@@ -260,7 +276,6 @@ describe('runGetMemory', () => {
     // The MCP server runs in the client's working directory, so the default is
     // usually right; the explicit argument is the monorepo escape hatch.
     const res = await mcp.runGetMemory({});
-    const parsed = JSON.parse(res.content[0]!.text) as { text: string }[];
-    expect(parsed.map((p) => p.text)).toEqual([WORKFLOW_APPROVED.text]);
+    expect(parse(res).results.map((p) => p.text)).toEqual([WORKFLOW_APPROVED.text]);
   });
 });

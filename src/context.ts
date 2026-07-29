@@ -134,9 +134,11 @@ export function renderMarkdown(primer: ContextPrimer, full: boolean): string {
     out.push(`- **Intent:** ${s.intent || '(none)'}`);
     if (s.files.length > 0) {
       const shown = full ? s.files : s.files.slice(0, 5);
-      out.push(
-        `- **Files:** ${shown.join(', ')}${!full && s.files.length > 5 ? ` (+${s.files.length - 5} more)` : ''}`,
-      );
+      // Count against fileCount, not files.length: the primer caps `files` upstream, so
+      // the array no longer knows how many were dropped. `--full` widens the detail it is
+      // given and still says so when the producer truncated — silent is the failure mode.
+      const hidden = s.fileCount - shown.length;
+      out.push(`- **Files:** ${shown.join(', ')}${hidden > 0 ? ` (+${hidden} more)` : ''}`);
     }
     if (full && s.opening && s.opening !== s.intent) {
       out.push(`- **Opening:** ${s.opening}`);

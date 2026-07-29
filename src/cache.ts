@@ -23,6 +23,10 @@ import { extractErrors } from './extract-errors';
 import { extractThinking } from './extract-thinking';
 import { discoverOpencodeSessions, collectOpencodeSubagentText, closeOpencodeDb } from './opencode';
 import { readSessionLines, statSession } from './session-io';
+// The same cap the search projection uses. Aliased at the import so the name reads as the
+// primer's projection cap rather than being confused with extract-files.ts's own MAX_FILES
+// (50 — the bound on the indexed files_touched column, a different number for a different job).
+import { MAX_FILES as MAX_PRIMER_FILES } from './search-format';
 import { type RepoInfo, globPrefix, branchLabel } from './repo';
 import { isTrivia, blendedScore, type ScorableSession } from './significance';
 
@@ -1272,17 +1276,26 @@ export async function getContextPrimer(repo: RepoInfo, opts: ContextOptions): Pr
   const detailSet = new Set(recentRows);
   const headlineRows = rows.filter((r) => !detailSet.has(r)).slice(0, headlineCap);
 
-  const recent: ContextSession[] = recentRows.map((r) => ({
-    sessionId: r.session_id,
-    tool: r.tool as Tool,
-    branch: r.branch || branchLabel(r.cwd, repo.branches),
-    date: r.date,
-    messageCount: r.message_count,
-    intent: r.custom_title || r.first_prompt,
-    files: parseFiles(r.files_touched),
-    opening: r.first_prompt,
-    closing: { user: r.closing_user, assistant: r.closing_assistant },
-  }));
+  const recent: ContextSession[] = recentRows.map((r) => {
+    // One parse per row: files_touched is a JSON column and the detail tier holds up to
+    // `limit` rows, so parsing it twice (once to cap, once to count) doubles the work on
+    // the primer's hot path for nothing.
+    const files = parseFiles(r.files_touched);
+    return {
+      sessionId: r.session_id,
+      tool: r.tool as Tool,
+      branch: r.branch || branchLabel(r.cwd, repo.branches),
+      date: r.date,
+      messageCount: r.message_count,
+      intent: r.custom_title || r.first_prompt,
+      // Same cap as the search projection: 10 sessions × an unbounded file list was the
+      // primer's version of the search payload problem.
+      files: files.slice(0, MAX_PRIMER_FILES),
+      fileCount: files.length,
+      opening: r.first_prompt,
+      closing: { user: r.closing_user, assistant: r.closing_assistant },
+    };
+  });
 
   const headlines: ContextHeadline[] = headlineRows.map((r) => ({
     date: r.date,
