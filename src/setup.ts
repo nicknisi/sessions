@@ -260,6 +260,7 @@ export function runSetup(opts: SetupOptions = {}): void {
   w(`    ${C.cyan}/standup${C.reset}           Yesterday + today activity for standups\n`);
   w(`    ${C.cyan}/recall${C.reset}            What did I do on a specific project?\n`);
   w(`    ${C.cyan}/session-metrics${C.reset}   Usage dashboard with tool breakdown\n`);
+  w(`    ${C.cyan}/shards${C.reset}            Triage durable facts mined from past sessions\n`);
   w(`\n  ${C.dim}Run \`sessions setup\` again after upgrading to update skills.${C.reset}\n\n`);
 }
 
