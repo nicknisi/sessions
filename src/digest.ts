@@ -28,8 +28,10 @@ export const DIGEST_MAX_CHARS = 8000;
 export const USER_MAX = 200;
 export const ASSISTANT_MAX = 300;
 
-/** Collapse whitespace and truncate at a word boundary, marking cuts with an ellipsis. */
-function clip(text: string, max: number): string {
+/** Collapse whitespace and truncate at a word boundary, marking cuts with an ellipsis.
+ *  Exported so the MCP resource list caps its entry names with this rule rather than a
+ *  second, subtly different copy of it. */
+export function clip(text: string, max: number): string {
   const t = text.replace(/\s+/g, ' ').trim();
   if (t.length <= max) return t;
   const cut = t.slice(0, max - 1);

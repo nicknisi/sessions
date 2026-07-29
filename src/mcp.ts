@@ -1,13 +1,24 @@
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
-import { searchSessions, grepSessions, getActivityDigest, getSessionMetrics, getContextPrimer } from './cache';
+import { basename } from 'node:path';
+import {
+  searchSessions,
+  grepSessions,
+  getActivityDigest,
+  getSessionMetrics,
+  getContextPrimer,
+  recentSessionsForRepo,
+  resolveSessionFile,
+} from './cache';
 import { formatResult, buildResumeCommand } from './search-format';
 import { getSessionMessages } from './parser';
-import { buildSessionDigest } from './digest';
+import { buildSessionDigest, clip, renderDigestMarkdown } from './digest';
 import { resolveRepo } from './repo';
 import { readSessionLines } from './session-io';
 import { activeMemoryFor } from './memory/retrieve';
+import { PLUGIN_FILES } from './plugin-files';
 import { type ContextPrimer, type Tool } from './types';
 import { version } from '../package.json';
 import {
@@ -453,6 +464,288 @@ function registerTools(server: McpServer): void {
   );
 }
 
+// ——— resources ———
+
+/**
+ * Hard cap on `resources/list`. The index holds thousands of sessions across every repo on
+ * the machine; enumerating all of them costs ~157,000 tokens — worse than the payload
+ * defect this project exists to fix. Discovery is therefore repo-scoped and capped, while
+ * the `sessions://{sessionId}` template keeps every indexed session addressable at zero
+ * enumeration cost.
+ */
+export const MAX_LISTED_RESOURCES = 50;
+
+/** Cap on a list entry's display name. 50 untruncated intents would blow the list budget
+ *  while still passing a count-only assertion. */
+const MAX_RESOURCE_NAME = 60;
+
+/** One format for both surfaces: the template advertises it and every read returns it.
+ *  Markdown rather than JSON because a resource is text a client injects into a model's
+ *  context, not an API payload — `get_session_digest` already serves the structured form. */
+const SESSION_MIME = 'text/markdown';
+
+/** A `resources/list` entry. No `mimeType`: the SDK spreads the template's metadata onto
+ *  every entry it returns, so repeating it 50 times would buy nothing but tokens. */
+export interface SessionResourceEntry {
+  uri: string;
+  name: string;
+  description: string;
+}
+
+/**
+ * Exported, testable seam: `resources/list` takes no parameters, so its repo scope can only
+ * come from the server process cwd — and `plugin/.mcp.json` registers the server with no
+ * `cwd`, which makes that whatever directory the client happened to spawn in. Injecting
+ * `cwd` here makes that assumption explicit and lets a test pin it.
+ *
+ * `totalInRepo` is the untruncated count. It cannot ride the protocol: the SDK rebuilds the
+ * list result as `{ resources }` and drops every other top-level field, so the count is
+ * returned here for callers and folded into the first entry's description for clients — a
+ * truncated list must never be presented as complete.
+ */
+export async function listRepoSessions(args: { cwd?: string }): Promise<{
+  resources: SessionResourceEntry[];
+  totalInRepo: number;
+}> {
+  const repo = resolveRepo(args.cwd ?? process.cwd());
+  // Not a git repo: an empty list, never an error. Clients poll resources/list
+  // speculatively, and a throw here would break the picker on every turn.
+  if (!repo) return { resources: [], totalInRepo: 0 };
+
+  const { rows, totalCount } = await recentSessionsForRepo(repo, MAX_LISTED_RESOURCES);
+  // One entry carries the count rather than all 50: a per-entry `_meta` would repeat the
+  // same number 50 times and spend ~1,800 characters of the list's budget saying it once.
+  const note = totalCount > rows.length ? ` · showing ${rows.length} of ${totalCount} in this repo` : '';
+
+  const resources = rows.map((r, i) => ({
+    uri: `sessions://${r.session_id}`,
+    name: clip(r.custom_title || r.first_prompt || r.session_id, MAX_RESOURCE_NAME),
+    // `tool` lives here rather than in the URI: resolveSessionFile keys on the id alone, so
+    // a `{tool}` path segment would accept mismatched input without adding any reach.
+    description: `${r.tool} · ${r.date}${i === 0 ? note : ''}`,
+  }));
+
+  return { resources, totalInRepo: totalCount };
+}
+
+/**
+ * The one resource: any indexed session, addressed by id.
+ *
+ * Extracted alongside registerTools for the same reason — `resources/list`, `read`, and the
+ * template advertisement have no `run*` seam that exercises the protocol, so the only test
+ * that covers them drives a client over an in-memory transport.
+ */
+function registerResources(server: McpServer): void {
+  server.registerResource(
+    'session',
+    new ResourceTemplate('sessions://{sessionId}', {
+      // The only hook that can populate resources/list — registerResource has no list
+      // callback of its own. Bounded and repo-scoped via listRepoSessions, so enumeration
+      // costs ~1,500 tokens instead of the ~157,000 the whole index would.
+      list: async () => ({ resources: (await listRepoSessions({})).resources }),
+    }),
+    {
+      // No `title`. The SDK spreads this metadata onto every resources/list entry
+      // (mcp.js:359-363), and a template title is by definition the same string for all of
+      // them — 50 rows displaying one identical title, for ~1,400 characters of the
+      // enumeration budget. With it absent, clients fall back to each entry's own `name`,
+      // which is that session's intent. `description` and `mimeType` are safe to spread:
+      // both are true of every entry, and entries override `description` with their own.
+      description: 'A past Claude Code, Codex, Pi, or OpenCode session transcript digest.',
+      mimeType: SESSION_MIME,
+    },
+    async (uri, { sessionId }) => {
+      // UriTemplate hands variables back as string | string[]; a single-variable template
+      // only ever yields the former, but the type admits both.
+      const id = Array.isArray(sessionId) ? (sessionId[0] ?? '') : String(sessionId ?? '');
+      const filePath = await resolveSessionFile(id);
+      if (!filePath) {
+        // Resources throw where tools return isError: the SDK converts this into a JSON-RPC
+        // error that rejects the client's readResource call. InvalidParams (-32602) rather
+        // than the 2026-07-28 resource-not-found renumber — we serve 2025-11-25.
+        throw new McpError(ErrorCode.InvalidParams, `Unknown session: ${id}`);
+      }
+
+      const label = basename(filePath);
+      const lines = readSessionLines(filePath);
+      if (lines.length === 0) {
+        // Indexed but unreadable now (moved, truncated, permissions). A note is the truthful
+        // answer; throwing would tell the client the id was wrong, and it was not.
+        return {
+          contents: [
+            {
+              uri: uri.href,
+              mimeType: SESSION_MIME,
+              text: `# Session digest: ${label}\n\n_Indexed at ${filePath}, but its transcript could not be read._\n`,
+            },
+          ],
+        };
+      }
+
+      // The bounded ~2k-token projection, never the raw transcript: a single read must not
+      // be able to flood the context this project is about protecting.
+      return {
+        contents: [
+          { uri: uri.href, mimeType: SESSION_MIME, text: renderDigestMarkdown(buildSessionDigest(lines), label) },
+        ],
+      };
+    },
+  );
+}
+
+// ——— prompts ———
+
+/**
+ * The four workflows Claude Code gets as skills, ported to every MCP client. Codex, Pi, and
+ * OpenCode contribute session history they currently cannot interrogate through them.
+ *
+ * PLUGIN_FILES is the single source of truth: these bodies live at plugin/skills/*\/SKILL.md
+ * and are embedded by scripts/generate-plugin-embed.ts, so a hand-copied string here would
+ * drift the first time a skill is edited, with nothing to detect it.
+ */
+const PROMPT_SKILLS = {
+  standup: 'skills/standup/SKILL.md',
+  'weekly-summary': 'skills/weekly-summary/SKILL.md',
+  context: 'skills/context/SKILL.md',
+  recall: 'skills/recall/SKILL.md',
+} as const;
+
+type PromptName = keyof typeof PROMPT_SKILLS;
+
+/**
+ * Split a leading `---`-delimited YAML frontmatter block off a skill body. Returns the whole
+ * input as `body` when there is none, so a skill that loses its frontmatter still serves.
+ */
+function splitFrontmatter(raw: string): { frontmatter: string; body: string } {
+  if (!raw.startsWith('---\n')) return { frontmatter: '', body: raw };
+  // Search from 3 so an empty block (`---\n---\n`) still terminates.
+  const end = raw.indexOf('\n---\n', 3);
+  if (end === -1) return { frontmatter: '', body: raw };
+  return { frontmatter: raw.slice(4, end + 1), body: raw.slice(end + 5) };
+}
+
+/** The skill's own `description`, lifted out of its frontmatter — a prompt carries it in its
+ *  own field, and leaving it in the body would open every message with YAML noise. */
+function frontmatterDescription(frontmatter: string): string {
+  try {
+    const parsed = Bun.YAML.parse(frontmatter);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const description = (parsed as Record<string, unknown>).description;
+      // Folded scalars (`description: >-`) arrive with hard newlines; a prompt description
+      // is a single sentence in a picker.
+      if (typeof description === 'string') return description.replace(/\s+/g, ' ').trim();
+    }
+  } catch {
+    // A malformed block is not worth refusing to serve the prompt over — the body is what
+    // matters, and the description falls back to the registration-site sentence.
+  }
+  return '';
+}
+
+/**
+ * Read one skill out of the generated embed, frontmatter removed.
+ *
+ * Throws on a missing key. Every caller runs inside createServer(), so a renamed skill fails
+ * the server's first start loudly instead of registering a prompt that returns nothing.
+ */
+function skillPrompt(name: PromptName): { body: string; description: string } {
+  const path = PROMPT_SKILLS[name];
+  const raw = PLUGIN_FILES[path];
+  if (!raw) {
+    throw new Error(`MCP prompt "${name}": missing ${path} in PLUGIN_FILES — run \`bun run generate-plugin-embed\`.`);
+  }
+  const { frontmatter, body } = splitFrontmatter(raw);
+  return { body, description: frontmatterDescription(frontmatter) };
+}
+
+/**
+ * One user message: the skill body, plus the caller's arguments as an explicit trailing
+ * instruction. The bodies are written for Claude Code, where a skill's argument arrives as
+ * trailing user text — this is the same shape over MCP.
+ */
+function promptResult(
+  body: string,
+  note: string,
+): {
+  messages: { role: 'user'; content: { type: 'text'; text: string } }[];
+} {
+  const text = note ? `${body.trimEnd()}\n\n${note}\n` : body;
+  return { messages: [{ role: 'user' as const, content: { type: 'text' as const, text } }] };
+}
+
+/**
+ * The four prompts. Registered explicitly rather than in a loop over PROMPT_SKILLS: each has
+ * its own argument schema, and a loop erases the type link between that schema and its
+ * handler's `args`. What has to stay single-sourced — the bodies — still comes from the embed.
+ *
+ * Every argument is a `z.string()`: prompts/get params are `Record<string, string>` on the
+ * wire, and a non-string is rejected by the request schema before argsSchema ever runs.
+ */
+function registerPrompts(server: McpServer): void {
+  const standup = skillPrompt('standup');
+  server.registerPrompt(
+    'standup',
+    {
+      title: 'Standup summary',
+      description: standup.description || "Yesterday and today's AI coding sessions as a standup.",
+    },
+    () => promptResult(standup.body, ''),
+  );
+
+  const weekly = skillPrompt('weekly-summary');
+  server.registerPrompt(
+    'weekly-summary',
+    {
+      title: 'Weekly summary',
+      description: weekly.description || 'A structured summary of the past week of AI coding sessions.',
+      argsSchema: {
+        weeksAgo: z
+          .string()
+          .optional()
+          .describe('How many weeks back to summarize, as a number. Omit for the week ending today.'),
+      },
+    },
+    ({ weeksAgo }) => {
+      const n = Number(weeksAgo);
+      // Coerced here, not in the schema: a z.number() argument is unusable over a protocol
+      // that only carries strings. A non-numeric value falls back to the body's default
+      // window rather than emitting a nonsense instruction.
+      const note =
+        weeksAgo !== undefined && Number.isFinite(n) && n > 0
+          ? `Cover the 7-day window ending ${n} week(s) before today rather than the current week.`
+          : '';
+      return promptResult(weekly.body, note);
+    },
+  );
+
+  const context = skillPrompt('context');
+  server.registerPrompt(
+    'context',
+    {
+      title: 'Repo context primer',
+      description: context.description || 'Prior decisions, dead ends, and the open thread for this repo.',
+      argsSchema: {
+        cwd: z.string().optional().describe('Repo path to scope to. Omit to use the server process cwd.'),
+      },
+    },
+    ({ cwd }) => promptResult(context.body, cwd ? `Scope the primer to the repo at \`${cwd}\`.` : ''),
+  );
+
+  const recall = skillPrompt('recall');
+  server.registerPrompt(
+    'recall',
+    {
+      title: 'Recall past work',
+      description: recall.description || 'What past sessions did on a specific project or topic.',
+      argsSchema: {
+        // Required, and non-empty: recall with nothing to recall is a search over everything.
+        topic: z.string().min(1).describe('The project, file, feature, or topic to recall past work on.'),
+      },
+    },
+    ({ topic }) => promptResult(recall.body, `Topic to recall: ${topic}`),
+  );
+}
+
 /**
  * A factory, not an exported singleton: each caller (every test included) gets a fresh
  * server, because a shared instance would be connect()-ed more than once.
@@ -460,6 +753,10 @@ function registerTools(server: McpServer): void {
 export function createServer(): McpServer {
   const server = new McpServer({ name: 'sessions', version }, { instructions: INSTRUCTIONS });
   registerTools(server);
+  // Both registrations must happen here: each one calls registerCapabilities under the hood,
+  // which throws once the server is connected. There is no lazy registration path.
+  registerResources(server);
+  registerPrompts(server);
   return server;
 }
 
