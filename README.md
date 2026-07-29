@@ -178,7 +178,7 @@ For Claude Code sessions, the command includes `--resume <session-id>`; for Open
 
 ### MCP tools
 
-The MCP server exposes seven tools:
+The MCP server exposes eight tools:
 
 | Tool                   | Description                                                                                                                                                                                                                                                                               |
 | ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -189,6 +189,7 @@ The MCP server exposes seven tools:
 | `get_activity_digest`  | Compact digest of sessions in a date range, grouped by day and project — for weekly summaries                                                                                                                                                                                             |
 | `get_session_metrics`  | Usage metrics for a date range: tool/project breakdown, daily activity, active hours                                                                                                                                                                                                      |
 | `get_context_primer`   | Repo-scoped primer (recent sessions in detail + older headlines) for re-injecting prior work                                                                                                                                                                                              |
+| `get_shards`           | Approved standing instructions and durable facts for this repo, plus cross-repo workflow rules — a bounded set of short sentences to read before starting a task                                                                                                                          |
 
 Together these support the recall flow the bundled skills teach: `search_sessions` (ranked) or `grep_sessions` (exhaustive) localizes the hit to a message, the digest gives a session's whole arc in one call, and targeted message reads expand only the exchanges that matter — no paging full transcripts.
 
