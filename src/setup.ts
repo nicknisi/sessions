@@ -4,10 +4,30 @@ import { homedir } from 'node:os';
 import { C } from './colors';
 import { PLUGIN_FILES } from './plugin-files';
 import { enableSessionHook, disableSessionHook } from './hooks';
+import { getDataDir } from './paths';
 
 const home = homedir();
-const SESSIONS_DIR = join(home, '.local', 'share', 'sessions');
-const PLUGIN_DEST = join(SESSIONS_DIR, 'plugin');
+/** The sessions data dir. Single source of truth is getDataDir() — the shard store
+ *  lives in the same directory, and the two must never disagree about where it is. */
+function sessionsDir(): string {
+  return getDataDir();
+}
+function pluginDest(): string {
+  return join(sessionsDir(), 'plugin');
+}
+/**
+ * The only paths the installer creates inside the data dir. Uninstall removes
+ * exactly these — NOT the directory itself.
+ *
+ * The data dir also holds shards.db, whose approve/reject/snooze rows are human
+ * judgments no re-mine can reconstruct. `sessions cleanup` routes through
+ * runUninstall() (index.ts:28-34), so an `rm -rf` of the whole directory would
+ * silently destroy every triage decision the user ever made — the same disposability
+ * assumption that is correct for index.db and wrong here.
+ */
+function ownedInstallPaths(): string[] {
+  return [pluginDest(), join(sessionsDir(), '.claude-plugin')];
+}
 const PLUGIN_VERSION = '1.15.3'; // x-release-please-version
 const MARKETPLACE_NAME = 'sessions';
 const PLUGIN_NAME = 'sessions';
@@ -52,8 +72,8 @@ function findPluginSource(): string {
 
 function installPluginFromDisk(source: string): boolean {
   try {
-    mkdirSync(dirname(PLUGIN_DEST), { recursive: true });
-    cpSync(source, PLUGIN_DEST, { recursive: true, force: true });
+    mkdirSync(dirname(pluginDest()), { recursive: true });
+    cpSync(source, pluginDest(), { recursive: true, force: true });
     return true;
   } catch {
     return false;
@@ -62,9 +82,9 @@ function installPluginFromDisk(source: string): boolean {
 
 function installPluginFromEmbed(): boolean {
   try {
-    mkdirSync(dirname(PLUGIN_DEST), { recursive: true });
+    mkdirSync(dirname(pluginDest()), { recursive: true });
     for (const [relPath, content] of Object.entries(PLUGIN_FILES)) {
-      const dest = join(PLUGIN_DEST, relPath);
+      const dest = join(pluginDest(), relPath);
       mkdirSync(dirname(dest), { recursive: true });
       writeFileSync(dest, content);
     }
@@ -87,7 +107,7 @@ function writeMarketplaceJson(): void {
       },
     ],
   };
-  const dir = join(SESSIONS_DIR, '.claude-plugin');
+  const dir = join(sessionsDir(), '.claude-plugin');
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, 'marketplace.json'), JSON.stringify(marketplace, null, 2) + '\n');
 }
@@ -144,7 +164,7 @@ function runClaude(...args: string[]): boolean {
 }
 
 function registerClaudePlugin(): { marketplace: boolean; install: boolean } {
-  const marketplace = runClaude('marketplace', 'add', SESSIONS_DIR);
+  const marketplace = runClaude('marketplace', 'add', sessionsDir());
   const install = runClaude('install', `${PLUGIN_NAME}@${MARKETPLACE_NAME}`);
   return { marketplace, install };
 }
@@ -186,9 +206,9 @@ export function runSetup(opts: SetupOptions = {}): void {
   w(`\n${C.bold}sessions setup${C.reset}\n\n`);
 
   if (installPlugin()) {
-    w(`  ${C.green}✓${C.reset} Plugin installed to ${C.dim}${PLUGIN_DEST}${C.reset}\n`);
+    w(`  ${C.green}✓${C.reset} Plugin installed to ${C.dim}${pluginDest()}${C.reset}\n`);
   } else {
-    w(`  ${C.red}✗${C.reset} Failed to install plugin to ${PLUGIN_DEST}\n`);
+    w(`  ${C.red}✗${C.reset} Failed to install plugin to ${pluginDest()}\n`);
     process.exit(1);
   }
 
@@ -272,10 +292,29 @@ export function runUninstall(): void {
     }
   }
 
-  try {
-    require('node:fs').rmSync(SESSIONS_DIR, { recursive: true, force: true });
-    w(`  ${C.green}✓${C.reset} Removed ${C.dim}${SESSIONS_DIR}${C.reset}\n`);
-  } catch {}
+  for (const path of removeInstalledFiles()) {
+    w(`  ${C.green}✓${C.reset} Removed ${C.dim}${path}${C.reset}\n`);
+  }
 
   w(`\n  ${C.dim}Done. Plugin and MCP config removed.${C.reset}\n\n`);
+}
+
+/**
+ * Delete the installer-owned subtrees of the data dir and return what was removed.
+ *
+ * Exported as the seam durability tests exercise: the rest of runUninstall talks to
+ * the real ~/.claude config and shells out to `claude plugins uninstall`, so no test
+ * may call it — but this is the only part that touches the data dir, and it must be
+ * provably scoped to the two directories the installer created.
+ */
+export function removeInstalledFiles(): string[] {
+  const removed: string[] = [];
+  for (const path of ownedInstallPaths()) {
+    if (!existsSync(path)) continue;
+    try {
+      require('node:fs').rmSync(path, { recursive: true, force: true });
+      removed.push(path);
+    } catch {}
+  }
+  return removed;
 }

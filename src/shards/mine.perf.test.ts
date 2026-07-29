@@ -1,0 +1,68 @@
+import { describe, test, expect, beforeAll, beforeEach, afterAll } from 'bun:test';
+import { rmSync } from 'node:fs';
+import { refreshIndex } from '../cache';
+import { mine } from './mine';
+import { closeDatabases, makeTmp, setShardEnv, userTurn, writeSession } from './fixtures';
+
+// The budget measures MINE time against an already-refreshed index. A first mine
+// after --clear-cache pays for reindexing thousands of transcripts, which is a
+// documented cold-start cost of the index, not of the mine.
+//
+// Wall clock alone is a weak assertion on a loaded laptop, so the real guard against
+// the "859 subprocess spawns" failure mode is the memoization test in scope.test.ts,
+// which counts resolver calls instead of milliseconds. This one catches the coarse
+// regression: a mine that went quadratic or lost its single-query shape.
+const BUDGET_MS = 5_000;
+const SESSIONS = 120;
+const TURNS_PER_SESSION = 8;
+const CWDS = ['/perf/one', '/perf/two', '/perf/three', '/perf/four', '/perf/five'];
+
+let tmp: string;
+
+function setPerfEnv(): void {
+  setShardEnv(tmp);
+  // Keep ensureIndexFresh from rescanning between measurements: the fixture never
+  // changes after beforeAll, so a rescan would only add noise to the timing.
+  process.env.SESSIONS_REFRESH_INTERVAL_MS = '600000';
+}
+
+beforeAll(async () => {
+  tmp = makeTmp('shards-perf');
+  setPerfEnv();
+
+  for (let s = 0; s < SESSIONS; s++) {
+    const turns = Array.from({ length: TURNS_PER_SESSION }, (_, t) =>
+      userTurn(
+        `Always run the ${s}-${t} checks before you push that branch upstream`,
+        `2026-06-01T10:${String(t).padStart(2, '0')}:00Z`,
+      ),
+    );
+    writeSession(tmp, `perf-${s}`, CWDS[s % CWDS.length]!, turns);
+  }
+
+  closeDatabases();
+  await refreshIndex(); // pay the indexing cost outside the measured window
+});
+
+beforeEach(() => {
+  // Deliberately no closeDatabases() here: closing resets the refresh clock and the
+  // next mine would reindex the whole fixture inside the measured window.
+  setPerfEnv();
+});
+
+afterAll(() => {
+  closeDatabases();
+  delete process.env.SESSIONS_REFRESH_INTERVAL_MS;
+  rmSync(tmp, { recursive: true, force: true });
+});
+
+describe('mine performance', () => {
+  test(`mines a ${SESSIONS}-session fixture in under ${BUDGET_MS}ms`, async () => {
+    const started = Bun.nanoseconds();
+    const records = await mine({});
+    const elapsedMs = (Bun.nanoseconds() - started) / 1_000_000;
+
+    expect(records.length).toBe(SESSIONS * TURNS_PER_SESSION);
+    expect(elapsedMs).toBeLessThan(BUDGET_MS);
+  });
+});

@@ -90,6 +90,12 @@ if (command === 'digest') {
   process.exit(0);
 }
 
+if (command === 'shards') {
+  const { runShards } = await import('./src/shards/cli.ts');
+  await runShards(Bun.argv.slice(3));
+  process.exit(0);
+}
+
 const args = parseArgs(Bun.argv.slice(2));
 const repoRoot = getRepoRoot(args.scopeHere);
 

@@ -42,6 +42,10 @@ ${C.bold}Commands:${C.reset}
   wrapped          Your year with AI agents, Spotify-Wrapped style (opens in
                    browser). --year <YYYY> wraps a past year; --out/--stdout,
                    --tool, --extras <json> add agent-authored slides
+  shards mine      Mine past sessions for durable facts worth remembering and
+                   print the candidate batch as JSON. --repo <path> scopes to one
+                   repo container (default: the current repo); --all mines every
+                   repo in the index
   setup            Install plugin and configure MCP for detected tools
                    --hooks opts in to SessionStart auto-injection (off by
                    default); without it, an interactive prompt asks when on a TTY

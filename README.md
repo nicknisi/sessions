@@ -86,7 +86,7 @@ sessions setup
 
 After upgrading sessions (e.g., `brew upgrade sessions`), run `sessions setup` again to update the skills to the latest version.
 
-To remove everything: `sessions uninstall`
+To remove the plugin, the MCP config, and the SessionStart hook: `sessions uninstall`. It removes only what the installer created — durable data in `~/.local/share/sessions` (shard triage decisions) is left alone.
 
 ## CLI: search & resume
 
@@ -100,26 +100,28 @@ sessions --file src/auth.ts  # Only sessions that touched this file
 sessions context             # Print a context primer for the current repo
 sessions digest <session>    # Print one session's arc as compact markdown
 sessions report              # Usage report (HTML dashboard, opens in browser)
+sessions shards mine         # Mine past sessions for durable facts (JSON on stdout)
 ```
 
 ### Options
 
-| Flag / Command     | Description                                                                                                                                                          |
-| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `context`          | Print a markdown context primer for the current repo (see [Context primer](#context-primer))                                                                         |
-| `digest <session>` | Print one session's arc as compact markdown (~8k chars): each genuine user turn with its exchange's final assistant reply. Accepts a JSONL file path or a session id |
-| `report`           | Generate a usage report (see [Usage reports](#usage-reports))                                                                                                        |
-| `setup`            | Install plugin and configure MCP for detected tools (`--hooks` opts into auto-injection)                                                                             |
-| `uninstall`        | Remove plugin, MCP config, and the SessionStart hook from all tools                                                                                                  |
-| `cleanup`          | Full reset: uninstall plugin + clear search index                                                                                                                    |
-| `--here`           | Scope to the current git repo (default: all projects)                                                                                                                |
-| `--tool <name>`    | Filter by tool: `claude`, `codex`, `pi`, or `opencode`                                                                                                               |
-| `--errored`        | Only show sessions that hit an error                                                                                                                                 |
-| `--file <path>`    | Only sessions that touched or read this path (substring match; repeatable — every path must match). Newest first when no query is given                              |
-| `--mcp`            | Start as an MCP server (stdio transport)                                                                                                                             |
-| `--clear-cache`    | Remove the search index (rebuilds on next use)                                                                                                                       |
-| `--no-color`       | Disable colored output                                                                                                                                               |
-| `-h`, `--help`     | Show help                                                                                                                                                            |
+| Flag / Command     | Description                                                                                                                                                                                      |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `context`          | Print a markdown context primer for the current repo (see [Context primer](#context-primer))                                                                                                     |
+| `digest <session>` | Print one session's arc as compact markdown (~8k chars): each genuine user turn with its exchange's final assistant reply. Accepts a JSONL file path or a session id                             |
+| `report`           | Generate a usage report (see [Usage reports](#usage-reports))                                                                                                                                    |
+| `shards mine`      | Mine past sessions for durable facts worth remembering and print the candidate batch as JSON. `--repo <path>` scopes to one repo container (default: the current repo); `--all` mines every repo |
+| `setup`            | Install plugin and configure MCP for detected tools (`--hooks` opts into auto-injection)                                                                                                         |
+| `uninstall`        | Remove plugin, MCP config, and the SessionStart hook from all tools. Triage decisions in `~/.local/share/sessions` are preserved                                                                 |
+| `cleanup`          | Full reset: uninstall plugin + clear search index                                                                                                                                                |
+| `--here`           | Scope to the current git repo (default: all projects)                                                                                                                                            |
+| `--tool <name>`    | Filter by tool: `claude`, `codex`, `pi`, or `opencode`                                                                                                                                           |
+| `--errored`        | Only show sessions that hit an error                                                                                                                                                             |
+| `--file <path>`    | Only sessions that touched or read this path (substring match; repeatable — every path must match). Newest first when no query is given                                                          |
+| `--mcp`            | Start as an MCP server (stdio transport)                                                                                                                                                         |
+| `--clear-cache`    | Remove the search index (rebuilds on next use)                                                                                                                                                   |
+| `--no-color`       | Disable colored output                                                                                                                                                                           |
+| `-h`, `--help`     | Show help                                                                                                                                                                                        |
 
 ### Browsing
 
