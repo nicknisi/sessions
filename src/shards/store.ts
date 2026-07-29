@@ -42,19 +42,45 @@ function migrate(db: Database): void {
       evidence      TEXT NOT NULL,
       state         TEXT NOT NULL,
       snoozed_until TEXT,
+      always_on     INTEGER NOT NULL DEFAULT 0,
       created_at    TEXT NOT NULL,
       updated_at    TEXT NOT NULL
     )
   `);
+
+  // Phase 5's additive column, for a table that already exists.
+  //
+  // The guard is `PRAGMA table_info`, NOT the `user_version` gate below, and that is
+  // load-bearing rather than belt-and-braces. Every store written by Phase 1 already
+  // reports user_version = 1, so an ALTER placed inside `if (current < VERSION)` would
+  // run on fresh databases only — and every listShards() against an existing store
+  // would then fail with `no such column: always_on`. Asking the table what columns it
+  // has is the only question whose answer does not depend on a version number that was
+  // stamped before the column existed. It also makes repeat opens (and
+  // src/shards/durability.test.ts's user_version = 0 reopen, which runs against a table
+  // that ALREADY has the column) a no-op instead of `duplicate column name`.
+  //
+  // SHARD_SCHEMA_VERSION deliberately stays 1: it is stamped into every record
+  // (src/shards/record.ts:101) and is a z.literal in the wire schema
+  // (src/shards/portable.ts:120,134), so bumping it would make every Phase 4 bundle
+  // unimportable in exchange for nothing — the column is additive with a default, so
+  // old and new rows read identically.
+  const columns = db.query<{ name: string }, []>('PRAGMA table_info(shards)').all();
+  if (!columns.some((c) => c.name === 'always_on')) {
+    db.run('ALTER TABLE shards ADD COLUMN always_on INTEGER NOT NULL DEFAULT 0');
+  }
+
   db.run('CREATE INDEX IF NOT EXISTS idx_shards_state ON shards(state)');
   db.run('CREATE INDEX IF NOT EXISTS idx_shards_scope ON shards(scope_type, scope_key)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_shards_always_on ON shards(always_on)');
 
   const row = db.query<{ user_version: number }, []>('PRAGMA user_version').get();
   const current = row?.user_version ?? 0;
   if (current < SHARD_SCHEMA_VERSION) {
-    // No column-adding migrations exist yet (v0 -> v1 is "the table did not exist",
-    // which CREATE TABLE IF NOT EXISTS above already handled). Future bumps add
-    // their ALTER TABLE steps here, guarded on `current`.
+    // v0 -> v1 is "the table did not exist", which CREATE TABLE IF NOT EXISTS above
+    // already handled. Future bumps add their ALTER TABLE steps here, guarded on
+    // `current` — but prefer the table_info shape above for a plain column add, for
+    // the reason spelled out there.
     db.run(`PRAGMA user_version = ${SHARD_SCHEMA_VERSION}`);
   }
 }
@@ -96,6 +122,7 @@ interface ShardRow {
   evidence: string;
   state: string;
   snoozed_until: string | null;
+  always_on: number;
 }
 
 const EMPTY_EVIDENCE: ShardEvidence = { distinctPhrasings: 0, sessions: [], firstSeen: '', lastSeen: '' };
@@ -119,23 +146,33 @@ function rowToRecord(row: ShardRow): ShardRecord {
     evidence,
     state: row.state as ShardState,
     snoozedUntil: row.snoozed_until,
+    // `=== 1`, never a bare truthy cast: SQLite hands back a number, and leaking a
+    // number into a `boolean` field would serialize as 0/1 and break the byte-identical
+    // JSON comparisons the determinism criterion rests on.
+    alwaysOn: row.always_on === 1,
   };
 }
 
 /**
  * Insert new candidates and refresh the evidence of ones already stored.
  *
- * `state` and `snoozed_until` are deliberately absent from the ON CONFLICT update:
- * a re-mine sees the same corrective turns forever, so overwriting state would
- * resurrect every rejected candidate and the user would re-triage it on every run.
+ * `state`, `snoozed_until`, and `always_on` are deliberately absent from the ON CONFLICT
+ * update, and so are the two scope columns: a re-mine sees the same corrective turns
+ * forever, so overwriting state would resurrect every rejected candidate and the user
+ * would re-triage it on every run. `always_on` is the same hazard one level worse —
+ * `buildRecord` defaults it to false (src/shards/record.ts:110), so including it here
+ * would silently clear a standing constraint on the next `shards mine`, which is
+ * exactly the invisible-suppression failure the flag exists to prevent. Scope columns
+ * are excluded for the third variant: `deriveScope` only ever produces repo/workflow,
+ * so a triage-assigned `group` scope would be reverted by the next mine.
  */
 export function upsertCandidates(records: ShardRecord[]): void {
   if (records.length === 0) return;
   const db = getShardsDb();
   const now = new Date().toISOString();
   const stmt = db.query(`
-    INSERT INTO shards (id, v, text, kind, scope_type, scope_key, author, evidence, state, snoozed_until, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO shards (id, v, text, kind, scope_type, scope_key, author, evidence, state, snoozed_until, always_on, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET evidence = excluded.evidence, updated_at = excluded.updated_at
   `);
   db.exec('BEGIN IMMEDIATE');
@@ -152,6 +189,7 @@ export function upsertCandidates(records: ShardRecord[]): void {
         JSON.stringify(r.evidence),
         r.state,
         r.snoozedUntil,
+        r.alwaysOn ? 1 : 0,
         now,
         now,
       );
@@ -186,7 +224,9 @@ export function listShards(filter: ShardFilter = {}): ShardRecord[] {
   const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
   const rows = db
     .query<ShardRow, any[]>(
-      `SELECT id, v, text, kind, scope_type, scope_key, author, evidence, state, snoozed_until
+      // Explicit column list, not SELECT * — a column forgotten here arrives as
+      // `undefined` at runtime and typecheck says nothing.
+      `SELECT id, v, text, kind, scope_type, scope_key, author, evidence, state, snoozed_until, always_on
        FROM shards ${where} ORDER BY id`,
     )
     .all(...params);
@@ -232,6 +272,42 @@ export function setState(id: string, state: ShardState, snoozedUntil: string | n
   db.run('UPDATE shards SET state = ?, snoozed_until = ?, updated_at = ? WHERE id = ?', [
     state,
     snoozedUntil,
+    new Date().toISOString(),
+    id,
+  ]);
+}
+
+/**
+ * Mark a shard as bypassing topic matching.
+ *
+ * A sibling of `setState` rather than a parameter on it, because the two are
+ * independent axes: `--always-on` on a re-approval must not have to restate the state,
+ * and a state change must not be able to clear the flag by omission. Same bare-UPDATE
+ * caveat — the caller checks `isKnownShard` first (src/shards/cli.ts).
+ */
+export function setAlwaysOn(id: string, alwaysOn: boolean): void {
+  const db = getShardsDb();
+  db.run('UPDATE shards SET always_on = ?, updated_at = ? WHERE id = ?', [
+    alwaysOn ? 1 : 0,
+    new Date().toISOString(),
+    id,
+  ]);
+}
+
+/**
+ * Overwrite a shard's scope. The one write that contradicts a derived value.
+ *
+ * Phase 1 derives repo-vs-workflow from how far a paraphrase cluster spread, and that
+ * derivation is correct for the two tiers it can see. It cannot see a group: "these
+ * four repos share a convention" is not a fact about spread, so a human assigns it at
+ * triage and this is where that assignment lands. `upsertCandidates` deliberately does
+ * not touch the scope columns, so the next `shards mine` leaves it alone.
+ */
+export function setScope(id: string, scope: ShardScope): void {
+  const db = getShardsDb();
+  db.run('UPDATE shards SET scope_type = ?, scope_key = ?, updated_at = ? WHERE id = ?', [
+    scope.type,
+    scope.key,
     new Date().toISOString(),
     id,
   ]);

@@ -90,6 +90,30 @@ describe('toPortable', () => {
     expect(json).not.toContain('2026-03-15');
   });
 
+  test('carries no alwaysOn — bypassing your matcher is a claim on your attention alone', () => {
+    const json = JSON.stringify(toPortable([{ ...APPROVED, alwaysOn: true }], '2026-06-01'));
+    expect(json).not.toContain('alwaysOn');
+  });
+
+  test('preserves a GROUP scope key, which is a name rather than a path', () => {
+    // Blanking it would strip the only thing distinguishing one group from another and
+    // land the shard permanently inert. It discloses no directory layout, so the reason
+    // the repo key is blanked does not apply.
+    const grouped = record(APPROVED_TEXT, { state: 'approved', scope: { type: 'group', key: 'authkit' } });
+    const bundle = toPortable([grouped], '2026-06-01');
+    expect(bundle.shards[0]!.scope).toEqual({ type: 'group', key: 'authkit' });
+  });
+
+  test('a group-scoped bundle round-trips through its own reader', () => {
+    // Widening ShardScope['type'] does NOT widen the zod enum, and typecheck flags
+    // nothing — leaving 'group' out of the schema produces an export fromPortable
+    // rejects with `scope.type: invalid`.
+    const grouped = record(APPROVED_TEXT, { state: 'approved', scope: { type: 'group', key: 'authkit' } });
+    const bundle = toPortable([grouped], '2026-06-01');
+    const parsed = fromPortable(JSON.parse(JSON.stringify(bundle)));
+    expect(parsed[0]!.scope).toEqual({ type: 'group', key: 'authkit' });
+  });
+
   test('wraps an empty set in a well-formed envelope, not null or a bare array', () => {
     expect(toPortable([], '2026-06-01')).toEqual({ v: SHARD_SCHEMA_VERSION, exportedAt: '2026-06-01', shards: [] });
   });
@@ -245,6 +269,19 @@ describe('merge', () => {
       portable(SHARED, { author: 'bob@example.com', scope: { type: 'repo', key: '/a' } }),
     ]);
     expect(merged[0]!.scope).toEqual({ type: 'repo', key: '/a' });
+  });
+
+  test('keeps a group two contributors named identically, and widens two who did not', () => {
+    const agreed = merge([
+      portable(SHARED, { author: 'ann@example.com', scope: { type: 'group', key: 'authkit' } }),
+      portable(SHARED, { author: 'bob@example.com', scope: { type: 'group', key: 'authkit' } }),
+    ]);
+    expect(agreed[0]!.scope).toEqual({ type: 'group', key: 'authkit' });
+    const disagreed = merge([
+      portable(SHARED, { author: 'ann@example.com', scope: { type: 'group', key: 'authkit' } }),
+      portable(SHARED, { author: 'bob@example.com', scope: { type: 'group', key: 'billing' } }),
+    ]);
+    expect(disagreed[0]!.scope).toEqual({ type: 'workflow', key: '' });
   });
 
   test('unions the date range across contributors', () => {

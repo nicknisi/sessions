@@ -48,7 +48,10 @@ ${C.bold}Commands:${C.reset}
                    repo in the index
   shards approve   Record a triage decision for one candidate, by id from the
   shards reject    mine's batch. Rejected candidates stop being emitted; snoozed
-  shards snooze    ones return after 30 days only if new phrasings appeared
+  shards snooze    ones return after 30 days only if new phrasings appeared.
+                   approve takes --always-on (return this shard for every topic,
+                   and first) and --scope group:<name> (assign a project group
+                   from ~/.local/share/sessions/groups.json)
   shards export    Write approved shards as a portable bundle on stdout (--out
                    <path> writes a file instead). Carries no local paths and no
                    triage state; there is no transport, the file is the seam

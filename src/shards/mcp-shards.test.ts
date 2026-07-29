@@ -235,6 +235,27 @@ describe('runGetShards', () => {
     expect(first.content[0]!.text).toBe(second.content[0]!.text);
   });
 
+  test('a topic narrows the projection without changing its shape', async () => {
+    const res = await mcp.runGetShards({ cwd: '/repos/app', topic: 'run the migrations' });
+    const parsed = JSON.parse(res.content[0]!.text) as { text: string; kind: string; scope: string }[];
+    expect(parsed.map((p) => p.text)).toEqual([A_APPROVED.text]);
+    // No `score` and no `alwaysOn`: a relevance number invites the agent to
+    // second-guess the filter, and standing-constraint status is carried by ordering.
+    for (const entry of parsed) expect(Object.keys(entry).sort()).toEqual(['kind', 'scope', 'text']);
+  });
+
+  test('an omitted topic returns exactly what Phase 3 returned', async () => {
+    const bare = await mcp.runGetShards({ cwd: '/repos/app' });
+    const blank = await mcp.runGetShards({ cwd: '/repos/app', topic: '' });
+    expect(blank.content[0]!.text).toBe(bare.content[0]!.text);
+  });
+
+  test('a topic that matches nothing says so, rather than reusing the empty-store sentence', async () => {
+    const res = await mcp.runGetShards({ cwd: '/repos/app', topic: 'kubernetes helm chart rollout' });
+    expect(res.content[0]!.text).toContain('No shards matched this topic');
+    expect(res.content[0]!.text).not.toBe('No shards for this repo.');
+  });
+
   test('an omitted cwd falls back to process.cwd()', async () => {
     // The MCP server runs in the client's working directory, so the default is
     // usually right; the explicit argument is the monorepo escape hatch.

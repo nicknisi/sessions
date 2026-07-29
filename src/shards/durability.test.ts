@@ -114,6 +114,38 @@ describe('store schema handling', () => {
       SHARD_SCHEMA_VERSION,
     );
   });
+
+  test('a pre-always_on store gains the column without losing a row', () => {
+    // The real upgrade path. A Phase 1 store already reports user_version = 1, so a
+    // migration gated on the version number would skip it entirely and every
+    // listShards() would then fail with `no such column: always_on`. The column is
+    // dropped here to reconstruct that store exactly, which no other test does.
+    const db = getShardsDb();
+    // The index has to go first — SQLite refuses to drop a column one references, which
+    // is itself the reason the CREATE INDEX sits after the ALTER in migrate().
+    db.run('DROP INDEX IF EXISTS idx_shards_always_on');
+    db.run('ALTER TABLE shards DROP COLUMN always_on');
+    expect(db.query<{ name: string }, []>('PRAGMA table_info(shards)').all()).not.toContainEqual(
+      expect.objectContaining({ name: 'always_on' }),
+    );
+    closeDatabases();
+
+    const reopened = getShardsDb();
+    expect(reopened.query<{ name: string }, []>('PRAGMA table_info(shards)').all()).toContainEqual(
+      expect.objectContaining({ name: 'always_on' }),
+    );
+    const row = listShards()[0]!;
+    expect(row.state).toBe('approved');
+    expect(row.alwaysOn).toBe(false);
+  });
+
+  test('opening an already-migrated store repeatedly is a no-op, not a duplicate column', () => {
+    for (let i = 0; i < 3; i++) {
+      closeDatabases();
+      getShardsDb();
+    }
+    expect(listShards()[0]!.state).toBe('approved');
+  });
 });
 
 describe('upsertCandidates', () => {

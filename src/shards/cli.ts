@@ -12,7 +12,7 @@ import { createContainerResolver, mine } from './mine';
 import { fromPortable, merge, toPortable, toRecord } from './portable';
 import { getPersistedStates, listShards, upsertCandidates, type PersistedState } from './store';
 import { approve, dropSuppressed, isKnownShard, reject, snooze, snoozeUntil, suppressedShards } from './triage';
-import { SHARD_SCHEMA_VERSION, type PortableShard, type ShardRecord } from './types';
+import { SHARD_SCHEMA_VERSION, type PortableShard, type ShardRecord, type ShardScope } from './types';
 
 /**
  * A bad invocation. Thrown rather than exiting inline so `parseMineArgs` stays a
@@ -38,21 +38,35 @@ Usage:
   sessions shards mine             Mine the current repo
   sessions shards mine --all       Mine every repo in the index
   sessions shards approve <id>     Keep a candidate as a durable shard
+                                   (--always-on, --scope group:<name>)
   sessions shards reject <id>      Dismiss a candidate; it stops being emitted
   sessions shards snooze <id>      Suppress a candidate for 30 days
   sessions shards export           Write approved shards as a portable bundle
   sessions shards import <path>    Merge another author's bundle in as candidates
 
 Options:
-  --repo <path>    Scope to one repo container (default: the current repo)
-  --all            Mine every repo in the index
-  --json           Emit the candidate batch as JSON on stdout (the default)
-  --out <path>     Write the export bundle to a file instead of stdout
-  -h, --help       Show this help
+  --repo <path>         Scope to one repo container (default: the current repo)
+  --all                 Mine every repo in the index
+  --json                Emit the candidate batch as JSON on stdout (the default)
+  --out <path>          Write the export bundle to a file instead of stdout
+  --always-on           (approve) Return this shard for every topic, and first
+  --scope group:<name>  (approve) Assign a project group, not the derived scope
+  -h, --help            Show this help
 
 <id> is the \`id\` field of a record from the mine's JSON batch. A rejected
 candidate never returns; a snoozed one returns only if new distinct phrasings
 appear after the snooze expires.
+
+Retrieval is topic-conditional: the \`get_shards\` MCP tool takes a topic and
+returns the shards relevant to it. --always-on exempts a shard from that filter,
+for standing constraints a badly worded topic must never hide. It is set-only —
+approving again without the flag does not clear it.
+
+Project groups are the scope between repo and workflow: a fact true of several
+related repos but not of everything. Membership comes from
+~/.local/share/sessions/groups.json, e.g.
+{"groups": {"authkit": ["~/Developer/authkit-*"]}}. A group shard whose group is
+not configured there is simply never returned.
 
 Export carries approved shards only, and strips session paths and repo paths —
 nothing about this machine's directory layout leaves it. There is no transport:
@@ -111,29 +125,70 @@ export function parseMineArgs(argv: string[]): MineArgs {
   return args;
 }
 
-/** A triage subcommand: one positional shard id, no flags but `-h`. */
+/** A triage subcommand: one positional shard id, plus two approve-only flags. */
 export type TriageAction = 'approve' | 'reject' | 'snooze';
 
 export interface TriageArgs {
   id?: string;
+  /** `--always-on` was passed. Absent rather than false so an untouched parse stays bare. */
+  alwaysOn?: boolean;
+  /** `--scope group:<name>` was passed. */
+  scope?: ShardScope;
   /** `-h`/`--help` was passed; the caller prints help and exits 0. */
   help: boolean;
 }
 
 /**
- * Parse `shards approve|reject|snooze <id>`. Throws `UsageError`; never exits.
+ * Parse `--scope group:<name>` into a scope.
+ *
+ * `group:` is the only accepted form on purpose. Repo and workflow scope are DERIVED
+ * from how far a paraphrase cluster spread (src/shards/mine.ts:151-156), and that
+ * derivation is evidence-backed — letting a flag overwrite it would let a typo silently
+ * turn one repo's convention into a rule for every repo. A group is the one tier no
+ * derivation can reach, so it is the one tier a human assigns.
+ */
+function parseScopeValue(value: string): ShardScope {
+  const name = value.startsWith('group:') ? value.slice('group:'.length) : '';
+  if (!name) {
+    throw new UsageError(`--scope only accepts group:<name>, got: ${value}`);
+  }
+  return { type: 'group', key: name };
+}
+
+/**
+ * Parse `shards approve|reject|snooze <id> [--always-on] [--scope group:<name>]`.
+ * Throws `UsageError`; never exits.
  *
  * A separate parser rather than a reuse: `parseMineArgs` treats every bare word as
  * an unknown option, because `mine` takes no positionals. These take exactly one.
+ *
+ * Both flags parse for all three subcommands and are rejected for two of them in
+ * `runTriage`. That split is deliberate — the parser stays a pure function of argv with
+ * no knowledge of which subcommand invoked it, and `sessions shards reject <id>
+ * --always-on` gets "reject does not take --always-on" instead of the far more
+ * confusing "unknown option: --always-on".
  */
 export function parseTriageArgs(argv: string[]): TriageArgs {
   const args: TriageArgs = { help: false };
-  for (const a of argv) {
+  let i = 0;
+  while (i < argv.length) {
+    const a = argv[i]!;
     // Help wins over everything after it, matching parseMineArgs.
     if (a === '-h' || a === '--help') return { help: true };
-    if (a.startsWith('-')) throw new UsageError(`unknown option: ${a}`);
-    if (args.id !== undefined) throw new UsageError(`unexpected argument: ${a} (expected exactly one shard id)`);
-    args.id = a;
+    if (a === '--always-on') {
+      args.alwaysOn = true;
+    } else if (a === '--scope') {
+      const value = argv[++i];
+      if (!value) throw new UsageError('--scope requires a value (group:<name>)');
+      args.scope = parseScopeValue(value);
+    } else if (a.startsWith('-')) {
+      throw new UsageError(`unknown option: ${a}`);
+    } else if (args.id !== undefined) {
+      throw new UsageError(`unexpected argument: ${a} (expected exactly one shard id)`);
+    } else {
+      args.id = a;
+    }
+    i++;
   }
   return args;
 }
@@ -255,6 +310,24 @@ async function runMine(argv: string[]): Promise<void> {
 }
 
 /**
+ * Reject the approve-only flags on `reject` and `snooze`. Throws `UsageError`; never exits.
+ *
+ * Separate from `parseTriageArgs` and exported on its own so both stay pure functions a
+ * test can drive: the parser has no business knowing which subcommand invoked it, and
+ * the alternative — teaching it the action — would make `--always-on` come back as
+ * "unknown option" on a reject, which is true of neither the flag nor the mistake.
+ *
+ * Both flags attach a standing property to a shard the user is KEEPING. On a rejection
+ * or a snooze they can only be a mistake, and quietly ignoring one would record a
+ * decision the user did not make.
+ */
+export function assertActionAcceptsFlags(action: TriageAction, args: TriageArgs): void {
+  if (action === 'approve') return;
+  if (args.alwaysOn) throw new UsageError(`${action} does not take --always-on (it applies to approve only)`);
+  if (args.scope) throw new UsageError(`${action} does not take --scope (it applies to approve only)`);
+}
+
+/**
  * Persist one triage decision.
  *
  * The existence check is not defensive padding: `setState` is a bare
@@ -267,14 +340,21 @@ function runTriage(action: TriageAction, argv: string[]): void {
   if (args.help) help();
   const id = args.id;
   if (!id) throw new UsageError(`${action} requires a shard id (the \`id\` field from \`shards mine\`)`);
+  // Before the existence check, so a wrong flag is reported as a wrong flag whatever
+  // the id turns out to be.
+  assertActionAcceptsFlags(action, args);
   if (!isKnownShard(id)) throw new UsageError(`unknown shard id: ${id}`);
 
   const today = todayIso();
   switch (action) {
-    case 'approve':
-      approve(id);
-      process.stderr.write(`  approved ${id}\n`);
+    case 'approve': {
+      approve(id, { alwaysOn: args.alwaysOn, scope: args.scope });
+      const notes = [args.alwaysOn ? 'always-on' : '', args.scope ? `scope group:${args.scope.key}` : ''].filter(
+        Boolean,
+      );
+      process.stderr.write(`  approved ${id}${notes.length > 0 ? ` (${notes.join(', ')})` : ''}\n`);
       return;
+    }
     case 'reject':
       reject(id);
       process.stderr.write(`  rejected ${id}\n`);

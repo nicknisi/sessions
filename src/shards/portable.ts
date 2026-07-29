@@ -60,14 +60,25 @@ export class PortableFormatError extends Error {}
  *    them would present raw pattern matches as facts the user endorsed.
  * 2. `evidence.sessions` is dropped. Local paths disclose directory structure and
  *    project names, and are meaningless to a recipient.
- * 3. `scope.key` is BLANKED, which the spec's field list does not say. It is an
- *    absolute container path — `/Users/<name>/Developer/<project>` — so exporting it
+ * 3. `scope.key` is BLANKED for `repo`, which the spec's field list does not say. It is
+ *    an absolute container path — `/Users/<name>/Developer/<project>` — so exporting it
  *    leaks exactly what stripping `sessions` was meant to prevent. Phase 3 already
- *    made this call at the other boundary: src/mcp.ts:63 projects `scope.type` and
+ *    made this call at the other boundary: src/mcp.ts projects `scope.type` and
  *    drops the key. Nothing is lost by blanking it, because a foreign absolute path
  *    can never match locally anyway (`cwdUnder`, src/repo.ts:73-75), and a repo-scoped
  *    shard with an empty key is explicitly skipped on retrieval
- *    (src/shards/retrieve.ts:51-54) rather than matching every cwd.
+ *    (src/shards/retrieve.ts) rather than matching every cwd.
+ *
+ *    A `group` key is the exception, and is PRESERVED. It is a human-chosen name, not a
+ *    path: it discloses nothing about this machine's directory layout, and blanking it
+ *    would strip the only thing that distinguishes one group from another — the shard
+ *    would arrive scoped to a group with no name and be permanently inert. `alwaysOn`
+ *    is not carried at all, for the same reason `state` is not: see types.ts.
+ *
+ *    A group name that means nothing to the recipient is the known cost. Their
+ *    groups.json has no such group, `groupsFor` returns nothing for it, and the shard
+ *    stays dormant until they configure one — the same shape as an unmatched repo key,
+ *    and preferable to silently widening someone else's grouping to `workflow`.
  *
  * `v` is stamped at the current version rather than copied from each row: the
  * projection IS the current format by construction. A future migration must bring
@@ -86,7 +97,7 @@ export function toPortable(records: ShardRecord[], exportedAt: string): ShardBun
       id: r.id,
       text: r.text,
       kind: r.kind,
-      scope: { type: r.scope.type, key: '' },
+      scope: { type: r.scope.type, key: r.scope.type === 'group' ? r.scope.key : '' },
       author: r.author,
       evidence: {
         distinctPhrasings: r.evidence.distinctPhrasings,
@@ -121,7 +132,11 @@ const portableShardSchema = z.strictObject({
   id: z.string().regex(SHARD_ID),
   text: z.string().min(MIN_TEXT_LENGTH).max(MAX_TEXT_LENGTH),
   kind: z.enum(['instruction', 'information']),
-  scope: z.strictObject({ type: z.enum(['repo', 'workflow']), key: z.string() }),
+  // Every member of ShardScope['type'], restated. Widening the TypeScript union does
+  // NOT widen this runtime enum and typecheck flags nothing — leaving 'group' out here
+  // would produce bundles that `fromPortable` rejects with `scope.type: invalid`, i.e.
+  // an export your own reader cannot read.
+  scope: z.strictObject({ type: z.enum(['repo', 'group', 'workflow']), key: z.string() }),
   author: z.string().min(1),
   evidence: z.strictObject({
     distinctPhrasings: z.number().int().nonnegative(),
@@ -209,6 +224,10 @@ function distinctAuthors(authors: string[]): string[] {
  * containers is a fact about how they work rather than about a codebase. Two DIFFERENT
  * repo keys widen for the same reason — the spec does not name that case, but "same
  * fact, different repos" is precisely what `workflow` means.
+ *
+ * Two different GROUP names widen for the third variant of the same reason: a group is
+ * one person's declared grouping of their own repos, and two people who grouped a fact
+ * differently have agreed only that it is not about a single codebase.
  *
  * The widened key is `''`, matching `deriveScope` (src/shards/mine.ts:152). Keeping
  * either author's key would be a path from someone else's machine.
@@ -299,9 +318,13 @@ export function merge(shards: PortableShard[]): MergedShard[] {
  * Turn a merged shard into a local record ready for `upsertCandidates`.
  *
  * `state` is always `candidate` and `snoozedUntil` always null (`buildRecord`'s
- * defaults, src/shards/record.ts:108-109). Importing is not consent: the recipient
- * triages with `/shards` like any other candidate, and nothing imported can reach an
- * agent until they approve it locally (src/shards/retrieve.ts:37).
+ * defaults). Importing is not consent: the recipient triages with `/shards` like any
+ * other candidate, and nothing imported can reach an agent until they approve it
+ * locally (`activeShardsFor` filters to `approved`).
+ *
+ * `alwaysOn` comes from the LOCAL row or is false. It is not on the wire, and a bundle
+ * could not set it even if it were: bypassing your topic matcher is a claim on your
+ * attention, and no other author gets to make it for you.
  *
  * `local` is the row already in the store, and passing it is NOT optional politeness.
  * `upsertCandidates`'s ON CONFLICT overwrites `evidence` wholesale
@@ -330,5 +353,6 @@ export function toRecord(shard: MergedShard, local?: ShardRecord): ShardRecord {
     sessions: local?.evidence.sessions ?? [],
     dates: [local?.evidence.firstSeen ?? '', local?.evidence.lastSeen ?? '', shard.firstSeen, shard.lastSeen],
     distinctPhrasings: Math.max(local?.evidence.distinctPhrasings ?? 0, shard.totalPhrasings),
+    alwaysOn: local?.alwaysOn ?? false,
   });
 }

@@ -68,6 +68,8 @@ export interface BuildRecordInput {
   distinctPhrasings: number;
   state?: ShardState;
   snoozedUntil?: string | null;
+  /** Defaults to false. Set at triage, never derived — see ShardRecord.alwaysOn. */
+  alwaysOn?: boolean;
 }
 
 function buildEvidence(input: BuildRecordInput): ShardEvidence {
@@ -94,6 +96,11 @@ function buildEvidence(input: BuildRecordInput): ShardEvidence {
  * `kind` defaults to 'instruction' because the mine narrows on corrective,
  * imperative language. Distinguishing an instruction from a durable piece of
  * information is a judgment call and belongs to the Phase 2 triage skill.
+ *
+ * `alwaysOn` defaults to false for the same reason `state` defaults to 'candidate':
+ * conditional is the norm and bypassing the topic matcher is the deliberate exception.
+ * A mine can never set it — nothing in a transcript says "this one is a standing
+ * constraint", only a human does.
  */
 export function buildRecord(input: BuildRecordInput): ShardRecord {
   const text = normalizeText(input.text);
@@ -107,5 +114,6 @@ export function buildRecord(input: BuildRecordInput): ShardRecord {
     evidence: buildEvidence(input),
     state: input.state ?? 'candidate',
     snoozedUntil: input.snoozedUntil ?? null,
+    alwaysOn: input.alwaysOn ?? false,
   };
 }
