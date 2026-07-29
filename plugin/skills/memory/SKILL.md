@@ -29,11 +29,14 @@ Turn mined candidate turns into a small set of durable facts worth remembering.
    Offer **Approve as always-on** only when the fact is a standing constraint an agent must see no matter what it is working on — "canary is the mainline branch", "API keys go in the keychain". Retrieval is topic-conditional by default, so a normal approval means the memory comes back only when the task looks related. Always-on is the exception, and proposing it for everything defeats the filter.
 
 5. **Persist.** One command per decision, using the cluster's `id`:
+   - `sessions memory merge <id> <other-id>...` — **run this first for any cluster with more than one record**
    - `sessions memory approve <id>` (add `--always-on` for a standing constraint)
    - `sessions memory reject <id>`
    - `sessions memory snooze <id>`
 
    Each exits non-zero on an unknown id, so a failure means the decision was not recorded — surface it rather than reporting success.
+
+   **Merge is not optional bookkeeping.** Your clustering in step 2 exists only in this conversation until you write it back. An id is a hash of that record's own text, so every phrasing is a separate row and nothing else can ever tell them apart. `merge` folds the members' evidence onto the canonical record — distinct phrasings counted, sessions unioned, date range widened — which is what makes `distinctPhrasings` mean "how many ways the user has said this" instead of a permanent 1. It is also what lets a snoozed memory come back, and what gives the cross-author quorum something real to count. Pick the clearest phrasing as the canonical, pass the rest as members, then approve/reject/snooze the canonical.
 
    If the user says a fact applies to a set of related repos rather than just this one, assign a project group: `sessions memory approve <id> --scope group:<name>`. Only ask when they volunteer it — group membership comes from `~/.local/share/sessions/groups.json`, which the user maintains by hand, and a group they have not configured there is silently never returned. Say so if you assign one.
 
@@ -42,7 +45,7 @@ Turn mined candidate turns into a small set of durable facts worth remembering.
 ## Guidelines
 
 - Propose only what passes the rubric. Dumping every narrowed candidate on the user is the failure mode that trains people to reject the whole list without reading it — a short, high-precision proposal is the point.
-- Records already carry a `state`. Triage the `candidate` ones and leave `approved` records alone unless the user asks to revisit them. Rejected candidates never appear, and in practice neither do snoozed ones: resurface needs a record's distinct-phrasing count to grow, and the mine gives every phrasing its own record, so the count never grows. If a `snoozed` record ever does reach the batch, it has resurfaced — say so when you present it.
+- Records already carry a `state`. Triage the `candidate` ones and leave `approved` records alone unless the user asks to revisit them. Rejected and merged records never appear. A record that was snoozed and is back in the batch has **resurfaced** — its 30 days passed and a merge added a new phrasing since, meaning the user kept saying it in different words. Say so when you present it; that history is the strongest evidence the original dismissal was wrong.
 - `repo` and `workflow` scope are derived from evidence and are shown, not edited. The one assignable scope is `group`, and only because no derivation can reach it — the index cannot tell "these four repos share a convention" from "this is universal".
 - Never paste raw session text you did not get from the batch — records deliberately carry no verbatim quotes.
-- Snooze means "not now, and stop asking". It is designed to return a candidate that keeps being said in new words, but that trigger is not implemented yet, so today a snooze hides the candidate indefinitely. Still prefer it over reject when the fact might be real but the evidence is thin — snooze records no verdict, and tell the user it will not come back on its own so the choice is informed.
+- Snooze means "not now, but keep watching". A snoozed memory returns once 30 days have passed **and** a later merge folds in a phrasing that was not there before — continued repetition is treated as evidence the dismissal was wrong. Prefer it over reject when a fact might be real but the evidence is thin: reject is terminal, snooze records no verdict. Expiry alone brings nothing back, so a snooze on a fact the user never repeats stays hidden, which is the intended behavior rather than a gap.

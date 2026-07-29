@@ -8,8 +8,8 @@
 // the `nowMs` precedent in src/significance.ts:1-4, so a date-boundary test is
 // deterministic instead of green until the 31st of a month.
 
-import { getPersistedStates, listMemories, setAlwaysOn, setScope, setState } from './store';
-import type { MemoryRecord, MemoryScope } from './types';
+import { getPersistedStates, listMemories, setAlwaysOn, setMerged, setScope, setState, updateEvidence } from './store';
+import type { MemoryEvidence, MemoryRecord, MemoryScope } from './types';
 
 /** How long a snooze suppresses a candidate. Exported so tuning is a one-line change. */
 export const SNOOZE_DAYS = 30;
@@ -55,20 +55,17 @@ export function snoozeUntil(todayIso: string): string {
  * resurface by accident, so the null is an explicit guard rather than a `>=` against
  * `'null'`.
  *
- * KNOWN LIMIT — read this before trusting the second condition. `mine()` hardcodes
- * `distinctPhrasings = 1` per cluster (see the comment above that literal in
- * src/memory/mine.ts) because paraphrase clustering happens in the agent's context and
- * has no write-back path, so `freshPhrasings` is 1 for every record the real pipeline
- * produces and `1 > 1` is false: this condition CANNOT fire outside a test, and a
- * snoozed candidate therefore stays hidden indefinitely rather than for 30 days.
+ * WHERE THE SECOND CONDITION GETS ITS EVIDENCE. `mine()` hardcodes
+ * `distinctPhrasings = 1` per record and always will: an id is a hash of that record's
+ * own normalized text, so a new wording is a new row rather than a bigger count. The
+ * count grows in exactly one place — `mergeInto` below, when the triage skill folds
+ * paraphrases into a canonical record — and that is also where this predicate is
+ * evaluated, because a merge is the moment new evidence actually arrives.
  *
- * Phase 6 was the phase this was deferred to and it did not close the gap; the
- * departure is recorded as an amendment and an Open Item in
- * docs/ideation/context-memory/spec-phase-6.md, and the user-facing copy in README.md,
- * src/cli.ts, src/memory/cli.ts and plugin/skills/memory/SKILL.md says so plainly. The
- * predicate itself stays as written — it is correct the moment merged evidence reaches
- * the store, and weakening it would turn snooze into a 30-day delay, which is the
- * failure mode the second condition exists to prevent.
+ * `dropSuppressed` still calls this during a mine. That call is correct but inert by
+ * construction: the fresh record it passes always carries 1, so a mine alone never
+ * resurfaces anything. Keeping it costs nothing and keeps the batch filter honest if a
+ * future mine ever does produce merged evidence.
  */
 export function shouldResurface(record: MemoryRecord, freshPhrasings: number, todayIso: string): boolean {
   if (record.state !== 'snoozed') return false;
@@ -123,6 +120,97 @@ export function isKnownMemory(id: string): boolean {
   return getPersistedStates([id]).has(id);
 }
 
+/** What a merge did, so the CLI can report it and a test can assert the resurface. */
+export interface MergeResult {
+  canonicalId: string;
+  /** Ids actually absorbed — already-merged and self-referential members are skipped. */
+  absorbed: string[];
+  /** `distinctPhrasings` after the union. */
+  distinctPhrasings: number;
+  /** The canonical was snoozed, its evidence grew, and its date had passed. */
+  resurfaced: boolean;
+}
+
+/**
+ * Fold paraphrases into one canonical record.
+ *
+ * THIS IS WHAT MAKES `shouldResurface` REACHABLE. A record's id is a hash of its own
+ * normalized text, so a new wording is always a new row and a fresh mine can never
+ * raise any record's `distinctPhrasings` above 1 on its own. Recognizing that two
+ * wordings assert the same fact is an LLM judgment that happens in the `/memory`
+ * triage skill — and before this function existed that judgment had nowhere to go, so
+ * the count never moved and the resurface condition was dead code.
+ *
+ * The union is the evidence of every phrasing: distinct texts counted, session paths
+ * unioned, date range widened. `distinctPhrasings` therefore means what its name says
+ * — how many different ways the user has expressed this fact — which is also the
+ * signal `quorum` reads once a second author's records arrive.
+ *
+ * Resurface is evaluated HERE rather than during a mine, because this is the moment
+ * new evidence actually arrives. A snoozed canonical whose date has passed and whose
+ * phrasing count just grew returns to `candidate`: the user kept saying it in new
+ * words, which is exactly the evidence the dismissal was wrong.
+ *
+ * A `rejected` canonical is never resurrected. Rejection is terminal for the mining
+ * pipeline (`dropSuppressed`), and a merge is a clustering statement, not a verdict —
+ * silently reviving a rejected fact because a paraphrase turned up would make reject
+ * unreliable, which is worse than making it slightly too sticky.
+ */
+export function mergeInto(canonicalId: string, memberIds: string[], todayIso: string): MergeResult {
+  const all = listMemories();
+  const canonical = all.find((r) => r.id === canonicalId);
+  if (!canonical) throw new Error(`unknown memory id: ${canonicalId}`);
+
+  const byId = new Map(all.map((r) => [r.id, r]));
+  const members: MemoryRecord[] = [];
+  for (const id of memberIds) {
+    // Self-merge and re-merge are no-ops rather than errors: the skill re-proposes a
+    // cluster after a partial failure, and a merge that throws halfway is worse than
+    // one that converges.
+    if (id === canonicalId) continue;
+    const member = byId.get(id);
+    if (!member) throw new Error(`unknown memory id: ${id}`);
+    if (member.state === 'merged') continue;
+    members.push(member);
+  }
+
+  // Recompute over the WHOLE cluster — every row already pointing at this canonical,
+  // plus the new members — never over the new members alone. Evidence is derived, not
+  // accumulated: a second merge that saw only its own arguments would overwrite the
+  // count the first one established and silently walk `distinctPhrasings` back down.
+  const cluster = [canonical, ...all.filter((r) => r.mergedInto === canonicalId), ...members];
+
+  // Distinct TEXTS, not row count: two rows could carry the same normalized text only
+  // through a caller bug, and double-counting would inflate the very signal the
+  // resurface decision rests on.
+  const texts = new Set<string>(cluster.map((r) => r.text));
+  const sessions = [...new Set(cluster.flatMap((r) => r.evidence.sessions))].sort();
+  const dates = cluster
+    .flatMap((r) => [r.evidence.firstSeen, r.evidence.lastSeen])
+    .filter((d) => d !== '')
+    .sort();
+
+  const evidence: MemoryEvidence = {
+    distinctPhrasings: texts.size,
+    sessions,
+    firstSeen: dates[0] ?? '',
+    lastSeen: dates[dates.length - 1] ?? '',
+  };
+
+  const resurfaced = canonical.state === 'snoozed' && shouldResurface(canonical, evidence.distinctPhrasings, todayIso);
+
+  updateEvidence(canonicalId, evidence);
+  for (const member of members) setMerged(member.id, canonicalId);
+  if (resurfaced) setState(canonicalId, 'candidate', null);
+
+  return {
+    canonicalId,
+    absorbed: members.map((m) => m.id),
+    distinctPhrasings: evidence.distinctPhrasings,
+    resurfaced,
+  };
+}
+
 /**
  * The rows that can suppress a freshly mined candidate, keyed by id.
  *
@@ -135,7 +223,10 @@ export function isKnownMemory(id: string): boolean {
  */
 export function suppressedMemories(): Map<string, MemoryRecord> {
   const out = new Map<string, MemoryRecord>();
-  for (const state of ['rejected', 'snoozed'] as const) {
+  // `merged` belongs here even though it is not a verdict: the row's evidence now lives
+  // on its canonical, so re-emitting it would present the same fact twice and invite the
+  // user to triage a phrasing they already clustered.
+  for (const state of ['rejected', 'snoozed', 'merged'] as const) {
     for (const record of listMemories({ state })) out.set(record.id, record);
   }
   return out;
@@ -163,6 +254,8 @@ export function dropSuppressed(
     const prior = stored.get(record.id);
     if (!prior) return true;
     if (prior.state === 'rejected') return false;
+    // Absorbed into a canonical record; its fact is already represented.
+    if (prior.state === 'merged') return false;
     if (prior.state === 'snoozed') return shouldResurface(prior, record.evidence.distinctPhrasings, todayIso);
     return true;
   });

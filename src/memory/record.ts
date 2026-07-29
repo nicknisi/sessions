@@ -115,5 +115,8 @@ export function buildRecord(input: BuildRecordInput): MemoryRecord {
     state: input.state ?? 'candidate',
     snoozedUntil: input.snoozedUntil ?? null,
     alwaysOn: input.alwaysOn ?? false,
+    // A freshly built record is always standalone. Merging is a triage-time judgment
+    // (src/memory/triage.ts `mergeInto`); nothing a mine can see decides it.
+    mergedInto: null,
   };
 }

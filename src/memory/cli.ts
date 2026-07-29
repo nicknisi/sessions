@@ -11,7 +11,16 @@ import { writeStdoutFully } from '../stdout';
 import { createContainerResolver, indexedSessions, mine } from './mine';
 import { fromPortable, merge, toPortable, toRecord } from './portable';
 import { getPersistedStates, listMemories, upsertCandidates, type PersistedState } from './store';
-import { approve, dropSuppressed, isKnownMemory, reject, snooze, snoozeUntil, suppressedMemories } from './triage';
+import {
+  approve,
+  dropSuppressed,
+  isKnownMemory,
+  mergeInto,
+  reject,
+  snooze,
+  snoozeUntil,
+  suppressedMemories,
+} from './triage';
 import { MEMORY_SCHEMA_VERSION, type PortableMemory, type MemoryRecord, type MemoryScope } from './types';
 import { advanceWatermark, changedSessions, readWatermark, type WatermarkEntry } from './watermark';
 
@@ -44,6 +53,7 @@ Usage:
                                    (--always-on, --scope group:<name>)
   sessions memory reject <id>      Dismiss a candidate; it stops being emitted
   sessions memory snooze <id>      Hide a candidate without rejecting it
+  sessions memory merge <id> <id>...  Fold paraphrases into the first id
   sessions memory export           Write approved memories as a portable bundle
   sessions memory import <path>    Merge another author's bundle in as candidates
 
@@ -58,12 +68,19 @@ Options:
   -h, --help            Show this help
 
 <id> is the \`id\` field of a record from the mine's JSON batch. A rejected
-candidate never returns. A snoozed one is designed to return once its 30 days
-are up AND new distinct phrasings have appeared — but every phrasing gets its
-own record, so no re-mine can bump that count today and a snooze currently hides
-a candidate indefinitely. Snooze still differs from reject: it records no
-verdict, and the resurface it is waiting on is a missing feature, not a
-cancelled one.
+candidate never returns. A snoozed one returns once its 30 days are up AND you
+have said the same thing in a new way since — snooze records no verdict, so
+continued repetition is treated as evidence the dismissal was wrong.
+
+That count only moves through \`merge\`. Every phrasing is its own record (an id
+is a hash of that record's text), so recognizing two wordings as one fact is a
+judgment the /memory skill makes and then writes back:
+
+  sessions memory merge <canonical-id> <member-id> [<member-id>...]
+
+The canonical row absorbs the members' evidence — distinct phrasings counted,
+sessions unioned, date range widened — and the members stop being offered
+separately. Merging into a snoozed row whose date has passed resurfaces it.
 
 Retrieval is topic-conditional: the \`get_memory\` MCP tool takes a topic and
 returns the memories relevant to it. --always-on exempts a memory from that filter,
@@ -84,10 +101,10 @@ everything. \`pending\` reports the untriaged backlog without mining at all.
 Export carries approved memories only, and strips session paths and repo paths —
 nothing about this machine's directory layout leaves it. There is no transport:
 the bundle is a plain file, so whatever you already use (a git ref, a shared
-drive, scp) carries it. Imported memory land as candidates for you to triage,
-never as approved. Memory merge on a hash of their text, so two people who
-phrase one fact differently produce two memory; clustering paraphrases is the
-/memory skill's job, not a mechanical one.
+drive, scp) carries it. Imported memories land as candidates for you to triage,
+never as approved. Records merge on a hash of their text, so two people who
+phrase one fact differently produce two records; clustering those is the /memory
+skill's job, and \`merge\` is how it records the result.
 `);
   process.exit(0);
 }
@@ -494,6 +511,33 @@ export function assertActionAcceptsFlags(action: TriageAction, args: TriageArgs)
  * changed nothing and the agent driving the skill would report a decision that was
  * never recorded.
  */
+/**
+ * `memory merge <canonical-id> <member-id>...`
+ *
+ * The write-back path for the triage skill's paraphrase clustering. Without it the
+ * skill's judgment stays in its context and `distinctPhrasings` can never exceed 1,
+ * which is what kept snooze-resurface unreachable (see `mergeInto`).
+ */
+function runMerge(argv: string[]): void {
+  if (argv.includes('-h') || argv.includes('--help')) help();
+  const flag = argv.find((a) => a.startsWith('-'));
+  if (flag) throw new UsageError(`unknown option: ${flag}`);
+  const [canonical, ...members] = argv;
+  if (!canonical) throw new UsageError('merge requires a canonical memory id, then one or more member ids');
+  if (members.length === 0) throw new UsageError(`merge requires at least one member id to fold into ${canonical}`);
+  for (const id of [canonical, ...members]) {
+    if (!isKnownMemory(id)) throw new UsageError(`unknown memory id: ${id}`);
+  }
+
+  const result = mergeInto(canonical, members, todayIso());
+  process.stderr.write(
+    `  merged ${result.absorbed.length} into ${result.canonicalId} (${result.distinctPhrasings} distinct phrasings)\n`,
+  );
+  if (result.resurfaced) {
+    process.stderr.write(`  ${result.canonicalId} resurfaced — snoozed, but you kept saying it in new words\n`);
+  }
+}
+
 function runTriage(action: TriageAction, argv: string[]): void {
   const args = parseTriageArgs(argv);
   if (args.help) help();
@@ -626,6 +670,9 @@ export async function runMemory(argv: string[]): Promise<void> {
       case 'reject':
       case 'snooze':
         runTriage(sub, argv.slice(1));
+        return;
+      case 'merge':
+        runMerge(argv.slice(1));
         return;
       case 'export':
         await runExport(argv.slice(1));

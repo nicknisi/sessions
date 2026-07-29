@@ -12,7 +12,13 @@
 export const MEMORY_SCHEMA_VERSION = 1;
 
 export type MemoryKind = 'instruction' | 'information';
-export type MemoryState = 'candidate' | 'approved' | 'rejected' | 'snoozed';
+/**
+ * `merged` is not a triage verdict. It marks a record whose text was judged a
+ * paraphrase of another record's, so its evidence now lives on that canonical row
+ * and it must never be emitted, exported, or retrieved on its own. See `mergeInto`
+ * in src/memory/triage.ts for why the state exists at all.
+ */
+export type MemoryState = 'candidate' | 'approved' | 'rejected' | 'snoozed' | 'merged';
 
 export interface MemoryScope {
   /**
@@ -74,6 +80,15 @@ export interface MemoryRecord {
    * and the failure is silent — the agent simply never sees the rule.
    */
   alwaysOn: boolean;
+  /**
+   * The canonical record this one was merged into, or null when it stands alone.
+   *
+   * Set together with `state: 'merged'` and never on its own. It exists so a merge is
+   * auditable and reversible rather than a silent deletion: the absorbed row keeps its
+   * own text and id, which is what lets a future re-mine recognize the phrasing as
+   * already accounted for instead of proposing it again.
+   */
+  mergedInto: string | null;
 }
 
 /**

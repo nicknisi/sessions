@@ -90,6 +90,13 @@ function migrate(db: Database): void {
   if (!columns.some((c) => c.name === 'always_on')) {
     db.run('ALTER TABLE memory ADD COLUMN always_on INTEGER NOT NULL DEFAULT 0');
   }
+  // Cluster write-back's column, added the same additive way and for the same reason:
+  // a store written before merging existed reports user_version = 1 already, so a
+  // version-gated ALTER would never reach it. Nullable with no default — a row that
+  // was never merged has no canonical, and '' would be a second way to spell null.
+  if (!columns.some((c) => c.name === 'merged_into')) {
+    db.run('ALTER TABLE memory ADD COLUMN merged_into TEXT');
+  }
 
   db.run('CREATE INDEX IF NOT EXISTS idx_memory_state ON memory(state)');
   db.run('CREATE INDEX IF NOT EXISTS idx_memory_scope ON memory(scope_type, scope_key)');
@@ -144,6 +151,7 @@ interface MemoryRow {
   state: string;
   snoozed_until: string | null;
   always_on: number;
+  merged_into: string | null;
 }
 
 const EMPTY_EVIDENCE: MemoryEvidence = { distinctPhrasings: 0, sessions: [], firstSeen: '', lastSeen: '' };
@@ -171,6 +179,10 @@ function rowToRecord(row: MemoryRow): MemoryRecord {
     // number into a `boolean` field would serialize as 0/1 and break the byte-identical
     // JSON comparisons the determinism criterion rests on.
     alwaysOn: row.always_on === 1,
+    // `?? null` rather than the raw value: a store migrated before this column existed
+    // hands back undefined, and undefined would vanish from JSON.stringify while null
+    // survives — the determinism comparisons are byte-for-byte over serialized records.
+    mergedInto: row.merged_into ?? null,
   };
 }
 
@@ -247,7 +259,7 @@ export function listMemories(filter: MemoryFilter = {}): MemoryRecord[] {
     .query<MemoryRow, any[]>(
       // Explicit column list, not SELECT * — a column forgotten here arrives as
       // `undefined` at runtime and typecheck says nothing.
-      `SELECT id, v, text, kind, scope_type, scope_key, author, evidence, state, snoozed_until, always_on
+      `SELECT id, v, text, kind, scope_type, scope_key, author, evidence, state, snoozed_until, always_on, merged_into
        FROM memory ${where} ORDER BY id`,
     )
     .all(...params);
@@ -288,6 +300,40 @@ export function getPersistedStates(ids: string[]): Map<string, PersistedState> {
 }
 
 /** Record a triage decision. `snoozedUntil` is cleared unless explicitly supplied. */
+/**
+ * Replace a record's evidence blob.
+ *
+ * Separate from `upsertCandidates` on purpose: that path refreshes evidence from a
+ * fresh mine, which is always a single phrasing. This one writes evidence the agent
+ * assembled by clustering paraphrases, and it is the only way `distinctPhrasings`
+ * ever exceeds 1 — the thing `shouldResurface` compares against.
+ */
+export function updateEvidence(id: string, evidence: MemoryEvidence): void {
+  const db = getMemoryDb();
+  db.run('UPDATE memory SET evidence = ?, updated_at = ? WHERE id = ?', [
+    JSON.stringify(evidence),
+    new Date().toISOString(),
+    id,
+  ]);
+}
+
+/**
+ * Mark a record as absorbed into `canonicalId`.
+ *
+ * `snoozed_until` is cleared: a merged row is not suppressed-for-30-days, it is
+ * represented elsewhere, and leaving a stale expiry on it would make the row look
+ * like a snooze to any future reader of the column.
+ */
+export function setMerged(id: string, canonicalId: string): void {
+  const db = getMemoryDb();
+  db.run('UPDATE memory SET state = ?, merged_into = ?, snoozed_until = NULL, updated_at = ? WHERE id = ?', [
+    'merged',
+    canonicalId,
+    new Date().toISOString(),
+    id,
+  ]);
+}
+
 export function setState(id: string, state: MemoryState, snoozedUntil: string | null = null): void {
   const db = getMemoryDb();
   db.run('UPDATE memory SET state = ?, snoozed_until = ?, updated_at = ? WHERE id = ?', [
