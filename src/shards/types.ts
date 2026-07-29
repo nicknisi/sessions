@@ -49,3 +49,40 @@ export interface ShardRecord {
   /** 'YYYY-MM-DD' or null. */
   snoozedUntil: string | null;
 }
+
+/**
+ * A shard as it crosses the process boundary — no local paths, no raw prompts.
+ *
+ * Three fields of `ShardRecord` are deliberately absent, and each omission is a
+ * privacy or a correctness decision rather than a size one (see src/shards/portable.ts):
+ *  - `state` / `snoozedUntil`: your triage decisions about your own attention. A
+ *    recipient imports the fact, not your opinion of it, and triages for themselves.
+ *  - `evidence.sessions`: local filesystem paths, which disclose directory structure
+ *    and project names and mean nothing on another machine.
+ * `scope.key` is declared here because the shape is part of the format, but it is
+ * blanked on export for the same reason — it is an absolute container path.
+ */
+export interface PortableShard {
+  v: number;
+  /** `sha256:<hex>` — content-addressed, so identity survives transport. */
+  id: string;
+  text: string;
+  kind: ShardKind;
+  scope: ShardScope;
+  author: string;
+  /** Local session paths deliberately omitted. */
+  evidence: {
+    distinctPhrasings: number;
+    firstSeen: string;
+    lastSeen: string;
+  };
+}
+
+/** The file envelope. Versioned so a reader can reject drift instead of guessing. */
+export interface ShardBundle {
+  v: number;
+  /** 'YYYY-MM-DD'. Injected by the caller, never read from the clock here. */
+  exportedAt: string;
+  /** Sorted by id, so two exports of the same set are byte-identical. */
+  shards: PortableShard[];
+}

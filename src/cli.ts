@@ -46,6 +46,14 @@ ${C.bold}Commands:${C.reset}
                    print the candidate batch as JSON. --repo <path> scopes to one
                    repo container (default: the current repo); --all mines every
                    repo in the index
+  shards approve   Record a triage decision for one candidate, by id from the
+  shards reject    mine's batch. Rejected candidates stop being emitted; snoozed
+  shards snooze    ones return after 30 days only if new phrasings appeared
+  shards export    Write approved shards as a portable bundle on stdout (--out
+                   <path> writes a file instead). Carries no local paths and no
+                   triage state; there is no transport, the file is the seam
+  shards import    Merge another author's bundle in as candidates to triage.
+                   Never overwrites your own approve/reject decisions
   setup            Install plugin and configure MCP for detected tools
                    --hooks opts in to SessionStart auto-injection (off by
                    default); without it, an interactive prompt asks when on a TTY

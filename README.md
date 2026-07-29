@@ -80,6 +80,7 @@ sessions setup
     /standup           Yesterday + today activity for standups
     /recall            What did I do on a specific project?
     /session-metrics   Usage dashboard with tool breakdown
+    /shards            Triage durable facts mined from past sessions
 
   Run `sessions setup` again after upgrading to update skills.
 ```
@@ -101,27 +102,35 @@ sessions context             # Print a context primer for the current repo
 sessions digest <session>    # Print one session's arc as compact markdown
 sessions report              # Usage report (HTML dashboard, opens in browser)
 sessions shards mine         # Mine past sessions for durable facts (JSON on stdout)
+sessions shards approve <id> # Keep a mined candidate as a durable shard
+sessions shards reject <id>  # Dismiss a candidate; it stops being emitted
+sessions shards snooze <id>  # Suppress a candidate for 30 days
+sessions shards export       # Write approved shards as a portable bundle (JSON)
+sessions shards import <p>   # Merge another author's bundle in as candidates
 ```
 
 ### Options
 
-| Flag / Command     | Description                                                                                                                                                                                      |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `context`          | Print a markdown context primer for the current repo (see [Context primer](#context-primer))                                                                                                     |
-| `digest <session>` | Print one session's arc as compact markdown (~8k chars): each genuine user turn with its exchange's final assistant reply. Accepts a JSONL file path or a session id                             |
-| `report`           | Generate a usage report (see [Usage reports](#usage-reports))                                                                                                                                    |
-| `shards mine`      | Mine past sessions for durable facts worth remembering and print the candidate batch as JSON. `--repo <path>` scopes to one repo container (default: the current repo); `--all` mines every repo |
-| `setup`            | Install plugin and configure MCP for detected tools (`--hooks` opts into auto-injection)                                                                                                         |
-| `uninstall`        | Remove plugin, MCP config, and the SessionStart hook from all tools. Triage decisions in `~/.local/share/sessions` are preserved                                                                 |
-| `cleanup`          | Full reset: uninstall plugin + clear search index                                                                                                                                                |
-| `--here`           | Scope to the current git repo (default: all projects)                                                                                                                                            |
-| `--tool <name>`    | Filter by tool: `claude`, `codex`, `pi`, or `opencode`                                                                                                                                           |
-| `--errored`        | Only show sessions that hit an error                                                                                                                                                             |
-| `--file <path>`    | Only sessions that touched or read this path (substring match; repeatable — every path must match). Newest first when no query is given                                                          |
-| `--mcp`            | Start as an MCP server (stdio transport)                                                                                                                                                         |
-| `--clear-cache`    | Remove the search index (rebuilds on next use)                                                                                                                                                   |
-| `--no-color`       | Disable colored output                                                                                                                                                                           |
-| `-h`, `--help`     | Show help                                                                                                                                                                                        |
+| Flag / Command         | Description                                                                                                                                                                                      |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `context`              | Print a markdown context primer for the current repo (see [Context primer](#context-primer))                                                                                                     |
+| `digest <session>`     | Print one session's arc as compact markdown (~8k chars): each genuine user turn with its exchange's final assistant reply. Accepts a JSONL file path or a session id                             |
+| `report`               | Generate a usage report (see [Usage reports](#usage-reports))                                                                                                                                    |
+| `shards mine`          | Mine past sessions for durable facts worth remembering and print the candidate batch as JSON. `--repo <path>` scopes to one repo container (default: the current repo); `--all` mines every repo |
+| `shards <action>`      | Record a triage decision by the `id` from the mine's batch: `approve <id>`, `reject <id>` (never emitted again), or `snooze <id>` (30 days; returns only if new phrasings appear)                |
+| `shards export`        | Write approved shards as a portable JSON bundle on stdout; `--out <path>` writes a file. Approved records only, with session paths and repo paths stripped — no local paths leave the machine    |
+| `shards import <path>` | Merge a bundle from another author in as candidates to triage. Never lands as approved and never overwrites your own approve/reject decisions                                                    |
+| `setup`                | Install plugin and configure MCP for detected tools (`--hooks` opts into auto-injection)                                                                                                         |
+| `uninstall`            | Remove plugin, MCP config, and the SessionStart hook from all tools. Triage decisions in `~/.local/share/sessions` are preserved                                                                 |
+| `cleanup`              | Full reset: uninstall plugin + clear search index                                                                                                                                                |
+| `--here`               | Scope to the current git repo (default: all projects)                                                                                                                                            |
+| `--tool <name>`        | Filter by tool: `claude`, `codex`, `pi`, or `opencode`                                                                                                                                           |
+| `--errored`            | Only show sessions that hit an error                                                                                                                                                             |
+| `--file <path>`        | Only sessions that touched or read this path (substring match; repeatable — every path must match). Newest first when no query is given                                                          |
+| `--mcp`                | Start as an MCP server (stdio transport)                                                                                                                                                         |
+| `--clear-cache`        | Remove the search index (rebuilds on next use)                                                                                                                                                   |
+| `--no-color`           | Disable colored output                                                                                                                                                                           |
+| `-h`, `--help`         | Show help                                                                                                                                                                                        |
 
 ### Browsing
 
@@ -197,7 +206,7 @@ The `get_activity_digest` tool supports a `detail` parameter: `"compact"` (defau
 
 ### Skills
 
-The plugin ships five skills that compose the MCP tools into repeatable workflows:
+The plugin ships six skills that compose the MCP tools (and, for `/shards`, the CLI) into repeatable workflows:
 
 | Skill              | Trigger                                     | What it does                                                                               |
 | ------------------ | ------------------------------------------- | ------------------------------------------------------------------------------------------ |
@@ -206,6 +215,7 @@ The plugin ships five skills that compose the MCP tools into repeatable workflow
 | `/standup`         | "standup", "what did I do yesterday"        | Yesterday + today in compact format, terse bullets for Slack                               |
 | `/weekly-summary`  | "summarize my week", "weekly recap"         | Fetches full digest for the past 7 days, writes structured report                          |
 | `/session-metrics` | "session stats", "which tool do I use most" | Tool/project breakdown, daily activity, active hours heatmap                               |
+| `/shards`          | "triage shards", "review shards"            | Runs the mine, clusters paraphrases, and walks approve / reject / snooze                   |
 
 Skills work with Claude Code, Cursor, Codex, and any agent that supports the skills.sh format.
 

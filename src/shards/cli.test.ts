@@ -1,9 +1,17 @@
 import { describe, test, expect, beforeAll, beforeEach, afterAll } from 'bun:test';
 import { rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { applyPersistedStates, parseMineArgs, runShards, UsageError } from './cli';
+import {
+  applyPersistedStates,
+  parseExportArgs,
+  parseImportArgs,
+  parseMineArgs,
+  parseTriageArgs,
+  runShards,
+  UsageError,
+} from './cli';
 import { buildRecord } from './record';
-import { setState } from './store';
+import { listShards, setState } from './store';
 import type { ShardRecord } from './types';
 import { closeDatabases, makeTmp, setShardEnv, userTurn, writeSession } from './fixtures';
 
@@ -124,18 +132,94 @@ describe('shards mine', () => {
     expect(JSON.parse(stdout)).toEqual([]);
   });
 
-  test('the stdout batch carries the persisted state, not a fresh candidate', async () => {
-    // The pipe is the Phase 2 interface. upsertCandidates keeps a rejection in the
-    // table; if the batch still said "candidate" the user would re-triage the same
-    // rejected shard on every run.
+  test('the stdout batch carries the persisted state, and a rejection leaves it entirely', async () => {
+    // The pipe is the Phase 2 interface, so it has to carry the same truth the table
+    // does: an approved shard reports `approved`, and a rejected one is dropped
+    // rather than re-presented as a fresh candidate on every run. The row itself
+    // survives — durability.test.ts asserts that a rejected shard keeps receiving
+    // evidence refreshes — so only the batch narrows.
     const first = JSON.parse((await capture(['mine', '--repo', repo])).stdout) as ShardRecord[];
     const mined = first.find((r) => r.text === FACT);
     expect(mined).toBeDefined();
     expect(mined!.state).toBe('candidate');
 
-    setState(mined!.id, 'rejected');
-
+    setState(mined!.id, 'approved');
     const second = JSON.parse((await capture(['mine', '--repo', repo])).stdout) as ShardRecord[];
-    expect(second.find((r) => r.id === mined!.id)!.state).toBe('rejected');
+    expect(second.find((r) => r.id === mined!.id)!.state).toBe('approved');
+
+    setState(mined!.id, 'rejected');
+    const third = JSON.parse((await capture(['mine', '--repo', repo])).stdout) as ShardRecord[];
+    expect(third.find((r) => r.id === mined!.id)).toBeUndefined();
+    expect(listShards().find((r) => r.id === mined!.id)!.state).toBe('rejected');
+  });
+});
+
+describe('parseTriageArgs', () => {
+  test('takes exactly one positional shard id', () => {
+    expect(parseTriageArgs(['sha256:abc'])).toEqual({ help: false, id: 'sha256:abc' });
+  });
+
+  test('a second positional is a usage error, not a silently ignored argument', () => {
+    expect(() => parseTriageArgs(['sha256:abc', 'sha256:def'])).toThrow(UsageError);
+    expect(() => parseTriageArgs(['sha256:abc', 'sha256:def'])).toThrow('expected exactly one shard id');
+  });
+
+  test('flags are rejected — unlike mine, these subcommands take none', () => {
+    expect(() => parseTriageArgs(['--all'])).toThrow('unknown option: --all');
+  });
+
+  test('--help short-circuits, including over a later bad argument', () => {
+    expect(parseTriageArgs(['--help']).help).toBe(true);
+    expect(parseTriageArgs(['-h']).help).toBe(true);
+    expect(parseTriageArgs(['-h', 'sha256:abc']).help).toBe(true);
+  });
+
+  test('no id parses cleanly — the runner, not the parser, reports the omission', () => {
+    expect(parseTriageArgs([])).toEqual({ help: false });
+  });
+});
+
+describe('parseExportArgs', () => {
+  test('defaults to stdout, which is what makes the bundle pipeable', () => {
+    expect(parseExportArgs([])).toEqual({ help: false });
+  });
+
+  test('--out takes the next argument', () => {
+    expect(parseExportArgs(['--out', '/tmp/b.json'])).toEqual({ help: false, out: '/tmp/b.json' });
+  });
+
+  test('--out with no value is a usage error, matching src/context.ts', () => {
+    expect(() => parseExportArgs(['--out'])).toThrow(UsageError);
+    expect(() => parseExportArgs(['--out'])).toThrow('--out requires a path');
+  });
+
+  test('export takes no positional — a bare word is an unknown option', () => {
+    expect(() => parseExportArgs(['bundle.json'])).toThrow('unknown option: bundle.json');
+  });
+
+  test('--help short-circuits, including over a later bad flag', () => {
+    expect(parseExportArgs(['--help']).help).toBe(true);
+    expect(parseExportArgs(['-h']).help).toBe(true);
+    expect(parseExportArgs(['--help', '--nope']).help).toBe(true);
+  });
+});
+
+describe('parseImportArgs', () => {
+  test('takes exactly one positional bundle path', () => {
+    expect(parseImportArgs(['/tmp/b.json'])).toEqual({ help: false, path: '/tmp/b.json' });
+  });
+
+  test('a second positional names a bundle path, not a shard id', () => {
+    // Reusing parseTriageArgs would emit "expected exactly one shard id" here.
+    expect(() => parseImportArgs(['a.json', 'b.json'])).toThrow('expected exactly one bundle path');
+  });
+
+  test('flags are rejected — import takes none', () => {
+    expect(() => parseImportArgs(['--out', 'x'])).toThrow('unknown option: --out');
+  });
+
+  test('--help short-circuits, and no path parses cleanly for the runner to report', () => {
+    expect(parseImportArgs(['-h', 'a.json']).help).toBe(true);
+    expect(parseImportArgs([])).toEqual({ help: false });
   });
 });
