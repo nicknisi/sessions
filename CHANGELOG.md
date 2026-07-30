@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.18.0](https://github.com/nicknisi/sessions/compare/v1.17.0...v1.18.0) (2026-07-30)
+
+
+### Features
+
+* **report:** subagent attribution, cache and branch facets, and a parse cache ([#57](https://github.com/nicknisi/sessions/issues/57)) ([2a24ed6](https://github.com/nicknisi/sessions/commit/2a24ed63a7aa16d06293955c7028e34c32e5bcc2))
+
 ## [1.17.0](https://github.com/nicknisi/sessions/compare/v1.16.1...v1.17.0) (2026-07-30)
 
 
