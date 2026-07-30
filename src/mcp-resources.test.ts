@@ -39,6 +39,13 @@ let smallRepo: string;
 let siblingDir: string;
 /** Not a git repo at all. */
 let nonGitDir: string;
+/** Main worktree of a NORMAL (non-bare) repo with a linked worktree added beside it. */
+let wtMain: string;
+/** `git worktree add ../wt-repo-feature` — a SIBLING of wtMain, which is where git puts a
+ *  linked worktree of a normal repo, and the case a container prefix cannot reach. */
+let wtLinked: string;
+/** Same path prefix as wtMain, not a worktree of it. The control for the test above. */
+let wtDecoy: string;
 
 const REPO_SESSIONS = 60;
 const EDGE_SESSIONS = 50;
@@ -91,6 +98,25 @@ function initRepo(path: string): string {
   return path;
 }
 
+function git(cwd: string, args: string[]): void {
+  const r = Bun.spawnSync(['git', '-C', cwd, ...args], { env: GIT_ENV });
+  if (r.exitCode !== 0) throw new Error(`git ${args[0]} failed: ${new TextDecoder().decode(r.stderr)}`);
+}
+
+/**
+ * A normal repo plus a real linked worktree, created the way a person does it.
+ *
+ * Real git rather than a hand-built RepoInfo, because the whole defect lived in the gap
+ * between what `git worktree list` reports and what `--show-toplevel` returns: a fake would
+ * have encoded the assumption under test. `--allow-empty` because `worktree add` needs a
+ * HEAD commit and the tree's contents are irrelevant here.
+ */
+function initRepoWithLinkedWorktree(main: string, linked: string): void {
+  initRepo(main);
+  git(main, ['commit', '-q', '--allow-empty', '-m', 'init']);
+  git(main, ['worktree', 'add', '-q', linked, '-b', 'feature']);
+}
+
 function seed(id: string, cwd: string, day: number, prompt: string, reply: string): string {
   return writeSession(tmp, id, cwd, [userTurn(prompt, dayIso(day)), assistantTurn(reply, dayIso(day))]);
 }
@@ -132,6 +158,15 @@ beforeAll(async () => {
   nonGitDir = join(tmp, 'plain');
   mkdirSync(siblingDir, { recursive: true });
   mkdirSync(nonGitDir, { recursive: true });
+
+  wtMain = join(repos, 'wt-repo');
+  wtLinked = join(repos, 'wt-repo-feature');
+  wtDecoy = join(repos, 'wt-repo-v2');
+  initRepoWithLinkedWorktree(wtMain, wtLinked);
+  mkdirSync(wtDecoy, { recursive: true });
+  seed(otherId('wtmain00', 0), wtMain, 1, 'work on the main worktree', 'main');
+  seed(otherId('wtlink00', 0), wtLinked, 2, 'work on the linked worktree', 'linked');
+  seed(otherId('wtdecoy0', 0), wtDecoy, 3, 'work in the v2 decoy', 'decoy');
 
   // 59 in the repo root plus one in a subdirectory — a descendant cwd must count as the
   // same repo, and making it the newest puts it at the head of the list.
@@ -352,6 +387,31 @@ describe('resources bounded list', () => {
     const over = await cache.recentSessionsForRepo(repo, REPO_SESSIONS + 1);
     expect(over.rows).toHaveLength(REPO_SESSIONS);
   });
+});
+
+describe('resources across a normal repo’s worktrees', () => {
+  const MAIN_URI = `sessions://${otherId('wtmain00', 0)}`;
+  const LINKED_URI = `sessions://${otherId('wtlink00', 0)}`;
+  const DECOY_URI = `sessions://${otherId('wtdecoy0', 0)}`;
+
+  /** Both directions, because they fail for different reasons: from the main worktree the
+   *  linked one is not a descendant, and from the linked worktree `container` resolves to the
+   *  linked path, which has the main worktree nowhere under it. */
+  for (const [label, cwd] of [
+    ['main', () => wtMain],
+    ['linked', () => wtLinked],
+  ] as const) {
+    test(`listing from the ${label} worktree returns both worktrees' sessions`, async () => {
+      const { resources, totalInRepo } = await mcp.listRepoSessions({ cwd: cwd() });
+      const uris = new Set(resources.map((r) => r.uri));
+      expect(uris.has(MAIN_URI)).toBe(true);
+      expect(uris.has(LINKED_URI)).toBe(true);
+      // The scope is an enumeration of live worktrees, not a path prefix — so a directory
+      // that merely shares the prefix is still excluded.
+      expect(uris.has(DECOY_URI)).toBe(false);
+      expect(totalInRepo).toBe(2);
+    });
+  }
 });
 
 describe('resources no repo', () => {

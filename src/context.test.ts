@@ -180,6 +180,50 @@ describe('worktree aggregation', () => {
     const intents = primer.recent.map((s) => s.intent);
     expect(intents).toEqual(['narrow feature']);
   });
+
+  // The tests above use the BARE layout, where every worktree lives under the container and
+  // one prefix covers them all. A NORMAL repo is the case that container-and-descendants
+  // silently gets wrong: `git worktree add ../feature` puts the worktree BESIDE the main
+  // one, and `container` falls back to `--show-toplevel`, which is whichever worktree the
+  // caller is standing in — so aggregation returned only the current worktree from either
+  // side while advertising that it spanned them.
+  describe('normal repo, sibling worktrees', () => {
+    const mainWt = join(fixtureRoot, 'normal-repo');
+    const linkedWt = join(fixtureRoot, 'normal-repo-feature');
+    /** Same path prefix as the main worktree, NOT a worktree of it. Only a prefix rule could
+     *  ever match this, which is why it stays in the fixture. */
+    const decoy = join(fixtureRoot, 'normal-repo-v2');
+    const worktrees = { [mainWt]: 'main', [linkedWt]: 'feature' };
+
+    // Seeded once, in the describe body: three tests read the same three sessions, and a
+    // beforeEach would write a fresh copy of each before every one of them.
+    writeClaudeSession({ cwd: mainWt, firstPrompt: 'on the main worktree', createdAt: '2026-06-18T10:00:00.000Z' });
+    writeClaudeSession({ cwd: linkedWt, firstPrompt: 'on the linked worktree', createdAt: '2026-06-19T10:00:00.000Z' });
+    writeClaudeSession({ cwd: decoy, firstPrompt: 'on the v2 decoy', createdAt: '2026-06-20T10:00:00.000Z' });
+
+    test('aggregates from the main worktree', async () => {
+      const primer = await cache.getContextPrimer(fakeRepo(mainWt, worktrees, mainWt), {});
+      const intents = primer.recent.map((s) => s.intent);
+      expect(intents).toContain('on the main worktree');
+      expect(intents).toContain('on the linked worktree');
+      expect(intents).not.toContain('on the v2 decoy');
+    });
+
+    test('aggregates from the linked worktree, where the container resolves to the linked path', async () => {
+      // What resolveRepo really returns from inside a linked worktree: container ===
+      // currentWorktree === the linked path, which has the main worktree nowhere under it.
+      const primer = await cache.getContextPrimer(fakeRepo(linkedWt, worktrees, linkedWt), {});
+      const intents = primer.recent.map((s) => s.intent);
+      expect(intents).toContain('on the linked worktree');
+      expect(intents).toContain('on the main worktree');
+      expect(intents).not.toContain('on the v2 decoy');
+    });
+
+    test('worktreeOnly still narrows to one sibling', async () => {
+      const primer = await cache.getContextPrimer(fakeRepo(linkedWt, worktrees, linkedWt), { worktreeOnly: true });
+      expect(primer.recent.map((s) => s.intent)).toEqual(['on the linked worktree']);
+    });
+  });
 });
 
 describe('branch', () => {

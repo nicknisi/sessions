@@ -27,7 +27,7 @@ import { readSessionLines, statSession } from './session-io';
 // primer's projection cap rather than being confused with extract-files.ts's own MAX_FILES
 // (50 — the bound on the indexed files_touched column, a different number for a different job).
 import { MAX_FILES as MAX_PRIMER_FILES } from './search-format';
-import { type RepoInfo, globPrefix, branchLabel } from './repo';
+import { type RepoInfo, globPrefix, branchLabel, cwdUnder } from './repo';
 import { isTrivia, blendedScore, type ScorableSession } from './significance';
 
 // Source/cache locations default to the real home dirs but honor env overrides so
@@ -1212,6 +1212,54 @@ interface ContextRow {
   branch: string;
 }
 
+/**
+ * Drop every root that another root already contains, so a scope predicate carries one
+ * pair of parameters per genuinely distinct tree.
+ *
+ * Sorted first, which is what makes one pass correct: an ancestor is a strict prefix of its
+ * descendants, and a prefix always sorts before the longer string — so by the time a root is
+ * considered, any root that contains it has already been kept.
+ */
+function coveringRoots(roots: string[]): string[] {
+  const kept: string[] = [];
+  for (const root of [...new Set(roots.filter(Boolean))].sort()) {
+    if (!kept.some((parent) => cwdUnder(root, parent))) kept.push(root);
+  }
+  return kept;
+}
+
+/**
+ * Every directory a repo's sessions can have been recorded in.
+ *
+ * `repo.container` alone is NOT the repo, and this is the bug the container abstraction
+ * hides. In the bare layout every worktree lives under the container, so one prefix covers
+ * all of them — but `git worktree add ../feature-x` on a normal repo puts the new worktree
+ * BESIDE the main one, and `container` falls back to `--show-toplevel`, which resolves to
+ * whichever worktree the caller happens to be standing in (src/repo.ts). Container-and-
+ * descendants therefore returns only the current worktree's sessions from either side,
+ * while the surfaces built on it advertise aggregation.
+ *
+ * The additional roots are the live worktree paths `resolveRepo` already parsed out of
+ * `git worktree list --porcelain` — an enumeration, not a path heuristic. That is precisely
+ * what keeps a `…-v2` SIBLING out: it shares a prefix with the container but git does not
+ * list it as a worktree of this repo, and only a prefix rule could ever have matched it.
+ */
+function repoRoots(repo: RepoInfo, worktreeOnly = false): string[] {
+  if (worktreeOnly) return [repo.currentWorktree];
+  return coveringRoots([repo.container, ...repo.branches.keys()]);
+}
+
+/** A boundary-aware `cwd` predicate over several roots. Parenthesized as a whole: OR'd
+ *  alternatives inside a clause that gets AND'd with tool/date filters must not leak. */
+function repoScopeClause(roots: string[]): { clause: string; params: string[] } {
+  // No roots means no repo, which must select nothing rather than everything.
+  if (roots.length === 0) return { clause: '(1 = 0)', params: [] };
+  return {
+    clause: '(' + roots.map(() => '(cwd = ? OR cwd GLOB ?)').join(' OR ') + ')',
+    params: roots.flatMap((root) => [root, globPrefix(root)]),
+  };
+}
+
 function parseFiles(json: string): string[] {
   try {
     const parsed = JSON.parse(json);
@@ -1234,12 +1282,13 @@ export async function getContextPrimer(repo: RepoInfo, opts: ContextOptions): Pr
   const limit = rowLimit(opts.limit, 10);
   const headlineCap = rowLimit(opts.headlineCap, 40);
   const toolFilter = opts.tool ?? '';
-  const root = opts.worktreeOnly ? repo.currentWorktree : repo.container;
 
-  // Boundary-aware scope: the container (or current worktree) itself or any
-  // descendant — captures every worktree under it while excluding `…-v2` siblings.
-  const conditions: string[] = ['(cwd = ? OR cwd GLOB ?)'];
-  const params: (string | number)[] = [root, globPrefix(root)];
+  // Boundary-aware scope: every root of this repo (or just the current worktree) and their
+  // descendants — captures linked worktrees wherever git put them, while excluding a
+  // same-prefix `…-v2` sibling that is not a worktree of this repo at all.
+  const scope = repoScopeClause(repoRoots(repo, opts.worktreeOnly));
+  const conditions: string[] = [scope.clause];
+  const params: (string | number)[] = [...scope.params];
 
   if (toolFilter) {
     conditions.push('tool = ?');
@@ -1341,9 +1390,9 @@ export interface RepoSessionRow {
 /**
  * The newest `limit` sessions in a repo, plus the untruncated total.
  *
- * Same boundary-aware scope as getContextPrimer — the container itself or any descendant,
- * so linked worktrees aggregate while a `…-v2` sibling stays out. Bounded in SQL rather
- * than in JS as the primer does: MCP clients call `resources/list` speculatively, and
+ * Same boundary-aware scope as getContextPrimer — every root of the repo plus their
+ * descendants, so linked worktrees aggregate while a `…-v2` sibling stays out. Bounded in
+ * SQL rather than in JS as the primer does: MCP clients call `resources/list` speculatively, and
  * selecting thousands of rows to hand back 50 is exactly the enumeration cost this surface
  * exists to avoid.
  *
@@ -1359,9 +1408,8 @@ export async function recentSessionsForRepo(
   const db = getDb();
   await ensureIndexFresh();
 
-  const root = repo.container;
-  const where = 'WHERE (cwd = ? OR cwd GLOB ?)';
-  const params: [string, string] = [root, globPrefix(root)];
+  const scope = repoScopeClause(repoRoots(repo));
+  const where = `WHERE ${scope.clause}`;
 
   const rows = db
     .query<RepoSessionRow, any[]>(
@@ -1371,13 +1419,13 @@ export async function recentSessionsForRepo(
        ORDER BY created_at DESC, date DESC
        LIMIT ?`,
     )
-    .all(...params, rowLimit(limit, MAX_REPO_SESSION_ROWS));
+    .all(...scope.params, rowLimit(limit, MAX_REPO_SESSION_ROWS));
 
   // COUNT(DISTINCT session_id), not COUNT(*): the total has to be countable against the
   // grouped rows above, or a repo with a collision reports more sessions than exist.
   const total = db
-    .query<{ n: number }, [string, string]>(`SELECT COUNT(DISTINCT session_id) AS n FROM sessions ${where}`)
-    .get(...params);
+    .query<{ n: number }, string[]>(`SELECT COUNT(DISTINCT session_id) AS n FROM sessions ${where}`)
+    .get(...scope.params);
 
   return { rows, totalCount: total?.n ?? 0 };
 }
