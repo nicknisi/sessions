@@ -7,6 +7,10 @@ import { runReport, parseReportArgs } from './index.ts';
 const tmp = mkdtempSync(join(tmpdir(), 'sessions-report-run-'));
 afterAll(() => rmSync(tmp, { recursive: true, force: true }));
 
+// runReport now writes an incremental parse cache. Point it at the fixture dir so
+// a test run never touches (or evicts) the real one.
+process.env.SESSIONS_CACHE_DIR = join(tmp, 'cache');
+
 const claudeDir = join(tmp, 'claude');
 mkdirSync(join(claudeDir, 'proj'), { recursive: true });
 writeFileSync(

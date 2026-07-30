@@ -35,6 +35,8 @@ export interface ReportOptions {
   cwd?: string;
   offline?: boolean;
   refreshPricing?: boolean;
+  /** Bypass the incremental parse cache and read every transcript. */
+  noCache?: boolean;
 }
 
 export interface ReportResult {
@@ -96,6 +98,9 @@ export function parseReportArgs(argv: string[]): ReportOptions {
       case '--refresh-pricing':
         opts.refreshPricing = true;
         break;
+      case '--no-cache':
+        opts.noCache = true;
+        break;
       case '--tool': {
         const v = argv[++i] ?? '';
         const mapped = TOOL_MAP[v];
@@ -147,7 +152,7 @@ export async function runReport(opts: ReportOptions): Promise<ReportResult> {
   // Resolved before gathering so a bounded period can skip transcripts that were
   // last written before the window — the difference between reading the whole
   // corpus and reading the part that can matter.
-  const events = await gatherEvents(opts.roots ?? defaultRoots(), tools, { since: from });
+  const events = await gatherEvents(opts.roots ?? defaultRoots(), tools, { since: from, noCache: opts.noCache });
   // Project scoping matches by resolved name on both sides, so events whose
   // cwd lacks a known project ('unknown') drop out of a --here report.
   const hereProject = opts.here ? resolveProject(opts.cwd ?? process.cwd()) : undefined;

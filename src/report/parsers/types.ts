@@ -24,4 +24,8 @@ export interface UsageEvent {
   agent?: { id: string; type: string };
   /** git branch recorded on the message, when the tool logs one. Claude Code only. */
   branch?: string;
+  /** Identifies one API response across the transcript files it was copied into
+   *  (resume/fork rewrites the same response into each). Events sharing a key are
+   *  the same response and are counted once. Absent when the source gives no id. */
+  dedupKey?: string;
 }

@@ -34,7 +34,15 @@ function isMessage(v: unknown): v is PiMessageLine {
 
 export async function parsePi(root: string, opts: WalkOptions = {}): Promise<UsageEvent[]> {
   const events: UsageEvent[] = [];
-  for await (const path of walkJsonl(root, opts)) {
+  for await (const path of walkJsonl(root, opts)) events.push(...(await parsePiFile(path)));
+  return events;
+}
+
+/** Parse one session file. Self-contained (the session record is inside it), so
+ *  the result is cacheable against the file's mtime. */
+export async function parsePiFile(path: string): Promise<UsageEvent[]> {
+  const events: UsageEvent[] = [];
+  {
     let session: PiSessionLine | null = null;
     for await (const line of readJsonlLines(path)) {
       if (isSession(line)) {

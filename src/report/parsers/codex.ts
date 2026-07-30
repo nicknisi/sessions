@@ -41,7 +41,15 @@ function isObject(v: unknown): v is Record<string, unknown> {
 
 export async function parseCodex(root: string, opts: WalkOptions = {}): Promise<UsageEvent[]> {
   const events: UsageEvent[] = [];
-  for await (const path of walkJsonl(root, opts)) {
+  for await (const path of walkJsonl(root, opts)) events.push(...(await parseCodexFile(path)));
+  return events;
+}
+
+/** Parse one rollout file. Self-contained (session meta and model are declared
+ *  inside it), so the result is cacheable against the file's mtime. */
+export async function parseCodexFile(path: string): Promise<UsageEvent[]> {
+  const events: UsageEvent[] = [];
+  {
     let meta: SessionMetaPayload | null = null;
     let model: string | null = null;
     for await (const line of readJsonlLines(path)) {
