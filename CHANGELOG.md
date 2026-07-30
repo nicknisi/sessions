@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.16.0](https://github.com/nicknisi/sessions/compare/v1.15.3...v1.16.0) (2026-07-30)
+
+
+### Features
+
+* **mcp:** bound the search payload, modernize the tool surface, add resources and prompts ([#51](https://github.com/nicknisi/sessions/issues/51)) ([e4d47c3](https://github.com/nicknisi/sessions/commit/e4d47c3bd4c2328804aaf41ac7dbb7b2fc8331a6))
+
 ## [1.15.3](https://github.com/nicknisi/sessions/compare/v1.15.2...v1.15.3) (2026-07-24)
 
 
