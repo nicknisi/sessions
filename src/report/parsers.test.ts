@@ -91,6 +91,115 @@ describe('parseClaudeCode 1h cache split', () => {
   });
 });
 
+// A subagent transcript as Claude Code writes it: under <session>/subagents/,
+// named agent-<agentId>.jsonl, with isSidechain + agentId on every record and the
+// PARENT's sessionId (the dispatch is not a session of its own).
+function subagentFile(root: string, sessionId: string, agentId: string, opts: { metaType?: string } = {}): void {
+  const dir = join(root, 'proj', sessionId, 'subagents');
+  mkdirSync(dir, { recursive: true });
+  const line =
+    JSON.stringify({
+      type: 'assistant',
+      sessionId,
+      agentId,
+      isSidechain: true,
+      cwd: '/Users/x/Developer/sessions',
+      gitBranch: 'feat/thing',
+      timestamp: '2026-06-01T14:35:00Z',
+      requestId: `req_${agentId}`,
+      message: {
+        id: `msg_${agentId}`,
+        model: 'claude-opus-4-8',
+        usage: { input_tokens: 100, output_tokens: 50, cache_creation_input_tokens: 10, cache_read_input_tokens: 900 },
+      },
+    }) + '\n';
+  writeFileSync(join(dir, `agent-${agentId}.jsonl`), line);
+  if (opts.metaType) {
+    writeFileSync(
+      join(dir, `agent-${agentId}.meta.json`),
+      JSON.stringify({ agentType: opts.metaType, description: 'a dispatch' }),
+    );
+  }
+}
+
+// The parent-side record that closes an Agent/Task tool call and names the type.
+function dispatchRecord(agentId: string, agentType: string): string {
+  return (
+    JSON.stringify({
+      type: 'user',
+      sessionId: 's1',
+      timestamp: '2026-06-01T14:36:00Z',
+      toolUseResult: { agentId, agentType, status: 'completed', totalTokens: 160 },
+    }) + '\n'
+  );
+}
+
+describe('parseClaudeCode subagent attribution', () => {
+  test('types a dispatch from its sibling meta.json', async () => {
+    const root = join(tmp, 'claude-sub-meta');
+    subagentFile(root, 's1', 'a1', { metaType: 'Explore' });
+    const events = await parseClaudeCode(root);
+    expect(events.length).toBe(1);
+    expect(events[0]!.agent).toEqual({ id: 'a1', type: 'Explore' });
+  });
+
+  test("falls back to the parent's toolUseResult when meta.json is missing", async () => {
+    const root = join(tmp, 'claude-sub-parent');
+    subagentFile(root, 's1', 'a2');
+    writeFileSync(join(root, 'proj', 'parent.jsonl'), dispatchRecord('a2', 'general-purpose'));
+    const events = await parseClaudeCode(root);
+    expect(events[0]!.agent).toEqual({ id: 'a2', type: 'general-purpose' });
+  });
+
+  test('meta.json wins over the parent record', async () => {
+    const root = join(tmp, 'claude-sub-precedence');
+    subagentFile(root, 's1', 'a3', { metaType: 'Explore' });
+    writeFileSync(join(root, 'proj', 'parent.jsonl'), dispatchRecord('a3', 'stale-type'));
+    const events = await parseClaudeCode(root);
+    expect(events[0]!.agent!.type).toBe('Explore');
+  });
+
+  test('names auto-compaction rather than leaving it unknown', async () => {
+    const root = join(tmp, 'claude-sub-compact');
+    subagentFile(root, 's1', 'acompact-xyz');
+    const events = await parseClaudeCode(root);
+    expect(events[0]!.agent!.type).toBe('auto-compact');
+  });
+
+  test('an untypeable dispatch still counts, as unknown', async () => {
+    const root = join(tmp, 'claude-sub-unknown');
+    subagentFile(root, 's1', 'a4');
+    const events = await parseClaudeCode(root);
+    expect(events[0]!.agent).toEqual({ id: 'a4', type: 'unknown' });
+  });
+
+  test('main-loop messages carry no agent, and branch is captured', async () => {
+    const root = join(tmp, 'claude-mainloop');
+    mkdirSync(root, { recursive: true });
+    writeFileSync(
+      join(root, 'a.jsonl'),
+      JSON.stringify({
+        type: 'assistant',
+        sessionId: 's1',
+        cwd: '/x',
+        gitBranch: 'main',
+        timestamp: '2026-06-01T14:30:00Z',
+        message: { id: 'm1', model: 'claude-opus-4-8', usage: { input_tokens: 1, output_tokens: 1 } },
+      }) + '\n',
+    );
+    const events = await parseClaudeCode(root);
+    expect(events[0]!.agent).toBeUndefined();
+    expect(events[0]!.branch).toBe('main');
+  });
+
+  test('user records never become usage events', async () => {
+    const root = join(tmp, 'claude-user-only');
+    mkdirSync(root, { recursive: true });
+    writeFileSync(join(root, 'a.jsonl'), dispatchRecord('a9', 'Explore'));
+    expect(await parseClaudeCode(root)).toEqual([]);
+  });
+});
+
 function codexLines(usage: Record<string, number>): string {
   return (
     JSON.stringify({ type: 'session_meta', timestamp: '2026-06-01T10:00:00Z', payload: { id: 'sess1', cwd: '/x' } }) +

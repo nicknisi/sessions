@@ -1,6 +1,7 @@
 import { describe, test, expect } from 'bun:test';
 import { aggregate } from './aggregate.ts';
 import { toUsageReport } from './schema.ts';
+import { computeFacets } from './facets.ts';
 import type { UsageEvent } from './parsers/types.ts';
 
 const events: UsageEvent[] = [
@@ -11,11 +12,13 @@ const events: UsageEvent[] = [
     timestamp: '2026-06-01T14:30:00Z',
     sessionId: 's1',
     projectPath: '/Users/x/Developer/sessions',
+    branch: 'main',
     tokens: { input: 1000, output: 500, cacheRead: 10000, cacheWrite: 200 },
   },
 ];
 const report = toUsageReport(
   aggregate({ events, prs: [], now: '2026-06-06T00:00:00Z', tz: 'UTC', exclude: new Set<string>(), priorDaily: [] }),
+  computeFacets(events, 'UTC'),
 );
 
 describe('UsageReport contract', () => {
@@ -39,9 +42,22 @@ describe('UsageReport contract', () => {
       'byProject',
       'daily',
       'insights',
+      'cache',
+      'subagents',
+      'byBranch',
     ]) {
       expect(report).toHaveProperty(key);
     }
+  });
+
+  test('facets ride along: cache volume, empty subagents, branch attribution', () => {
+    expect(report.cache.cacheReadTokens).toBe(10000);
+    expect(report.cache.hitRate).toBeCloseTo(10000 / 11200, 4);
+    expect(report.subagents.dispatches).toBe(0);
+    expect(report.subagents.byType).toEqual([]);
+    expect(report.byBranch).toHaveLength(1);
+    expect(report.byBranch[0]!.branch).toBe('main');
+    expect(report.byBranch[0]!.project).toBe('sessions');
   });
 
   test('insights shape; weekly entries carry no PR fields', () => {

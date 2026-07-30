@@ -1,4 +1,13 @@
-import type { UsageReport, ToolBreakdown, ModelBreakdown, ProjectBreakdown, PricingWarning } from './schema.ts';
+import type {
+  UsageReport,
+  ToolBreakdown,
+  ModelBreakdown,
+  ProjectBreakdown,
+  BranchBreakdown,
+  SubagentReport,
+  CacheStats,
+  PricingWarning,
+} from './schema.ts';
 
 const esc = (s: string): string =>
   s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -170,6 +179,14 @@ h2 .hint{font-weight:400;text-transform:none;color:var(--muted);font-size:10.5px
 .barlist .fill{display:block;height:100%;background:var(--accent);}
 .barlist .item.peak .fill{background:var(--ink);}
 .barlist .val{font-family:var(--mono);font-size:11.5px;font-weight:600;}
+.statgrid.sub{border-top-width:3px;margin-top:0;}
+table.tbl{width:100%;border-collapse:collapse;font-size:12.5px;}
+table.tbl th{text-align:left;font-family:var(--mono);font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);padding:0 10px 6px 0;border-bottom:1px solid var(--track);white-space:nowrap;}
+table.tbl td{padding:6px 10px 6px 0;border-bottom:1px solid var(--grid);}
+table.tbl th.num,table.tbl td.num{text-align:right;font-family:var(--mono);font-size:11.5px;font-variant-numeric:tabular-nums;padding-right:0;}
+table.tbl td.t{font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:16em;}
+table.tbl td.dim{color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:14em;}
+.trunc{font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-top:9px;}
 svg.bars rect{transition:opacity .15s ease-out;}
 svg.bars rect:hover{opacity:.7;}
 .tip{position:fixed;pointer-events:none;background:var(--ink);color:var(--bg);font-family:var(--mono);font-size:11px;padding:4px 7px;border-radius:4px;opacity:0;transform:translate(-50%,-130%);white-space:nowrap;z-index:var(--z-tooltip);}
@@ -195,13 +212,82 @@ document.addEventListener('click',function(e){if(dd.hasAttribute('open')&&!dd.co
 document.addEventListener('keydown',function(e){if(e.key==='Escape')dd.removeAttribute('open');});
 console.log('sessions report \\u2014 generated locally from your own session logs. No telemetry.');})();`;
 
-// A loud, URL-free banner naming every model that had tokens but no pricing
-// match, so an unpriced model is visible rather than silently counted as $0.
+// A loud, URL-free banner naming every model that had no price of its own. The
+// two cases read differently on purpose: a same-family estimate still produces a
+// number, an unpriced model leaves a hole in the total.
 function warningBanner(warnings: PricingWarning[]): string {
   if (warnings.length === 0) return '';
-  const n = warnings.length;
-  const models = warnings.map((w) => `<span class="m">${esc(w.model)}</span>`).join('');
-  return `<div class="pricewarn" role="alert"><div class="hd">${n} model${n === 1 ? '' : 's'} had no pricing — cost may be understated</div><div class="models">${models}</div></div>`;
+  const estimated = warnings.filter((w) => w.pricedAs);
+  const zeroed = warnings.filter((w) => !w.pricedAs);
+  const block = (head: string, list: PricingWarning[], fmtName: (w: PricingWarning) => string): string =>
+    list.length === 0
+      ? ''
+      : `<div class="pricewarn" role="alert"><div class="hd">${esc(head)}</div><div class="models">${list
+          .map((w) => `<span class="m">${esc(fmtName(w))}</span>`)
+          .join('')}</div></div>`;
+  return (
+    block(
+      `${zeroed.length} model${zeroed.length === 1 ? '' : 's'} had no pricing — cost is understated`,
+      zeroed,
+      (w) => w.model,
+    ) +
+    block(
+      `${estimated.length} model${estimated.length === 1 ? '' : 's'} priced at a same-family estimate`,
+      estimated,
+      (w) => `${w.model} → ${w.pricedAs}`,
+    )
+  );
+}
+
+const fmtPct = (frac: number): string => (frac * 100).toFixed(1) + '%';
+
+// Cache volume sits outside the headline token count (which excludes replayed
+// context by design), so it gets its own strip rather than being folded in.
+function cacheStrip(c: CacheStats): string {
+  return `<div class="statgrid sub">
+<div class="cell"><div class="n">${fmtPct(c.hitRate)}</div><div class="l">cache hit rate</div></div>
+<div class="cell"><div class="n">${fmtTokens(c.cacheReadTokens)}</div><div class="l">cache read</div></div>
+<div class="cell"><div class="n">${fmtTokens(c.cacheWriteTokens)}</div><div class="l">cache write</div></div>
+<div class="cell"><div class="n">${fmtUSD(c.savedUSD)}</div><div class="l">saved vs uncached</div></div>
+</div>`;
+}
+
+function subagentSection(sub: SubagentReport): string {
+  if (sub.dispatches === 0) return '';
+  const byType = barList(
+    sub.byType.slice(0, 8).map((t) => ({
+      name: t.agentType,
+      value: t.costUSD,
+      tip: `${fmtTokens(t.tokens)} tokens · ${t.dispatches} dispatches · ${t.messages} msgs`,
+    })),
+  );
+  const rows = sub.topDispatches
+    .map(
+      (d) =>
+        `<tr><td class="t">${esc(d.agentType)}</td><td class="dim">${esc(d.project)}</td><td class="dim">${esc(d.date)}</td><td class="num">${fmtTokens(d.tokens)}</td><td class="num">${fmtUSD(d.costUSD)}</td></tr>`,
+    )
+    .join('');
+  // Say what the table leaves out — a silent top-N reads as "this is all of them".
+  const trunc =
+    sub.totalDispatches > sub.topDispatches.length
+      ? `<div class="trunc">showing top ${sub.topDispatches.length} of ${fmtInt(sub.totalDispatches)} dispatches · full list in the JSON report</div>`
+      : '';
+  return `<section class="blk"><h2>Subagents <span class="hint">${fmtPct(sub.shareOfCost)} of spend · ${fmtInt(sub.dispatches)} dispatches</span></h2>
+<div class="cols">
+<div><table class="tbl"><thead><tr><th>Agent type</th><th>Project</th><th>First seen</th><th class="num">Tokens</th><th class="num">Cost</th></tr></thead><tbody>${rows}</tbody></table>${trunc}</div>
+<div><div class="barlist">${byType}</div></div>
+</div></section>`;
+}
+
+function branchSection(branches: BranchBreakdown[]): string {
+  if (branches.length === 0) return '';
+  return `<div><h2>By branch</h2><div class="barlist">${barList(
+    branches.slice(0, 8).map((b) => ({
+      name: b.branch,
+      value: b.costUSD,
+      tip: `${b.project} · ${fmtTokens(b.tokens)} tokens · ${b.sessions} sessions`,
+    })),
+  )}</div></div>`;
 }
 
 export function renderHtml(data: UsageReport): string {
@@ -252,6 +338,10 @@ export function renderHtml(data: UsageReport): string {
     s.currentStreakDays >= 3 && s.currentStreakDays === s.longestStreakDays
       ? `<strong>${s.currentStreakDays}-day streak</strong>, longest yet`
       : `longest streak <b>${s.longestStreakDays} days</b>`;
+  const subNote =
+    data.subagents.dispatches > 0
+      ? ` · <strong>${fmtPct(data.subagents.shareOfCost)}</strong> of it spent by subagents`
+      : '';
 
   return `<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -280,7 +370,8 @@ ${warningBanner(data.warnings)}
 <div class="cell"><div class="n">${fmtInt(s.messages)}</div><div class="l">messages</div></div>
 <div class="cell"><div class="n">${s.activeDays}</div><div class="l">active days</div></div>
 </div>
-<p class="note">${streak} · busiest at <b>${esc(hourLabel(s.peakHourLocal))}</b> · top model <strong>${esc(s.favoriteModel.label)}</strong></p>
+${cacheStrip(data.cache)}
+<p class="note">${streak} · busiest at <b>${esc(hourLabel(s.peakHourLocal))}</b> · top model <strong>${esc(s.favoriteModel.label)}</strong>${subNote}</p>
 </div>
 <section class="blk"><h2>Daily cost <span class="hint">USD per day</span></h2>${dailyBars}
 ${firstDay && lastDay ? `<div class="axis"><span>${esc(formatDate(firstDay))}</span><span>${esc(formatDate(lastDay))}</span></div>` : ''}</section>
@@ -292,7 +383,9 @@ ${firstDay && lastDay ? `<div class="axis"><span>${esc(formatDate(firstDay))}</s
 <div><h2>By tool</h2><div class="barlist">${byTool}</div></div>
 <div><h2>By model</h2><div class="barlist">${byModel}</div></div>
 <div><h2>By project</h2><div class="barlist">${byProject}</div></div>
+${branchSection(data.byBranch)}
 </section>
+${subagentSection(data.subagents)}
 <footer class="rep"><span>sessions usage report</span><span>${s.activeDays} active days</span></footer>
 </div>
 <div class="tip" id="tip"></div>

@@ -1,7 +1,8 @@
 // Sessions-owned (forked from tokenmaxing's parser). Codex's input_tokens are cache-inclusive and
 // output_tokens already include reasoning; correct both so totals reflect actual billing (and match ccusage).
 import type { UsageEvent } from './types.ts';
-import { walkJsonl, readJsonlLines } from './util.ts';
+import { readJsonlLines } from './util.ts';
+import { walkJsonl, type WalkOptions } from './walk.ts';
 
 interface CodexEnvelope {
   timestamp: string;
@@ -38,9 +39,9 @@ function isObject(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === 'object' && !Array.isArray(v);
 }
 
-export async function parseCodex(root: string): Promise<UsageEvent[]> {
+export async function parseCodex(root: string, opts: WalkOptions = {}): Promise<UsageEvent[]> {
   const events: UsageEvent[] = [];
-  for await (const path of walkJsonl(root)) {
+  for await (const path of walkJsonl(root, opts)) {
     let meta: SessionMetaPayload | null = null;
     let model: string | null = null;
     for await (const line of readJsonlLines(path)) {

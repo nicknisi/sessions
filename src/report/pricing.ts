@@ -35,6 +35,9 @@ export interface UsageCounts {
 export interface PricingWarning {
   model: string;
   tokens: number;
+  /** Set when the model had no price of its own and was billed at a same-family
+   *  rate instead. Absent means the tokens were genuinely counted as $0. */
+  pricedAs?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -126,6 +129,8 @@ const PRICING_MAP: Record<string, ModelPricing> = baseMap();
 // shared map in place since find()/computeCost read the module singleton.
 export function mergeRuntimePricing(records: Record<string, ModelPricing>): void {
   Object.assign(PRICING_MAP, records);
+  findCache.clear();
+  familyCache.clear();
 }
 
 // Restore the map to the embedded snapshot + overrides, dropping any runtime
@@ -133,6 +138,8 @@ export function mergeRuntimePricing(records: Record<string, ModelPricing>): void
 export function resetPricing(): void {
   for (const key of Object.keys(PRICING_MAP)) delete PRICING_MAP[key];
   Object.assign(PRICING_MAP, baseMap());
+  findCache.clear();
+  familyCache.clear();
 }
 
 // ---------------------------------------------------------------------------
@@ -251,7 +258,20 @@ function pricingKeyMatches(candidate: string, model: string, normalizedModel: st
   );
 }
 
+// find() walks the whole pricing map on a miss, and a report prices every event
+// (several times over, once facets are computed), so memoize per model id.
+// Both caches are cleared whenever the map changes.
+const findCache = new Map<string, ModelPricing | undefined>();
+const familyCache = new Map<string, FamilyMatch | undefined>();
+
 export function find(modelId: string): ModelPricing | undefined {
+  if (findCache.has(modelId)) return findCache.get(modelId);
+  const found = findUncached(modelId);
+  findCache.set(modelId, found);
+  return found;
+}
+
+function findUncached(modelId: string): ModelPricing | undefined {
   const exact = PRICING_MAP[modelId];
   if (exact) return exact;
 
@@ -266,6 +286,73 @@ export function find(modelId: string): ModelPricing | undefined {
     }
   }
   return best?.pricing;
+}
+
+// ---------------------------------------------------------------------------
+// Family fallback.
+//
+// A model that ships before the price map catches up (a fresh `claude-opus-5`,
+// say) otherwise costs $0, which silently understates the headline number by
+// however much of the period ran on it. Bill it at the newest rate in its own
+// family instead, and keep the warning — flagged with what it was priced as, so
+// an estimate never passes for a quote.
+//
+// Candidates come from BUILTIN_OVERRIDES, not the full LiteLLM map: those keys
+// are hand-maintained, unprefixed, and one per released version, so "newest
+// opus" resolves cleanly instead of colliding with `bedrock/…` aliases. Stems
+// are listed explicitly so a loose one (`gpt`) can never swallow an unrelated
+// family (`gpt-4o` must not be priced as `gpt-5.5`).
+// ---------------------------------------------------------------------------
+interface FamilyMatch {
+  key: string;
+  pricing: ModelPricing;
+}
+
+const FAMILY_STEMS = ['claude-fable', 'claude-opus', 'claude-sonnet', 'claude-haiku', 'gpt-5'];
+
+// Trailing numeric segments after the stem, as numbers: `claude-opus-4-8` → [4,8].
+function versionSegments(normalizedKey: string, stem: string): number[] {
+  const rest = normalizedKey.slice(stem.length);
+  const out: number[] = [];
+  for (const part of rest.split('-')) {
+    if (part.length === 0) continue;
+    if (!/^[0-9]+$/.test(part)) break;
+    out.push(Number(part));
+  }
+  return out;
+}
+
+// Later version wins; on a shared prefix the more specific one does ([4,8] > [4]).
+function compareVersions(a: number[], b: number[]): number {
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const d = (a[i] ?? -1) - (b[i] ?? -1);
+    if (d !== 0) return d;
+  }
+  return 0;
+}
+
+function findFamilyUncached(modelId: string): FamilyMatch | undefined {
+  const normalized = normalizedPricingKey(modelId);
+  const stem = FAMILY_STEMS.find((s) => normalized.includes(s));
+  if (!stem) return undefined;
+  let best: { key: string; version: number[] } | undefined;
+  for (const key of Object.keys(BUILTIN_OVERRIDES)) {
+    const nk = normalizedPricingKey(key);
+    if (!nk.startsWith(stem)) continue;
+    const version = versionSegments(nk, stem);
+    if (!best || compareVersions(version, best.version) > 0) best = { key, version };
+  }
+  // Resolve through the live map so a runtime price for the winning key is used
+  // rather than the frozen override it was selected by.
+  if (!best) return undefined;
+  return { key: best.key, pricing: PRICING_MAP[best.key] ?? BUILTIN_OVERRIDES[best.key]! };
+}
+
+export function findFamily(modelId: string): FamilyMatch | undefined {
+  if (familyCache.has(modelId)) return familyCache.get(modelId);
+  const found = findFamilyUncached(modelId);
+  familyCache.set(modelId, found);
+  return found;
 }
 
 // ---------------------------------------------------------------------------
@@ -308,11 +395,19 @@ export function resetPricingWarnings(): void {
 
 export function computeCost(modelId: string, usage: UsageCounts): number {
   const p = find(modelId);
-  if (!p) {
-    const total = usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
+  if (p) return priceWith(p, usage);
+
+  const total = usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
+  const family = findFamily(modelId);
+  if (!family) {
     if (total > 0) warnings.push({ model: modelId, tokens: total });
     return 0;
   }
+  if (total > 0) warnings.push({ model: modelId, tokens: total, pricedAs: family.key });
+  return priceWith(family.pricing, usage);
+}
+
+function priceWith(p: ModelPricing, usage: UsageCounts): number {
   const cacheRead = p.cacheReadPerToken ?? p.inputPerToken * 0.1;
   const cacheWrite = p.cacheWritePerToken ?? p.inputPerToken * 1.25;
   // 1h cache-creation is billed at input × 2 (ccusage CACHE_CREATE_1H_INPUT_MULTIPLIER);

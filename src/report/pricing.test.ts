@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   find,
+  findFamily,
   computeCost,
   drainPricingWarnings,
   resetPricingWarnings,
@@ -230,5 +231,46 @@ describe('mergeRuntimePricing / resetPricing', () => {
     expect(find('claude-opus-4-8')!.inputPerToken).toBe(9e-6);
     resetPricing();
     expect(find('claude-opus-4-8')!.inputPerToken).toBe(5e-6);
+  });
+});
+
+describe('family fallback', () => {
+  // An unpriced model in a known family is billed at that family's newest rate
+  // and flagged, rather than silently counted as $0.
+  test('an unreleased opus is billed at the newest opus rate, and flagged', () => {
+    expect(find('claude-opus-9')).toBeUndefined();
+    const cost = computeCost('claude-opus-9', counts({ input: 1_000_000 }));
+    expect(cost).toBeCloseTo(5, 6); // claude-opus-4-8 input rate
+    const [w] = drainPricingWarnings();
+    expect(w).toMatchObject({ model: 'claude-opus-9', tokens: 1_000_000, pricedAs: 'claude-opus-4-8' });
+  });
+
+  test('picks the highest version in the family, not the first or longest key', () => {
+    const viaFamily = computeCost('claude-sonnet-9', counts({ input: 1_000_000 }));
+    expect(viaFamily).toBeCloseTo(3, 6); // claude-sonnet-4-6, not a 4-5 or legacy rate
+  });
+
+  test('a runtime price for the winning family key is used over the frozen override', () => {
+    mergeRuntimePricing({ 'claude-opus-4-8': { inputPerToken: 40e-6, outputPerToken: 0 } });
+    expect(computeCost('claude-opus-9', counts({ input: 1_000_000 }))).toBeCloseTo(40, 6);
+  });
+
+  test('a model in no known family is still $0 and warned WITHOUT a pricedAs', () => {
+    expect(computeCost('llama-3-70b-local', counts({ input: 1_000_000 }))).toBe(0);
+    const [w] = drainPricingWarnings();
+    expect(w!.pricedAs).toBeUndefined();
+  });
+
+  test('a loose stem never swallows a neighbouring family', () => {
+    // Asserted on findFamily directly: gpt-4o has a real price of its own, so
+    // going through computeCost would test find(), not the stem rule.
+    expect(findFamily('gpt-4o-mini')).toBeUndefined();
+    expect(findFamily('claude-instant-1')).toBeUndefined();
+    expect(findFamily('claude-opus-9')?.key).toBe('claude-opus-4-8');
+  });
+
+  test('a priced model never goes near the fallback', () => {
+    computeCost('claude-opus-4-8', counts({ input: 1_000_000 }));
+    expect(drainPricingWarnings()).toEqual([]);
   });
 });

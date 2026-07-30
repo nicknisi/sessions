@@ -5,6 +5,8 @@ import type { ToolId } from './types.ts';
 import { gatherEvents, defaultRoots, type ReportRoots } from './extract.ts';
 import { aggregate } from './aggregate.ts';
 import { renderHtml } from './html.ts';
+import { renderText } from './text.ts';
+import { computeFacets } from './facets.ts';
 import { toUsageReport } from './schema.ts';
 import { drainPricingWarnings, resetPricingWarnings, mergeRuntimePricing } from './pricing.ts';
 import { loadRuntimePricing } from './pricing-cache.ts';
@@ -13,7 +15,7 @@ import { resolveProject } from './project.ts';
 import { localDate } from './parsers/util.ts';
 import { writeStdoutFully } from '../stdout.ts';
 
-export type ReportFormat = 'json' | 'html' | 'both';
+export type ReportFormat = 'json' | 'html' | 'both' | 'text';
 
 export interface ReportOptions {
   format: ReportFormat;
@@ -59,7 +61,7 @@ export function parseReportArgs(argv: string[]): ReportOptions {
     switch (a) {
       case '--format': {
         const v = argv[++i];
-        if (v !== 'json' && v !== 'html' && v !== 'both') die('--format must be json|html|both');
+        if (v !== 'json' && v !== 'html' && v !== 'both' && v !== 'text') die('--format must be json|html|both|text');
         opts.format = v;
         break;
       }
@@ -130,7 +132,6 @@ export async function runReport(opts: ReportOptions): Promise<ReportResult> {
   const now = opts.now ?? new Date().toISOString();
   const tz = opts.tz;
   const tools = opts.tool ? new Set<ToolId>([opts.tool]) : undefined;
-  const events = await gatherEvents(opts.roots ?? defaultRoots(), tools);
 
   const todayLocal = localDate(now, tz);
   // Precedence: a named preset wins, then --days, then explicit --from/--to.
@@ -141,6 +142,11 @@ export async function runReport(opts: ReportOptions): Promise<ReportResult> {
   } else if (opts.days) {
     from = daysAgo(todayLocal, opts.days);
   }
+
+  // Resolved before gathering so a bounded period can skip transcripts that were
+  // last written before the window — the difference between reading the whole
+  // corpus and reading the part that can matter.
+  const events = await gatherEvents(opts.roots ?? defaultRoots(), tools, { since: from });
   // Project scoping matches by resolved name on both sides, so events whose
   // cwd lacks a known project ('unknown') drop out of a --here report.
   const hereProject = opts.here ? resolveProject(opts.cwd ?? process.cwd()) : undefined;
@@ -166,26 +172,45 @@ export async function runReport(opts: ReportOptions): Promise<ReportResult> {
     if (live) mergeRuntimePricing(live);
   }
 
+  // Facets price the same events a second time, so they run BEFORE the reset —
+  // otherwise every unpriced model would be warned about twice and its token
+  // count doubled in the drained warning.
+  const facets = computeFacets(inRange, tz);
+
   // Clear any pricing warnings from a prior run so the collector reflects only
   // this aggregation (computeCost accumulates as a side effect during aggregate).
   resetPricingWarnings();
   const data = aggregate({ events: inRange, prs: [], now, tz, exclude: new Set<string>(), priorDaily: [] });
-  const report = toUsageReport(data);
+  const report = toUsageReport(data, facets);
   // The internal aggregate always reports "to today"; reflect the requested
   // window instead so an explicit range (e.g. --month 2026-05) reads correctly.
   report.period = { from: from ?? data.period.from, to: to ?? data.period.to };
 
   // Drain unpriced-model warnings into the report and surface them loudly. A
-  // model with tokens but no price match is never silently zeroed.
+  // model with tokens but no price match is never silently zeroed — it is either
+  // estimated at a same-family rate (pricedAs) or reported as a $0 shortfall.
   report.warnings = drainPricingWarnings();
   if (report.warnings.length > 0) {
-    const models = report.warnings.map((w) => w.model).join(', ');
-    process.stderr.write(
-      `warning: ${report.warnings.length} model(s) had no pricing — cost may be understated: ${models}\n`,
-    );
+    const estimated = report.warnings.filter((w) => w.pricedAs);
+    const zeroed = report.warnings.filter((w) => !w.pricedAs);
+    if (estimated.length > 0) {
+      const list = estimated.map((w) => `${w.model} (as ${w.pricedAs})`).join(', ');
+      process.stderr.write(`warning: ${estimated.length} model(s) priced at a same-family estimate: ${list}\n`);
+    }
+    if (zeroed.length > 0) {
+      const list = zeroed.map((w) => w.model).join(', ');
+      process.stderr.write(`warning: ${zeroed.length} model(s) had no pricing — cost is understated: ${list}\n`);
+    }
   }
   const json = JSON.stringify(report, null, 2);
   const result: ReportResult = { json };
+
+  // `text` goes straight to stdout and writes nothing to disk — it's the quick
+  // "what did today cost" answer, not an artifact.
+  if (opts.format === 'text') {
+    await writeStdoutFully(renderText(report));
+    return result;
+  }
 
   const wantJson = opts.format === 'json' || opts.format === 'both';
   const wantHtml = opts.format === 'html' || opts.format === 'both';

@@ -1,6 +1,7 @@
 // VENDORED VERBATIM from tokenmaxing/src/parsers/pi.ts — do not edit logic here; keep in sync. Public contract: schemaVersion 2.
 import type { UsageEvent } from './types.ts';
-import { walkJsonl, readJsonlLines } from './util.ts';
+import { readJsonlLines } from './util.ts';
+import { walkJsonl, type WalkOptions } from './walk.ts';
 
 interface PiSessionLine {
   type: 'session';
@@ -31,9 +32,9 @@ function isMessage(v: unknown): v is PiMessageLine {
   return !!v && typeof v === 'object' && (v as { type?: unknown }).type === 'message';
 }
 
-export async function parsePi(root: string): Promise<UsageEvent[]> {
+export async function parsePi(root: string, opts: WalkOptions = {}): Promise<UsageEvent[]> {
   const events: UsageEvent[] = [];
-  for await (const path of walkJsonl(root)) {
+  for await (const path of walkJsonl(root, opts)) {
     let session: PiSessionLine | null = null;
     for await (const line of readJsonlLines(path)) {
       if (isSession(line)) {
