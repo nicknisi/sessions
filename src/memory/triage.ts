@@ -214,9 +214,11 @@ export function mergeInto(canonicalId: string, memberIds: string[], todayIso: st
 /**
  * The rows that can suppress a freshly mined candidate, keyed by id.
  *
- * Read this BEFORE `upsertCandidates`. Its ON CONFLICT clause refreshes
- * `evidence` (src/memory/store.ts:139), which overwrites the very
- * `distinctPhrasings` baseline `shouldResurface` compares the fresh count against.
+ * Read this BEFORE `upsertCandidates`, which refreshes `evidence` (src/memory/store.ts).
+ * That write is a union now, so it can no longer walk the `distinctPhrasings` baseline
+ * `shouldResurface` compares against back down — but the ordering stays, because
+ * "the snapshot the filter reads predates the write" is a property worth keeping true
+ * rather than one worth re-deriving from the union rules on every future change.
  * `getPersistedStates` cannot serve here — it projects state and snoozedUntil only,
  * with no evidence — so this goes through `listMemories`, whose state filter is
  * index-backed (idx_memory_state).

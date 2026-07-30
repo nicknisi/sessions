@@ -326,17 +326,19 @@ export function merge(memories: PortableMemory[]): MergedMemory[] {
  * could not set it even if it were: bypassing your topic matcher is a claim on your
  * attention, and no other author gets to make it for you.
  *
- * `local` is the row already in the store, and passing it is NOT optional politeness.
- * `upsertCandidates`'s ON CONFLICT overwrites `evidence` wholesale
- * (src/memory/store.ts:139), and the wire format carries no `sessions` — so importing
- * a bundle without merging first would replace a local row's real session paths with
- * `[]`. That is the difference between "import your own export is a no-op" and "import
- * your own export destroys your evidence".
+ * `local` is the row already in the store, and passing it is what carries the fields the
+ * wire format does not: `sessions` (local paths, deliberately stripped on export),
+ * `kind`, `scope`, `author`, and `alwaysOn`. `upsertCandidates` now unions evidence
+ * rather than replacing it (src/memory/store.ts), so an omitted `local` no longer
+ * destroys a row's session paths — but it would still produce a record that disagrees
+ * with the store on every other field, and "import your own export is a no-op" is the
+ * property this argument exists to guarantee.
  *
  * `distinctPhrasings` takes the MAX rather than the sum, because import is not
  * transactional: re-importing the same bundle must not inflate the count. That count
  * is the baseline `shouldResurface` compares against (src/memory/triage.ts:65-71), so
- * an inflating value would permanently suppress a snoozed memory.
+ * an inflating value would permanently suppress a snoozed memory. `unionEvidence`
+ * applies the same rule on the way into the store, for the same reason.
  *
  * The local row's `scope`, `kind`, and `author` win when there is one. The store keeps
  * a single `author` column and its ON CONFLICT does not update it, so multi-author

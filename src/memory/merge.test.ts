@@ -129,6 +129,79 @@ describe('mergeInto', () => {
   });
 });
 
+describe('merged evidence survives the next mine', () => {
+  // The write-back is only as durable as the next `upsertCandidates` lets it be. A mine
+  // cannot see a merge — it rebuilds each record from transcripts, so it always presents
+  // one phrasing and one session — and a replace-on-conflict write would therefore undo
+  // every merge on the next `memory mine`, silently, taking `shouldResurface`'s baseline
+  // and the cluster's session paths with it. None of that is rebuildable: the clustering
+  // judgment exists nowhere but the row it was written to.
+  const freshMine = (over: Partial<MemoryRecord> = {}): MemoryRecord => ({ ...record(CANON.text), ...over });
+
+  test('a re-mine leaves a merged cluster intact rather than collapsing it to one phrasing', () => {
+    mergeInto(CANON.id, [PARA_1.id, PARA_2.id], '2026-06-01');
+
+    upsertCandidates([freshMine()]);
+
+    const evidence = stored(CANON.id).evidence;
+    expect(evidence.distinctPhrasings).toBe(3);
+    expect(evidence.sessions).toEqual(['/s/a.jsonl', '/s/b.jsonl', '/s/c.jsonl']);
+    expect(evidence.firstSeen).toBe('2026-01-10');
+    expect(evidence.lastSeen).toBe('2026-03-20');
+  });
+
+  test('a re-mine that found the fact in a new session widens the evidence', () => {
+    mergeInto(CANON.id, [PARA_1.id, PARA_2.id], '2026-06-01');
+
+    upsertCandidates([
+      freshMine({
+        evidence: { distinctPhrasings: 1, sessions: ['/s/d.jsonl'], firstSeen: '2026-04-02', lastSeen: '2026-04-02' },
+      }),
+    ]);
+
+    const evidence = stored(CANON.id).evidence;
+    // Union, not replace, and not "keep the old one either" — new evidence still lands.
+    expect(evidence.sessions).toEqual(['/s/a.jsonl', '/s/b.jsonl', '/s/c.jsonl', '/s/d.jsonl']);
+    expect(evidence.lastSeen).toBe('2026-04-02');
+    expect(evidence.firstSeen).toBe('2026-01-10');
+    // A new SESSION is not a new PHRASING: the same wording said twice is still one way
+    // of saying it, which is the whole distinction the field name carries.
+    expect(evidence.distinctPhrasings).toBe(3);
+  });
+
+  test('an incremental mine that reaches an older session widens firstSeen backwards', () => {
+    upsertCandidates([
+      freshMine({
+        evidence: { distinctPhrasings: 1, sessions: ['/s/z.jsonl'], firstSeen: '2025-11-30', lastSeen: '2025-11-30' },
+      }),
+    ]);
+
+    const evidence = stored(CANON.id).evidence;
+    expect(evidence.firstSeen).toBe('2025-11-30');
+    expect(evidence.lastSeen).toBe('2026-02-01');
+  });
+
+  test('re-mining the same transcripts is idempotent — the count cannot inflate', () => {
+    // Summing instead of taking the max would climb here, and an ever-rising count
+    // permanently suppresses a snoozed memory: `shouldResurface` needs the FRESH count to
+    // exceed the stored one, which a sum makes impossible by construction.
+    for (let i = 0; i < 3; i++) upsertCandidates([freshMine()]);
+    expect(stored(CANON.id).evidence.distinctPhrasings).toBe(1);
+  });
+
+  test('a re-mine after a merge still cannot resurface the canonical on its own', () => {
+    snooze(CANON.id, '2026-02-01');
+    mergeInto(CANON.id, [PARA_1.id], '2026-02-02'); // before the snooze expires
+    upsertCandidates([freshMine()]);
+
+    // The stored baseline is 2 and a mine presents 1, so the batch filter drops it — the
+    // union is what keeps that comparison honest across mines.
+    const suppressed = suppressedMemories();
+    expect(stored(CANON.id).evidence.distinctPhrasings).toBe(2);
+    expect(dropSuppressed([freshMine()], suppressed, '2026-06-01')).toEqual([]);
+  });
+});
+
 describe('merge and snooze-resurface', () => {
   test('a snoozed memory resurfaces when a new phrasing arrives after its date', () => {
     // Snoozed on Feb 1 with one phrasing; its 30 days are up by June.

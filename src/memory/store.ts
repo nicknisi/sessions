@@ -12,6 +12,7 @@
 import { Database } from 'bun:sqlite';
 import { mkdirSync } from 'node:fs';
 import { getDataDir, getMemoryDbPath } from '../paths';
+import { unionEvidence } from './record';
 import {
   MEMORY_SCHEMA_VERSION,
   type MemoryEvidence,
@@ -156,15 +157,33 @@ interface MemoryRow {
 
 const EMPTY_EVIDENCE: MemoryEvidence = { distinctPhrasings: 0, sessions: [], firstSeen: '', lastSeen: '' };
 
-function rowToRecord(row: MemoryRow): MemoryRecord {
-  let evidence: MemoryEvidence;
+/**
+ * Read one stored evidence blob.
+ *
+ * A record whose evidence is unreadable is still a record the user triaged: degrade the
+ * evidence, never drop the row. Field-by-field rather than a cast, because the cast is a
+ * lie the type system cannot check — `JSON.parse` happily returns a number or null for a
+ * hand-edited column, and `unionEvidence` would then throw on `.sessions` while merging.
+ */
+function parseEvidence(raw: string): MemoryEvidence {
+  let parsed: unknown;
   try {
-    evidence = JSON.parse(row.evidence) as MemoryEvidence;
+    parsed = JSON.parse(raw);
   } catch {
-    // A record whose evidence blob is unreadable is still a record the user
-    // triaged. Degrade the evidence, never drop the row.
-    evidence = EMPTY_EVIDENCE;
+    return EMPTY_EVIDENCE;
   }
+  if (!parsed || typeof parsed !== 'object') return EMPTY_EVIDENCE;
+  const e = parsed as Partial<MemoryEvidence>;
+  return {
+    distinctPhrasings: typeof e.distinctPhrasings === 'number' ? e.distinctPhrasings : 0,
+    sessions: Array.isArray(e.sessions) ? e.sessions : [],
+    firstSeen: typeof e.firstSeen === 'string' ? e.firstSeen : '',
+    lastSeen: typeof e.lastSeen === 'string' ? e.lastSeen : '',
+  };
+}
+
+function rowToRecord(row: MemoryRow): MemoryRecord {
+  const evidence = parseEvidence(row.evidence);
   return {
     v: row.v,
     id: row.id,
@@ -198,6 +217,16 @@ function rowToRecord(row: MemoryRow): MemoryRecord {
  * exactly the invisible-suppression failure the flag exists to prevent. Scope columns
  * are excluded for the third variant: `deriveScope` only ever produces repo/workflow,
  * so a triage-assigned `group` scope would be reverted by the next mine.
+ *
+ * `evidence` IS updated, but as a union with what is already stored — never a replace.
+ * A mine builds each record from the transcripts it happened to read, which is one
+ * phrasing from one session, so writing that blob wholesale would walk a canonical
+ * record's clustered evidence back down to a single phrasing the next time anything
+ * re-mines: `mergeInto`'s `distinctPhrasings` (the only value `shouldResurface` can ever
+ * compare against) and every session path the cluster contributed. `--since-last` makes
+ * the same loss reachable without any merge at all. See `unionEvidence`
+ * (src/memory/record.ts) for the monotonicity rules; `updateEvidence` remains the
+ * deliberate replace path, and is the only one.
  */
 export function upsertCandidates(records: MemoryRecord[]): void {
   if (records.length === 0) return;
@@ -208,9 +237,15 @@ export function upsertCandidates(records: MemoryRecord[]): void {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET evidence = excluded.evidence, updated_at = excluded.updated_at
   `);
+  // Read inside the transaction, not before it: BEGIN IMMEDIATE takes the write lock up
+  // front, so a concurrent mine cannot land an evidence write between this SELECT and the
+  // upsert that unions against it.
+  const priorStmt = db.query<{ evidence: string }, [string]>('SELECT evidence FROM memory WHERE id = ?');
   db.exec('BEGIN IMMEDIATE');
   try {
     for (const r of records) {
+      const prior = priorStmt.get(r.id);
+      const evidence = prior ? unionEvidence(parseEvidence(prior.evidence), r.evidence) : r.evidence;
       stmt.run(
         r.id,
         r.v,
@@ -219,7 +254,7 @@ export function upsertCandidates(records: MemoryRecord[]): void {
         r.scope.type,
         r.scope.key,
         r.author,
-        JSON.stringify(r.evidence),
+        JSON.stringify(evidence),
         r.state,
         r.snoozedUntil,
         r.alwaysOn ? 1 : 0,

@@ -89,6 +89,38 @@ function buildEvidence(input: BuildRecordInput): MemoryEvidence {
 }
 
 /**
+ * Union two evidence blobs. Monotonic in every field: the result never reports fewer
+ * phrasings, fewer sessions, or a narrower date range than either input.
+ *
+ * This is what makes `upsertCandidates` non-destructive, and it is load-bearing rather
+ * than defensive. Evidence is derived from transcripts, but never from ALL of them at
+ * once: `--since-last` mines only the files that changed (src/memory/watermark.ts), and
+ * `mergeInto` assembles a `distinctPhrasings` count no mine can reproduce because
+ * paraphrase clustering is an LLM judgment (src/memory/triage.ts). A replace-on-conflict
+ * write loses both, and neither is rebuildable — a merge decision exists nowhere else.
+ *
+ * `distinctPhrasings` takes the MAX, never the sum, for the reason `toRecord` documents
+ * (src/memory/portable.ts): a re-mine over the same transcripts must be idempotent, and
+ * a count that inflates on every run permanently suppresses a snoozed memory, because
+ * `shouldResurface` compares the fresh count against the stored one.
+ *
+ * Dates go through the same ISO_DATE filter as `buildEvidence` rather than a bare
+ * min/max: `''` is a legal stored value for an undated record, it sorts before every
+ * real date, and it would otherwise always win `firstSeen`.
+ */
+export function unionEvidence(prior: MemoryEvidence, fresh: MemoryEvidence): MemoryEvidence {
+  const dates = [prior.firstSeen, prior.lastSeen, fresh.firstSeen, fresh.lastSeen]
+    .filter((d) => ISO_DATE.test(d))
+    .sort();
+  return {
+    distinctPhrasings: Math.max(prior.distinctPhrasings, fresh.distinctPhrasings),
+    sessions: [...new Set([...prior.sessions, ...fresh.sessions])].sort(),
+    firstSeen: dates[0] ?? '',
+    lastSeen: dates[dates.length - 1] ?? '',
+  };
+}
+
+/**
  * Assemble a memory record with a stable field order. Field order matters: the
  * determinism check is `JSON.stringify(run1) === JSON.stringify(run2)`, and
  * JSON.stringify preserves insertion order.
