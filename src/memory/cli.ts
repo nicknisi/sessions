@@ -10,6 +10,7 @@ import { resolve as resolvePath } from 'node:path';
 import { resolveRepo } from '../repo';
 import { writeStdoutFully } from '../stdout';
 import { containerFor, createContainerResolver, indexedSessions, mine } from './mine';
+import { documentedFacts, documentedSources } from './documented';
 import { fromPortable, merge, toPortable, toRecord } from './portable';
 import { getPersistedStates, listMemories, upsertCandidates, type PersistedState } from './store';
 import {
@@ -50,6 +51,8 @@ Usage:
   sessions memory mine --all       Mine every repo in the index
   sessions memory mine --since-last  Mine only what changed since the last mine
   sessions memory pending          Count and preview candidates awaiting triage
+  sessions memory documented       What is already binding here (CLAUDE.md,
+                                   AGENTS.md, Claude Code's own memory store)
   sessions memory approve <id>     Keep a candidate as a durable memory
                                    (--as "<text>", --always-on,
                                     --scope group:<name>|repo:<path>)
@@ -742,6 +745,76 @@ function runImport(argv: string[]): void {
   }
 }
 
+export interface DocumentedArgs {
+  repo?: string;
+  /** Emit as JSON for the triage skill; default is the human listing. */
+  json?: boolean;
+  help: boolean;
+}
+
+/** Parse `memory documented [--repo <path>] [--json]`. Throws `UsageError`; never exits. */
+export function parseDocumentedArgs(argv: string[]): DocumentedArgs {
+  const args: DocumentedArgs = { help: false };
+  let i = 0;
+  while (i < argv.length) {
+    const a = argv[i]!;
+    if (a === '-h' || a === '--help') return { help: true };
+    if (a === '--json') args.json = true;
+    else if (a === '--repo') {
+      const value = argv[++i];
+      if (!value) throw new UsageError('--repo requires a path');
+      args.repo = value;
+    } else throw new UsageError(`unknown option: ${a}`);
+    i++;
+  }
+  return args;
+}
+
+/**
+ * What is already binding on an agent here, so triage can avoid repeating it.
+ *
+ * Read-only over Claude Code's own surfaces. `sessions` never writes to them — the
+ * org rule is that a single-tool memory file is not this tool's to edit, and the
+ * whole point of reading them is that they are already injected without us.
+ */
+async function runDocumented(argv: string[]): Promise<void> {
+  const args = parseDocumentedArgs(argv);
+  if (args.help) help();
+
+  const cwd = args.repo ? resolvePath(args.repo) : process.cwd();
+  const facts = documentedFacts(cwd);
+  const sources = documentedSources(cwd);
+
+  if (args.json) {
+    await writeStdoutFully(JSON.stringify({ cwd, sources, facts }, null, 2) + '\n');
+    process.stderr.write(`  ${facts.length} statement${facts.length === 1 ? '' : 's'} already binding here\n`);
+    return;
+  }
+
+  if (facts.length === 0) {
+    process.stderr.write(
+      '  Nothing found. Looked for CLAUDE.md, AGENTS.md, and Claude Code’s memory store for this repo.\n',
+    );
+    return;
+  }
+
+  const lines: string[] = [`${facts.length} statements already binding in ${cwd}`, ''];
+  let current = '';
+  for (const fact of facts) {
+    if (fact.source !== current) {
+      current = fact.source;
+      lines.push(`  ${current}`);
+    }
+    lines.push(`    - ${fact.text.length > 120 ? `${fact.text.slice(0, 119)}…` : fact.text}`);
+  }
+  lines.push(
+    '',
+    `Read from: ${sources.join(', ')}`,
+    'These are read, never written — a memory that repeats one is noise.',
+  );
+  await writeStdoutFully(lines.join('\n') + '\n');
+}
+
 export async function runMemory(argv: string[]): Promise<void> {
   const sub = argv[0];
   if (!sub || sub === '-h' || sub === '--help') help();
@@ -752,6 +825,9 @@ export async function runMemory(argv: string[]): Promise<void> {
         return;
       case 'pending':
         await runPending(argv.slice(1));
+        return;
+      case 'documented':
+        await runDocumented(argv.slice(1));
         return;
       case 'approve':
       case 'reject':

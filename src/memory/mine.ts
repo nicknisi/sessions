@@ -49,6 +49,33 @@ export const CORRECTIVE_TERMS = ['always', 'never', 'instead', 'remember', 'dont
 /** The MATCH expression built from CORRECTIVE_TERMS. */
 export const CORRECTIVE_MATCH = CORRECTIVE_TERMS.join(' OR ');
 
+/**
+ * A question is not a durable fact, however corrective its vocabulary.
+ *
+ * The corrective terms above match on words, and a question uses the same ones: "why
+ * don't we always run migrations first?" carries `dont` and `always` and asserts
+ * nothing. Measured cost of leaving this out: of the first three memories approved on
+ * the author's machine, one was "describe what it means to distill, accept, and reject.
+ * I don't understand when or why I'd use this" — stored as `kind: 'instruction'` and
+ * served to every later agent under a tool description that says to treat it as binding.
+ *
+ * Deliberately narrow, in both halves. `?` must be TRAILING: a turn that asks and then
+ * asserts ("Cursor MCP config? I don't use Cursor") carries a real fact in its second
+ * half, and dropping it would lose the fact rather than tidy it — a false negative costs
+ * more here than a messy candidate, because `approve --as` exists precisely to rephrase
+ * one. The opener list is only words that cannot begin an instruction: `how` is absent
+ * because "how we deploy is documented in ops/" is a fact, `what` is absent for "what
+ * matters here is the migration order", while `why`/`should` cannot lead an imperative
+ * and `describe`/`explain`/`walk me through` request output rather than state anything.
+ */
+const QUESTION_SHAPED =
+  /(\?\s*$)|^(why|should|shall|would|could|can|do|does|did|is|are|was|were|describe|explain|walk me through)\b/i;
+
+/** True when a turn reads as a question or a request for output rather than a claim. */
+export function isQuestionShaped(text: string): boolean {
+  return QUESTION_SHAPED.test(text.trim());
+}
+
 export interface MineOptions {
   /** Repo container to scope to; omit to mine all repos. */
   repo?: string;
@@ -278,6 +305,8 @@ export async function mine(opts: MineOptions = {}): Promise<MemoryRecord[]> {
     // The band that counts is the one over the text we store: a whitespace-padded
     // turn clears the raw floor in SQL and falls under it once collapsed.
     if (text.length < MIN_TEXT_LENGTH || text.length > MAX_TEXT_LENGTH) return null;
+    // After normalization, so the `?` a raw turn ends with is still there to see.
+    if (isQuestionShaped(text)) return null;
     return text;
   };
 
