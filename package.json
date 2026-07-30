@@ -14,8 +14,8 @@
     "generate-pricing-embed": "bun scripts/generate-pricing-embed.ts",
     "build": "bun run generate-plugin-embed && bun run generate-pricing-embed && bun build --compile --minify index.ts --outfile dist/sessions",
     "lint": "oxlint",
-    "format": "oxfmt .",
-    "format:check": "oxfmt --check .",
+    "format": "oxfmt . '!plugin/**/plugin.json'",
+    "format:check": "oxfmt --check . '!plugin/**/plugin.json'",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
