@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.17.0](https://github.com/nicknisi/sessions/compare/v1.16.1...v1.17.0) (2026-07-30)
+
+
+### Features
+
+* **memory:** store the fact, serve it unconditionally, stop repeating CLAUDE.md ([#55](https://github.com/nicknisi/sessions/issues/55)) ([a507f60](https://github.com/nicknisi/sessions/commit/a507f6080911467b900e03d54d0414e3ade6f9ba))
+
 ## [1.16.1](https://github.com/nicknisi/sessions/compare/v1.16.0...v1.16.1) (2026-07-30)
 
 
