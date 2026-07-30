@@ -16,7 +16,8 @@
     "lint": "oxlint",
     "format": "oxfmt . '!plugin/**/plugin.json'",
     "format:check": "oxfmt --check . '!plugin/**/plugin.json'",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
   },
   "devDependencies": {
     "@types/bun": "latest",
