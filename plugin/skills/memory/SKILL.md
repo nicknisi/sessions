@@ -18,19 +18,33 @@ Turn mined candidate turns into a small set of durable facts worth remembering.
 
 2. **Cluster paraphrases.** Group candidates whose texts assert the same fact in different words — "use canary as the base branch" and "we branch off canary" are one memory in two phrasings. A cluster's `distinctPhrasings` is the number of distinct member texts. Keep the clearest phrasing as the cluster's `text`; the rest are evidence, not separate memory. Byte-identical repeats were already collapsed upstream, so every member you see is genuinely a different wording.
 
-3. **Apply the generalizability rubric.** For each cluster ask: _does this fact hold beyond the session it appeared in?_ Propose only the clusters that pass.
+3. **Read what is already binding.** `sessions memory documented --json` lists every statement an agent working here is _already_ told — the global `CLAUDE.md`, a repo `CLAUDE.md` or `AGENTS.md`, and Claude Code's own per-project memory store. Read it before the rubric, because it decides the rubric's first question.
+
+   These are **read, never written.** This store complements those surfaces; it does not replace, edit, or override them.
+
+4. **Apply the generalizability rubric.** For each cluster ask: _does this fact hold beyond the session it appeared in, and is it not already stated somewhere binding?_ Propose only the clusters that pass both.
    - **Passes** — standing constraints ("API keys go in the keychain when available"), repo or tooling facts ("this repo branches off canary", "skills can invoke inline scripts"), architectural rules.
    - **Fails** — one-off task instructions ("make it Ideation instead of docs/ideation", "let's do a single PR"), bug reports ("syntax highlighting isn't loading"), anything naming a specific transient artifact.
+   - **Fails as already documented** — the fact is already stated in step 3's output. Say which source when you drop it. Claude Code's memory store is the same genre as this one, captured the same way from the same sessions, so this is the _expected_ overlap rather than a rare one — a second copy spends context twice and drifts from the first the moment either is edited.
    - **Fails loudly** — text that reads like a copy-pasted prompt or eval fixture. A suspiciously boilerplate candidate is chaff, not signal.
+   - **Contradicts something binding** — do not silently pick a winner and do not approve it. Surface both statements to the user and let them decide, once, here — a contradiction resolved at triage costs one question; resolved never, it costs an agent's confusion in every future session.
    - Assign `kind`: `instruction` for "do this / don't do that", `information` for "this is how the world is".
 
-4. **Walk triage.** One `AskUserQuestion` per cluster, batching up to 4 independent clusters per call. For each, show the text, the derived scope (`repo` with its container, or `workflow`), `distinctPhrasings`, and the `firstSeen`–`lastSeen` range. Options: **Approve**, **Approve as always-on**, **Reject**, **Snooze** (hide without a verdict).
+5. **Write the fact, not the utterance.** A candidate's `text` is a verbatim user turn, so it is routinely a question, an aside, or a fragment that only implies the rule. Whenever the clearest statement of the fact is not exactly what the candidate says, approve with `--as`:
+
+   ```
+   sessions memory approve <id> --as "Do not generate Cursor MCP config — Cursor is not used here."
+   ```
+
+   This matters more than it looks. Without `--as`, what a future agent receives is the raw turn — and the tool that serves it tells that agent to treat it as binding. `"Cursor MCP config? I don't use Cursor"` is a fine candidate and a useless instruction. The original is kept as evidence, and the evidence count does not change: your rewrite is not a phrasing the user ever used.
+
+6. **Walk triage.** One `AskUserQuestion` per cluster, batching up to 4 independent clusters per call. For each, show the text, the derived scope (`repo` with its container, or `workflow`), `distinctPhrasings`, and the `firstSeen`–`lastSeen` range. Options: **Approve**, **Approve as always-on**, **Reject**, **Snooze** (hide without a verdict).
 
    Offer **Approve as always-on** only when the fact is a standing constraint an agent must see no matter what it is working on — "canary is the mainline branch", "API keys go in the keychain". Retrieval is topic-conditional by default, so a normal approval means the memory comes back only when the task looks related. Always-on is the exception, and proposing it for everything defeats the filter.
 
-5. **Persist.** One command per decision, using the cluster's `id`:
+7. **Persist.** One command per decision, using the cluster's `id`:
    - `sessions memory merge <id> <other-id>...` — **run this first for any cluster with more than one record**
-   - `sessions memory approve <id>` (add `--always-on` for a standing constraint)
+   - `sessions memory approve <id> --as "<the fact>"` (add `--always-on` for a standing constraint)
    - `sessions memory reject <id>`
    - `sessions memory snooze <id>`
 
@@ -42,7 +56,11 @@ Turn mined candidate turns into a small set of durable facts worth remembering.
 
    **An imported record needs a repo before it means anything.** A record whose scope is `repo` with an EMPTY key came from someone else's bundle: export strips the local path, and retrieval skips a keyless repo memory rather than letting it match every repo. Approving it as-is succeeds and changes nothing. Bind it in the same command: `sessions memory approve <id> --scope repo:.` for this repo, or `--scope repo:<path>` for another (the path is resolved to its repo container, so a worktree or subdirectory works). If the fact is clearly not repo-specific, say so and let the user decide instead of guessing a repo.
 
-6. **Report.** Proposed count, approved count, and the ratio. That ratio is the number the precision goal is measured on, so state it plainly even when it is bad.
+8. **Report.** Proposed count, approved count, and the ratio. That ratio is the number the precision goal is measured on, so state it plainly even when it is bad.
+
+   Report the **untriaged backlog** too, from `sessions memory pending`. You triaged one batch; the store can hold thousands of candidates from earlier mines, and a summary that says "triage complete" while thousands wait is the one line in this skill that can be actively false. Say "N approved of M proposed this batch; K candidates still awaiting triage."
+
+   Also report how many clusters you dropped as **already documented**, and where they were already stated. That number is the measure of whether this store is complementary or is quietly duplicating what Claude Code already injects — the one thing no test can check.
 
 ## Guidelines
 
