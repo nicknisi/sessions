@@ -4,11 +4,12 @@
 // The batch JSON goes to stdout and everything human-readable goes to stderr —
 // that split is what makes `sessions memory mine | <agent>` a usable interface.
 
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
+import { resolve as resolvePath } from 'node:path';
 import { resolveRepo } from '../repo';
 import { writeStdoutFully } from '../stdout';
-import { createContainerResolver, indexedSessions, mine } from './mine';
+import { containerFor, createContainerResolver, indexedSessions, mine } from './mine';
 import { fromPortable, merge, toPortable, toRecord } from './portable';
 import { getPersistedStates, listMemories, upsertCandidates, type PersistedState } from './store';
 import {
@@ -50,7 +51,7 @@ Usage:
   sessions memory mine --since-last  Mine only what changed since the last mine
   sessions memory pending          Count and preview candidates awaiting triage
   sessions memory approve <id>     Keep a candidate as a durable memory
-                                   (--always-on, --scope group:<name>)
+                                   (--always-on, --scope group:<name>|repo:<path>)
   sessions memory reject <id>      Dismiss a candidate; it stops being emitted
   sessions memory snooze <id>      Hide a candidate without rejecting it
   sessions memory merge <id> <id>...  Fold paraphrases into the first id
@@ -65,6 +66,9 @@ Options:
   --out <path>          Write the export bundle to a file instead of stdout
   --always-on           (approve) Return this memory for every topic, and first
   --scope group:<name>  (approve) Assign a project group, not the derived scope
+  --scope repo:<path>   (approve) Bind to one repo — the path is resolved to its
+                        repo container. Needed for an imported memory, whose
+                        repo key is stripped on export (\`repo:.\` for this repo)
   -h, --help            Show this help
 
 <id> is the \`id\` field of a record from the mine's JSON batch. A rejected
@@ -173,27 +177,73 @@ export interface TriageArgs {
   id?: string;
   /** `--always-on` was passed. Absent rather than false so an untouched parse stays bare. */
   alwaysOn?: boolean;
-  /** `--scope group:<name>` was passed. */
+  /** `--scope group:<name>` or `--scope repo:<path>` was passed. A repo key is still the
+   *  RAW path here — `canonicalizeScope` resolves it, because this parser does no I/O. */
   scope?: MemoryScope;
   /** `-h`/`--help` was passed; the caller prints help and exits 0. */
   help: boolean;
 }
 
 /**
- * Parse `--scope group:<name>` into a scope.
+ * Parse `--scope group:<name>` or `--scope repo:<path>` into a scope.
  *
- * `group:` is the only accepted form on purpose. Repo and workflow scope are DERIVED
- * from how far a paraphrase cluster spread (src/memory/mine.ts:151-156), and that
- * derivation is evidence-backed — letting a flag overwrite it would let a typo silently
- * turn one repo's convention into a rule for every repo. A group is the one tier no
- * derivation can reach, so it is the one tier a human assigns.
+ * `group:` is the tier no derivation can reach: the spread heuristic
+ * (src/memory/mine.ts:151-156) can tell one container from several but not "these four
+ * repos share a convention", so a human assigns it.
+ *
+ * `repo:` exists for the one case where the derivation is not merely overridable but
+ * ABSENT. Export blanks a repo key on purpose — it is an absolute path on someone else's
+ * machine (src/memory/portable.ts) — so an imported repo memory arrives with `key: ''`,
+ * retrieval skips a keyless repo memory rather than matching every cwd
+ * (src/memory/retrieve.ts), and nothing re-derives it: a mine builds records from
+ * transcripts, and no transcript on THIS machine ever said the imported sentence. Without
+ * this form such a memory can be approved and can never be returned, which is worse than
+ * rejecting it — the user believes it is active.
+ *
+ * `workflow:` is still not assignable. It is the only direction that WIDENS, and a typo
+ * that turns one repo's convention into a rule for every repo is silent by construction.
+ * Narrowing to a repo, by contrast, is checked: `canonicalizeScope` resolves the path
+ * through git and fails loudly when it is not a repo.
  */
 function parseScopeValue(value: string): MemoryScope {
-  const name = value.startsWith('group:') ? value.slice('group:'.length) : '';
-  if (!name) {
-    throw new UsageError(`--scope only accepts group:<name>, got: ${value}`);
+  const forms = 'group:<name> or repo:<path>';
+  if (value.startsWith('group:')) {
+    const name = value.slice('group:'.length);
+    if (!name) throw new UsageError(`--scope group: requires a group name (accepts ${forms})`);
+    return { type: 'group', key: name };
   }
-  return { type: 'group', key: name };
+  if (value.startsWith('repo:')) {
+    const path = value.slice('repo:'.length);
+    if (!path) throw new UsageError(`--scope repo: requires a path — use \`repo:.\` for the current repo`);
+    return { type: 'repo', key: path };
+  }
+  throw new UsageError(`--scope only accepts ${forms}, got: ${value}`);
+}
+
+/**
+ * Resolve a parsed scope's key into the form the store must hold. A no-op for `group`.
+ *
+ * A repo key is only useful if it is byte-identical to what retrieval derives for a cwd
+ * inside that repo, so it goes through the SAME `containerFor` the mine and
+ * `activeMemoryFor` use rather than through `resolve()` alone. `~/dev/app/src` and a linked
+ * worktree of the same repo both canonicalize to the one container; an unresolved relative
+ * path or a worktree path would not match and the memory would be silently inert.
+ *
+ * Both failures throw instead of falling back to the raw path — which is what
+ * `createContainerResolver` does, correctly, for a mine that must not die on one bad cwd.
+ * Here a fallback would store a key that can never match and report success, recreating
+ * the exact dead end this form exists to remove.
+ *
+ * `resolveRepoInfo` is injected for the same reason `todayIso` is: so a test can assert
+ * both branches without a real repo on disk.
+ */
+export function canonicalizeScope(scope: MemoryScope, resolveRepoInfo: typeof resolveRepo = resolveRepo): MemoryScope {
+  if (scope.type !== 'repo') return scope;
+  const abs = resolvePath(scope.key);
+  if (!existsSync(abs)) throw new UsageError(`--scope repo:${scope.key} — no such directory: ${abs}`);
+  const info = resolveRepoInfo(abs);
+  if (!info) throw new UsageError(`--scope repo:${scope.key} is not inside a git repository: ${abs}`);
+  return { type: 'repo', key: containerFor(info) };
 }
 
 /**
@@ -551,10 +601,11 @@ function runTriage(action: TriageAction, argv: string[]): void {
   const today = todayIso();
   switch (action) {
     case 'approve': {
-      approve(id, { alwaysOn: args.alwaysOn, scope: args.scope });
-      const notes = [args.alwaysOn ? 'always-on' : '', args.scope ? `scope group:${args.scope.key}` : ''].filter(
-        Boolean,
-      );
+      // Resolved here rather than in the parser: this is the I/O layer, and the failure it
+      // can raise (a path that is not a repo) must reach the user before anything is written.
+      const scope = args.scope ? canonicalizeScope(args.scope) : undefined;
+      approve(id, { alwaysOn: args.alwaysOn, scope });
+      const notes = [args.alwaysOn ? 'always-on' : '', scope ? `scope ${scope.type}:${scope.key}` : ''].filter(Boolean);
       process.stderr.write(`  approved ${id}${notes.length > 0 ? ` (${notes.join(', ')})` : ''}\n`);
       return;
     }
@@ -648,11 +699,26 @@ function runImport(argv: string[]): void {
   // write winning — and it is the same call a multi-bundle transport would make.
   const merged = merge(incoming);
   const local = new Map(listMemories().map((r) => [r.id, r]));
-  upsertCandidates(merged.map((m) => toRecord(m, local.get(m.id))));
+  const records = merged.map((m) => toRecord(m, local.get(m.id)));
+  upsertCandidates(records);
 
   // Nothing on stdout: this writes to the store, it does not emit a batch.
   const known = merged.filter((m) => local.has(m.id)).length;
   process.stderr.write(`  ${merged.length - known} imported, ${known} already known\n`);
+
+  // A repo-scoped memory arrives with no key — export blanks the local path on purpose —
+  // and retrieval skips a keyless repo memory rather than matching every cwd. Approving one
+  // therefore succeeds and changes nothing, which is the worst available outcome: the user
+  // believes the memory is active. Say so at the moment the rows land, and name the fix.
+  const unbound = records.filter((r) => r.scope.type === 'repo' && !r.scope.key).length;
+  if (unbound > 0) {
+    const plural = unbound === 1 ? 'memory' : 'memories';
+    process.stderr.write(
+      `  ${unbound} repo-scoped ${plural} arrived with no repo key (export strips local paths)\n` +
+        `  bind ${unbound === 1 ? 'it' : 'each'} to a repo when you approve: ` +
+        `sessions memory approve <id> --scope repo:.\n`,
+    );
+  }
 }
 
 export async function runMemory(argv: string[]): Promise<void> {

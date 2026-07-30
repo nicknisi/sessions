@@ -87,8 +87,13 @@ export const FILE_CHUNK = 400;
  * `workflow` — the exact failure mode clustering-by-container was chosen to avoid.
  * The guard keeps us honest for exotic git dirs (`--separate-git-dir`, submodule
  * `.git/modules/<name>`), where the parent directory means nothing.
+ *
+ * Exported because it is the ONE definition of a repo scope key. Retrieval compares a
+ * stored key against this (through `createContainerResolver`, src/memory/retrieve.ts), and
+ * `--scope repo:<path>` has to produce a key that comparison can match — a second
+ * derivation would drift and the memory would simply never be returned.
  */
-function containerFor(repo: RepoInfo): string {
+export function containerFor(repo: RepoInfo): string {
   const base = basename(repo.gitCommonDir);
   if (base === '.git' || base === '.bare') return dirname(repo.gitCommonDir);
   return repo.container;

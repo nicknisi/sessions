@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import {
   applyPersistedStates,
   assertActionAcceptsFlags,
+  canonicalizeScope,
   parseExportArgs,
   parseImportArgs,
   parseMineArgs,
@@ -222,17 +223,63 @@ describe('parseTriageArgs', () => {
     expect(parseTriageArgs(['--always-on', 'sha256:abc']).id).toBe('sha256:abc');
   });
 
-  test('--scope accepts group:<name> and nothing else', () => {
+  test('--scope accepts group:<name>', () => {
     expect(parseTriageArgs(['sha256:abc', '--scope', 'group:authkit'])).toEqual({
       help: false,
       id: 'sha256:abc',
       scope: { type: 'group', key: 'authkit' },
     });
-    // repo and workflow are DERIVED from evidence; a flag must not be able to widen
-    // one repo's convention into a rule for every repo.
-    expect(() => parseTriageArgs(['sha256:abc', '--scope', 'workflow'])).toThrow('only accepts group:<name>');
-    expect(() => parseTriageArgs(['sha256:abc', '--scope', 'group:'])).toThrow('only accepts group:<name>');
+    expect(() => parseTriageArgs(['sha256:abc', '--scope', 'group:'])).toThrow('requires a group name');
     expect(() => parseTriageArgs(['sha256:abc', '--scope'])).toThrow('--scope requires a value');
+  });
+
+  test('--scope accepts repo:<path>, carrying the raw path for the runner to resolve', () => {
+    // Raw here on purpose: resolving shells out to git, and this parser is a pure function
+    // of argv. `canonicalizeScope` turns it into a container key.
+    expect(parseTriageArgs(['sha256:abc', '--scope', 'repo:.']).scope).toEqual({ type: 'repo', key: '.' });
+    expect(parseTriageArgs(['sha256:abc', '--scope', 'repo:/repos/app']).scope).toEqual({
+      type: 'repo',
+      key: '/repos/app',
+    });
+    expect(() => parseTriageArgs(['sha256:abc', '--scope', 'repo:'])).toThrow('requires a path');
+  });
+
+  test('--scope still refuses workflow, the one direction that widens', () => {
+    // Widening is the asymmetric hazard: a typo that turns one repo's convention into a
+    // rule for every repo is invisible, while a wrong repo path just means the memory is
+    // not returned there. Narrowing is also CHECKED — canonicalizeScope resolves the path.
+    expect(() => parseTriageArgs(['sha256:abc', '--scope', 'workflow'])).toThrow(
+      'only accepts group:<name> or repo:<path>',
+    );
+    expect(() => parseTriageArgs(['sha256:abc', '--scope', 'workflow:'])).toThrow('only accepts');
+    expect(() => parseTriageArgs(['sha256:abc', '--scope', '/repos/app'])).toThrow('only accepts');
+  });
+
+  test('canonicalizeScope resolves a repo path to its container and fails loudly otherwise', () => {
+    const fake = (container: string) => () => ({
+      gitCommonDir: join(container, '.git'),
+      container,
+      currentWorktree: container,
+      branches: new Map<string, string>(),
+    });
+
+    // The key retrieval compares against is the CONTAINER, derived exactly the way the mine
+    // derives it — `containerFor` reads `<main>/.git` back to `<main>`, so a subdirectory
+    // and a linked worktree of one repo both land on the same key.
+    expect(canonicalizeScope({ type: 'repo', key: '.' }, fake('/repos/app'))).toEqual({
+      type: 'repo',
+      key: '/repos/app',
+    });
+    // A group scope is untouched — no path, nothing to resolve.
+    expect(canonicalizeScope({ type: 'group', key: 'authkit' }, fake('/repos/app'))).toEqual({
+      type: 'group',
+      key: 'authkit',
+    });
+
+    // Not a repo: a raw-path fallback would store a key that can never match any cwd and
+    // report success, which is the silent dead end this flag exists to remove.
+    expect(() => canonicalizeScope({ type: 'repo', key: '.' }, () => null)).toThrow('not inside a git repository');
+    expect(() => canonicalizeScope({ type: 'repo', key: 'no/such/dir/here' }, fake('/x'))).toThrow('no such directory');
   });
 
   test('the id is still capped at one, with the flags interleaved', () => {

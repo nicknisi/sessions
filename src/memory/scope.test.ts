@@ -1,8 +1,13 @@
 import { describe, test, expect, beforeAll, beforeEach, afterAll } from 'bun:test';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { runMemory } from './cli';
 import { createContainerResolver, deriveScope, mine } from './mine';
-import { closeDatabases, makeTmp, setMemoryEnv, userTurn, writeSession } from './fixtures';
+import { toPortable } from './portable';
+import { buildRecord } from './record';
+import { activeMemoryFor } from './retrieve';
+import { getMemoryDb, listMemories } from './store';
+import { captureStreams, closeDatabases, makeTmp, setMemoryEnv, userTurn, writeSession } from './fixtures';
 
 // Isolate from the user's global git config (signing hooks, templates, etc.),
 // matching src/repo.test.ts:47-64.
@@ -228,5 +233,93 @@ describe('--repo scoping selects by container, not path prefix', () => {
     expect(records.map((x) => x.text)).toEqual([WORKFLOW_FACT]);
     expect(records[0]!.evidence.sessions).toHaveLength(1);
     expect(records[0]!.scope).toEqual({ type: 'repo', key: unrelated[0]! });
+  });
+});
+
+// Binding an imported memory to a local repo.
+//
+// Export blanks a `repo` scope key on purpose — it is an absolute path on the author's
+// machine (src/memory/portable.ts) — and retrieval skips a keyless repo memory rather than
+// letting it match every cwd (src/memory/retrieve.ts). Nothing re-derives the key either: a
+// mine builds records from transcripts, and no transcript on THIS machine ever contained the
+// imported sentence. So before `--scope repo:<path>` existed, an imported repo memory could
+// be approved and could never be returned — the worst shape available, because the user
+// believes it is active. These tests own that whole path, on real repos.
+describe('binding an imported repo memory', () => {
+  const IMPORTED_FACT = 'Always regenerate the vendored client from the schema, never by hand';
+  const PEER_CONTAINER = '/Users/peer/Developer/their-app';
+
+  const peer = buildRecord({
+    text: IMPORTED_FACT,
+    kind: 'instruction',
+    scope: { type: 'repo', key: PEER_CONTAINER },
+    author: 'peer@example.com',
+    sessions: ['/Users/peer/.claude/projects/their-app/a.jsonl'],
+    dates: ['2026-05-01'],
+    distinctPhrasings: 2,
+    state: 'approved',
+  });
+
+  /** Import a one-memory bundle from another machine, exactly as `memory import` would. */
+  async function importPeerBundle(): Promise<string> {
+    const bundle = join(tmp, 'peer-bundle.json');
+    await Bun.write(bundle, JSON.stringify(toPortable([peer], '2026-06-01')));
+    return (await captureStreams(() => runMemory(['import', bundle]))).stderr;
+  }
+
+  const textsFor = (cwd: string): string[] => activeMemoryFor(cwd).map((m) => m.text);
+  const stored = (id: string) => listMemories().find((r) => r.id === id)!;
+
+  beforeEach(async () => {
+    getMemoryDb().run('DELETE FROM memory');
+    await importPeerBundle();
+  });
+
+  test('it arrives keyless, and approving it as-is leaves it unreachable', async () => {
+    expect(stored(peer.id).scope).toEqual({ type: 'repo', key: '' });
+    await captureStreams(() => runMemory(['approve', peer.id]));
+    expect(stored(peer.id).state).toBe('approved');
+    // Approved and inert: the failure this flag exists to make impossible to reach silently.
+    expect(textsFor(mainRepo)).not.toContain(IMPORTED_FACT);
+  });
+
+  test('the import summary says so and names the fix', async () => {
+    getMemoryDb().run('DELETE FROM memory');
+    const stderr = await importPeerBundle();
+    expect(stderr).toContain('1 imported');
+    expect(stderr).toContain('no repo key');
+    expect(stderr).toContain('--scope repo:.');
+  });
+
+  test('--scope repo:<path> binds it to the container, and retrieval returns it', async () => {
+    // Bound from a LINKED worktree on purpose: the stored key is the container both
+    // worktrees resolve to, which is why canonicalizeScope goes through `containerFor`
+    // rather than resolving the path and storing it.
+    await captureStreams(() => runMemory(['approve', peer.id, '--scope', `repo:${wtA}`]));
+    expect(stored(peer.id).scope).toEqual({ type: 'repo', key: mainRepo });
+
+    expect(textsFor(mainRepo)).toContain(IMPORTED_FACT);
+    expect(textsFor(wtA)).toContain(IMPORTED_FACT);
+    expect(textsFor(wtB)).toContain(IMPORTED_FACT);
+    // Bound, not widened: an unrelated repo still does not see it.
+    expect(textsFor(unrelated[0]!)).not.toContain(IMPORTED_FACT);
+  });
+
+  test('a subdirectory of a repo binds to the repo, not to the subdirectory', async () => {
+    const sub = join(mainRepo, 'src', 'deep');
+    mkdirSync(sub, { recursive: true });
+    await captureStreams(() => runMemory(['approve', peer.id, '--scope', `repo:${sub}`]));
+    expect(stored(peer.id).scope).toEqual({ type: 'repo', key: mainRepo });
+    expect(textsFor(mainRepo)).toContain(IMPORTED_FACT);
+  });
+
+  test('the binding survives the next mine, like every other triage decision', async () => {
+    await captureStreams(() => runMemory(['approve', peer.id, '--scope', `repo:${mainRepo}`]));
+    // `upsertCandidates` excludes the scope columns; a re-mine that reverted an assigned
+    // scope would silently un-bind exactly what was just bound.
+    await mine({});
+    expect(stored(peer.id).scope).toEqual({ type: 'repo', key: mainRepo });
+    expect(stored(peer.id).state).toBe('approved');
+    expect(textsFor(mainRepo)).toContain(IMPORTED_FACT);
   });
 });
