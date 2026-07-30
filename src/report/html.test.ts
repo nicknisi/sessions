@@ -59,11 +59,31 @@ describe('renderHtml', () => {
   test('renders the facet sections', () => {
     const html = renderHtml(toUsageReport(data, computeFacets(events, 'UTC')));
     expect(html).toContain('cache hit rate');
-    expect(html).toContain('<h2>Subagents');
+    expect(html).toContain('>Subagents</span>');
     expect(html).toContain('Explore');
     expect(html).toContain('Most expensive sessions');
     expect(html).toContain('By branch');
     expect(html).toContain('feat/thing');
+  });
+
+  test('every stat cell and section heading explains itself on hover', () => {
+    const html = renderHtml(toUsageReport(data, computeFacets(events, 'UTC')));
+    // No stat cell ships without a definition.
+    const cells = html.match(/<div class="cell"[^>]*>/g) ?? [];
+    expect(cells.length).toBeGreaterThan(0);
+    for (const c of cells) expect(c).toContain('data-tip=');
+    // Nor any section heading.
+    const headings = html.match(/<h2>.*?<\/h2>/g) ?? [];
+    expect(headings.length).toBeGreaterThan(0);
+    for (const h of headings) expect(h).toContain('data-tip=');
+    // Definitions are prose. A double quote inside one would close the attribute
+    // early, so they must arrive escaped.
+    expect(html).not.toMatch(/data-tip="[^"]*"[^\s>]/);
+  });
+
+  test('the total-cost figure says what it is an estimate of', () => {
+    const html = renderHtml(toUsageReport(data, computeFacets(events, 'UTC')));
+    expect(html).toContain('not what you were billed');
   });
 
   test('omits the subagent section when nothing was dispatched', () => {
@@ -83,7 +103,7 @@ describe('renderHtml', () => {
     );
     // The section heading, not the word: the session table has a Subagents column
     // header that renders either way.
-    expect(html).not.toContain('<h2>Subagents');
+    expect(html).not.toContain('>Subagents</span>');
     // the cache strip is unconditional — it describes volume, not an event class
     expect(html).toContain('cache hit rate');
   });
