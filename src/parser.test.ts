@@ -673,3 +673,133 @@ describe('tool-call extraction (include_tools support)', () => {
     expect(t.summary.length).toBe(121); // 120 chars + ellipsis
   });
 });
+
+// Every shape below is copied from real ~/.codex/sessions rollouts. The dispatch these
+// exercise did not exist before: Codex nests messages under a `response_item` envelope,
+// so all 305 rollouts on a real machine extracted to zero messages. The pre-existing
+// `{type:'message', message:{…}}` tests elsewhere in this file are the PI shape, which
+// occurs zero times in real Codex logs — hence the duplicate coverage rather than edits
+// to those.
+describe('extractMessages: Codex', () => {
+  /** A Codex rollout head. Present on line 1 of all 305 real rollouts. */
+  const meta = { type: 'session_meta', payload: { cwd: '/repo', git: { branch: 'main' } } };
+  const userItem = (text: string) => ({
+    type: 'response_item',
+    payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text }] },
+  });
+  const assistantItem = (text: string) => ({
+    type: 'response_item',
+    payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] },
+  });
+  /** The UI-log echo of what the human actually typed — Codex's genuineness oracle. */
+  const typedEvent = (message: string) => ({ type: 'event_msg', payload: { type: 'user_message', message } });
+
+  test('extracts user and assistant turns from the response_item envelope', () => {
+    const lines = jsonl(meta, typedEvent('add a test'), userItem('add a test'), assistantItem('Done.'));
+    const msgs = extractMessages(lines);
+    expect(msgs.map((m) => [m.role, m.text])).toEqual([
+      ['user', 'add a test'],
+      ['assistant', 'Done.'],
+    ]);
+    expect(msgs.map((m) => m.index)).toEqual([0, 1]);
+  });
+
+  test('a user turn with a user_message twin is genuine; one without is not', () => {
+    const lines = jsonl(meta, typedEvent('the real ask'), userItem('the real ask'), userItem('<user_action> tabbed'));
+    expect(extractMessages(lines).map((m) => [m.text, m.genuine])).toEqual([
+      ['the real ask', true],
+      ['<user_action> tabbed', false],
+    ]);
+  });
+
+  test('the user_message event may arrive after its twin (the join needs two passes)', () => {
+    // Ordering observed in the real corpus: the UI event usually trails the model-facing
+    // record, so a single forward pass would classify the turn before its oracle exists.
+    const lines = jsonl(meta, userItem('ship it'), typedEvent('ship it'), assistantItem('ok'));
+    expect(extractMessages(lines)[0]).toMatchObject({ text: 'ship it', genuine: true });
+  });
+
+  test('falls back to injection prefixes when the two streams never join', () => {
+    // No user_message events at all — 26 of 305 real rollouts look like this. Without the
+    // guard every turn would flip to genuine:false and first_prompt would go blank again.
+    const lines = jsonl(meta, userItem('<environment_context> cwd=/repo'), userItem('what changed?'));
+    expect(extractMessages(lines).map((m) => [m.text, m.genuine])).toEqual([
+      ['<environment_context> cwd=/repo', false],
+      ['what changed?', true],
+    ]);
+  });
+
+  test('developer-role messages are injected framing, not turns', () => {
+    const lines = jsonl(meta, {
+      type: 'response_item',
+      payload: { type: 'message', role: 'developer', content: [{ type: 'input_text', text: '# AGENTS.md' }] },
+    });
+    expect(extractMessages(lines)).toEqual([]);
+  });
+
+  test('assistant text is read once, not doubled by its event_msg twin', () => {
+    // response_item and event_msg overlap: every assistant text is duplicated in the UI
+    // log. Reading both would double every Codex turn in message_fts.
+    const lines = jsonl(meta, assistantItem('the answer'), {
+      type: 'event_msg',
+      payload: { type: 'agent_message', message: 'the answer' },
+    });
+    expect(extractMessages(lines).map((m) => m.text)).toEqual(['the answer']);
+  });
+
+  test('tool calls fold into the turn head and keep numbering dense', () => {
+    const lines = jsonl(
+      meta,
+      typedEvent('fix it'),
+      userItem('fix it'),
+      assistantItem('Looking.'),
+      {
+        type: 'response_item',
+        payload: { type: 'function_call', name: 'shell', call_id: 'c1', arguments: '{"command":"bun test"}' },
+      },
+      { type: 'response_item', payload: { type: 'custom_tool_call', name: 'apply_patch', input: '*** Begin Patch' } },
+    );
+    const msgs = extractMessages(lines);
+    expect(msgs.map((m) => m.index)).toEqual([0, 1]);
+    expect(msgs[1]!.tools).toEqual([
+      { name: 'shell', summary: 'bun test' },
+      { name: 'apply_patch', summary: '*** Begin Patch' },
+    ]);
+  });
+
+  test('a tool call before any message buffers onto the first turn emitted', () => {
+    const lines = jsonl(
+      meta,
+      { type: 'response_item', payload: { type: 'function_call', name: 'shell', arguments: '{"command":"ls"}' } },
+      typedEvent('what is here?'),
+      userItem('what is here?'),
+    );
+    const msgs = extractMessages(lines);
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0]!.tools).toEqual([{ name: 'shell', summary: 'ls' }]);
+  });
+
+  test('getSessionMessages numbering agrees with extractMessages on Codex', () => {
+    const lines = jsonl(meta, typedEvent('a'), userItem('a'), assistantItem('b'), assistantItem('c'));
+    expect(getSessionMessages(lines).map((m) => m.index)).toEqual(extractMessages(lines).map((m) => m.index));
+  });
+
+  test('an abandoned rollout (session_meta only) yields no messages', () => {
+    // 14 of 305 real rollouts are exactly this: opened, never used.
+    expect(extractMessages(jsonl(meta))).toEqual([]);
+  });
+
+  test('the sniff reads parsed types, so Claude prose about response_item is unaffected', () => {
+    // This repo's own transcripts discuss the Codex envelope. Detecting on a raw substring
+    // would reroute them into the Codex path and silently blank them.
+    const lines = jsonl(
+      {
+        type: 'user',
+        promptSource: 'typed',
+        message: { content: [{ type: 'text', text: 'why does {"type":"response_item"} parse to nothing?' }] },
+      },
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'session_meta is the tell.' }] } },
+    );
+    expect(extractMessages(lines).map((m) => m.role)).toEqual(['user', 'assistant']);
+  });
+});

@@ -466,6 +466,156 @@ export interface MessageSummary {
   closingAssistant: string;
 }
 
+// ——— Codex ———
+
+/**
+ * Text that arrives on a user-role line but is not the human speaking. Codex writes no
+ * `promptSource`, so these prefixes are the shape of every injection observed across the
+ * real corpus (305 rollouts, 1,022 user records, 417 of them injections).
+ *
+ * `Warning: ` is the harness scolding itself — "Warning: apply_patch was requested via
+ * exec_command…" — and it is the one prefix that could plausibly open a human turn. It is
+ * still tested before the event_msg join rather than after, because the sessions carrying
+ * it are exactly the ones with no `user_message` events to join against.
+ */
+const CODEX_INJECTED =
+  /^(<environment_context|<user_action|<turn_aborted|<recommended_plugins|<image\b|<skill\b|<user_shell_command|# AGENTS\.md instructions for |Warning: )/;
+
+/** How far in to look for the Codex envelope. Every real rollout opens with `session_meta`
+ *  on line 1; the slack absorbs a truncated or blank-padded head. */
+const CODEX_SNIFF_LINES = 20;
+
+/**
+ * Whether these lines are a Codex rollout.
+ *
+ * Sniffed rather than passed in: getSessionMessages runs from mcp.ts and cache.ts with
+ * nothing but a file's lines, so a `tool` parameter would have to be threaded through
+ * every caller. The check reads the PARSED top-level `type` and never a substring of the
+ * raw line — a transcript that merely discusses Codex has `response_item` in its prose.
+ */
+function isCodexTranscript(lines: string[]): boolean {
+  const n = Math.min(lines.length, CODEX_SNIFF_LINES);
+  for (let i = 0; i < n; i++) {
+    const t = tryParseJson(lines[i] ?? '')?.type;
+    if (t === 'session_meta' || t === 'response_item') return true;
+  }
+  return false;
+}
+
+/** The text of a Codex payload's content blocks of `kind`, joined. */
+function codexText(payload: Record<string, unknown>, kind: 'input_text' | 'output_text'): string {
+  const content = payload['content'];
+  if (!Array.isArray(content)) return '';
+  const texts: string[] = [];
+  for (const c of content) {
+    if (c && typeof c === 'object' && (c as Record<string, unknown>)['type'] === kind) {
+      texts.push((c as Record<string, string>)['text'] ?? '');
+    }
+  }
+  return texts.join(' ');
+}
+
+/** A Codex tool call, whatever envelope it arrived in. */
+function codexToolUse(p: Record<string, unknown>): ToolUse {
+  const name = typeof p['name'] === 'string' ? p['name'] : String(p['type'] ?? '?');
+  // Codex ships arguments three ways: a JSON string (`function_call.arguments`), the raw
+  // payload itself (`custom_tool_call.input` — a patch or a script), and an object.
+  const raw = p['arguments'] ?? p['input'] ?? p['action'];
+  if (typeof raw === 'string') {
+    try {
+      const o = JSON.parse(raw);
+      if (o && typeof o === 'object') return { name, summary: summarizeToolInput(o) };
+    } catch {
+      // Not JSON — it is the patch or script text itself, so summarize it directly.
+    }
+    const s = raw.replace(/\s+/g, ' ').trim();
+    return { name, summary: s.length > 120 ? s.slice(0, 120) + '…' : s };
+  }
+  return { name, summary: summarizeToolInput(raw) };
+}
+
+/**
+ * Codex, both streams reconciled.
+ *
+ * Codex writes two parallel logs. `response_item` is the model-facing history and
+ * `event_msg` is the UI event log, and they overlap: every assistant text is duplicated
+ * by an `event_msg` `agent_message`. Messages therefore come from `response_item` only —
+ * reading both would double every Codex turn in message_fts.
+ *
+ * What `event_msg` alone has is `user_message`: the harness echo of what the human
+ * actually typed, and nothing it injected. That makes genuineness a JOIN rather than a
+ * heuristic. Measured over the 305-rollout corpus, 604 of 1,022 user records have a
+ * text-identical twin in that stream, and every one of the 417 that do not is matched by
+ * CODEX_INJECTED — the two signals agree completely, with nothing left unexplained.
+ */
+function extractCodexMessages(lines: string[]): ExtractedMessage[] {
+  const parsed = lines.map(tryParseJson);
+
+  // Pass 1: the genuineness oracle. The `user_message` event usually lands AFTER its
+  // `response_item` twin, so this cannot fold into the emit pass below.
+  const typed = new Set<string>();
+  const userTexts: string[] = [];
+  for (const d of parsed) {
+    if (!d?.payload) continue;
+    if (d.type === 'event_msg' && d.payload['type'] === 'user_message') {
+      const m = d.payload['message'];
+      if (typeof m === 'string' && m.trim()) typed.add(m.trim());
+    } else if (d.type === 'response_item' && d.payload['type'] === 'message' && d.payload['role'] === 'user') {
+      const t = stripInjected(codexText(d.payload, 'input_text')).trim();
+      if (t) userTexts.push(t);
+    }
+  }
+  // Trust the join only where it demonstrably joins. If Codex ever normalized whitespace
+  // differently between the two streams, every turn would silently flip to genuine:false
+  // and first_prompt would go blank again — indistinguishable from the bug this fixes. A
+  // session whose streams do not meet falls back to the injection prefixes alone.
+  const joins = typed.size > 0 && userTexts.some((t) => typed.has(t));
+
+  const messages: ExtractedMessage[] = [];
+  let idx = 0;
+  // The turn's head message — where a following pure-tool-call line's calls attach.
+  let current: ExtractedMessage | null = null;
+  let pending: ToolUse[] = [];
+
+  for (const d of parsed) {
+    if (!d || d.type !== 'response_item' || !d.payload) continue;
+    const p = d.payload;
+    switch (p['type']) {
+      case 'message': {
+        if (p['role'] === 'user') {
+          const text = stripInjected(codexText(p, 'input_text'));
+          const trimmed = text.trim();
+          if (!trimmed) break;
+          const genuine = !CODEX_INJECTED.test(trimmed) && (!joins || typed.has(trimmed));
+          current = { role: 'user', text, index: idx++, genuine, tools: pending };
+          pending = [];
+          messages.push(current);
+        } else if (p['role'] === 'assistant') {
+          const text = codexText(p, 'output_text');
+          if (!text.trim()) break;
+          current = { role: 'assistant', text, index: idx++, genuine: true, tools: pending };
+          pending = [];
+          messages.push(current);
+        }
+        // Any other role (`developer`, `system`) is injected framing, not a turn.
+        break;
+      }
+      case 'function_call':
+      case 'custom_tool_call':
+      case 'web_search_call':
+      case 'tool_search_call': {
+        // A pure tool-call line carries no text and so gets no index of its own; its
+        // call folds into the head of the current turn, exactly as the Claude path does.
+        const call = codexToolUse(p);
+        if (current) current.tools.push(call);
+        else pending.push(call);
+        break;
+      }
+    }
+  }
+  return messages;
+}
+
 /**
  * The single numbering authority for message extraction. Every non-empty
  * user/assistant message in order, with a sequential index and a `genuine` flag
@@ -475,6 +625,10 @@ export interface MessageSummary {
  * exactly, so both derive from this function.
  */
 export function extractMessages(lines: string[]): ExtractedMessage[] {
+  // Codex nests its messages under a `response_item` envelope the dispatch below does
+  // not model, which is why every Codex transcript extracted to zero messages.
+  if (isCodexTranscript(lines)) return extractCodexMessages(lines);
+
   const messages: ExtractedMessage[] = [];
   let idx = 0;
   // The turn's head message — where a following pure-tool-use line's calls attach.
