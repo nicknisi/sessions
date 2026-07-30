@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.16.1](https://github.com/nicknisi/sessions/compare/v1.16.0...v1.16.1) (2026-07-30)
+
+
+### Bug Fixes
+
+* four defects found reviewing the memory and MCP surfaces ([#53](https://github.com/nicknisi/sessions/issues/53)) ([93c6251](https://github.com/nicknisi/sessions/commit/93c6251e97417868a579c79d1d2dee5e207a1922))
+
 ## [1.16.0](https://github.com/nicknisi/sessions/compare/v1.15.3...v1.16.0) (2026-07-30)
 
 
