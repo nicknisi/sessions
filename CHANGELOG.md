@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.19.0](https://github.com/nicknisi/sessions/compare/v1.18.0...v1.19.0) (2026-07-30)
+
+
+### Features
+
+* **report:** drop the branch breakdown, add pace, trend, mix, and spread ([#59](https://github.com/nicknisi/sessions/issues/59)) ([686dfec](https://github.com/nicknisi/sessions/commit/686dfec88e0d3b74f204134fc463b6d601bb2cdb))
+
 ## [1.18.0](https://github.com/nicknisi/sessions/compare/v1.17.0...v1.18.0) (2026-07-30)
 
 
