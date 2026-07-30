@@ -46,9 +46,27 @@ describe('extractSessionMetadata', () => {
       customTitle: customTitle(lines),
       date: lastTimestamp(lines),
       createdAt: firstTimestamp(lines),
+      // No standalone helper to compare against: startedAt is the same instant as
+      // createdAt with the time kept, and only this one-pass extractor produces it.
+      startedAt: '2026-03-15T10:00:00Z',
       messageCount: messageCount(lines),
       branch: sessionBranch(lines, 'claude'),
     });
+  });
+
+  test('startedAt keeps the clock createdAt truncates away', () => {
+    const lines = jsonl(
+      { type: 'user', cwd: '/repo', timestamp: '2026-06-02T21:47:13.500Z', message: { content: 'late night' } },
+      { type: 'assistant', cwd: '/repo', timestamp: '2026-06-03T01:02:03Z', message: { content: 'yes' } },
+    );
+    const meta = extractSessionMetadata(lines, 'claude');
+    expect(meta.createdAt).toBe('2026-06-02');
+    expect(meta.startedAt).toBe('2026-06-02T21:47:13.500Z');
+  });
+
+  test('startedAt is empty when no line carries a timestamp', () => {
+    const lines = jsonl({ type: 'user', cwd: '/repo', message: { content: 'undated' } });
+    expect(extractSessionMetadata(lines, 'claude').startedAt).toBe('');
   });
 
   test('extracts Codex cwd and starting branch from session_meta', () => {

@@ -32,6 +32,14 @@ export interface SessionMetadata {
   customTitle: string;
   date: string;
   createdAt: string;
+  /**
+   * The first timestamp in full, not truncated to a day like `createdAt`.
+   *
+   * The index needs the time of day for the active-hours histogram. Without this
+   * column get_session_metrics made a second pass over every matched row, reopening
+   * each transcript from disk purely to read line 1's clock.
+   */
+  startedAt: string;
   messageCount: number;
   branch: string;
 }
@@ -46,6 +54,7 @@ export function extractSessionMetadata(lines: string[], tool: Tool): SessionMeta
   let cwd = '';
   let title = '';
   let firstDate = '?';
+  let firstTs = '';
   let lastDate = '?';
   let count = 0;
   let branch = '';
@@ -69,7 +78,10 @@ export function extractSessionMetadata(lines: string[], tool: Tool): SessionMeta
 
     if (d.timestamp?.[0] === '2') {
       const date = d.timestamp.slice(0, 10);
-      if (firstDate === '?') firstDate = date;
+      if (firstDate === '?') {
+        firstDate = date;
+        firstTs = d.timestamp;
+      }
       lastDate = date;
     }
 
@@ -88,7 +100,15 @@ export function extractSessionMetadata(lines: string[], tool: Tool): SessionMeta
     }
   }
 
-  return { cwd, customTitle: title, date: lastDate, createdAt: firstDate, messageCount: count, branch };
+  return {
+    cwd,
+    customTitle: title,
+    date: lastDate,
+    createdAt: firstDate,
+    startedAt: firstTs,
+    messageCount: count,
+    branch,
+  };
 }
 
 export function getCwdFromSession(lines: string[], tool: Tool): string {

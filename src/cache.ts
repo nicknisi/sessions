@@ -71,7 +71,11 @@ function getCodexDir(): string {
 // v8: message_fts no longer stores compaction summaries or tag-wrapped agent/
 // harness injections (task-notifications, `!`-mode shell echoes, teammate relays)
 // as genuine user turns — see isGenuineUserTurn/stripInjected in parser.ts.
-const SCHEMA_VERSION = 8;
+// v9: adds sessions.started_at (the full first timestamp, for the active-hours
+// histogram), and Codex transcripts index their messages for the first time —
+// every Codex row held metadata only until parser.ts learned the response_item
+// envelope, so a rebuild is what actually populates them.
+const SCHEMA_VERSION = 9;
 let _db: Database | null = null;
 let _refreshPromise: Promise<RefreshResult> | null = null;
 let _lastRefreshAt = 0;
@@ -141,6 +145,10 @@ function openDb(): Database {
       session_id TEXT NOT NULL,
       date TEXT NOT NULL,
       created_at TEXT NOT NULL DEFAULT '?',
+      -- The full first timestamp. created_at is the same instant truncated to a day;
+      -- the active-hours histogram needs the clock, and reading it from here is what
+      -- lets getSessionMetrics skip a second pass over every transcript on disk.
+      started_at TEXT NOT NULL DEFAULT '',
       first_prompt TEXT NOT NULL,
       custom_title TEXT NOT NULL DEFAULT '',
       message_count INTEGER NOT NULL DEFAULT 0,
@@ -385,8 +393,8 @@ function indexFile(db: Database, filePath: string, tool: Tool): boolean {
   }
   db.run('DELETE FROM ignored_files WHERE file_path = ?', [filePath]);
   db.run(
-    `INSERT OR REPLACE INTO sessions (file_path, mtime, size, cwd, tool, session_id, date, created_at, first_prompt, custom_title, message_count, files_touched, files_read, commands, errored, error_count, closing_user, closing_assistant, branch)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT OR REPLACE INTO sessions (file_path, mtime, size, cwd, tool, session_id, date, created_at, started_at, first_prompt, custom_title, message_count, files_touched, files_read, commands, errored, error_count, closing_user, closing_assistant, branch)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       filePath,
       stat.mtimeMs,
@@ -396,6 +404,7 @@ function indexFile(db: Database, filePath: string, tool: Tool): boolean {
       sessionId,
       metadata.date,
       metadata.createdAt,
+      metadata.startedAt,
       summary.firstPrompt,
       metadata.customTitle,
       metadata.messageCount,
@@ -972,9 +981,42 @@ interface DateRangeRow {
   session_id: string;
   date: string;
   created_at: string;
+  started_at: string;
   first_prompt: string;
   custom_title: string;
   message_count: number;
+}
+
+/** The machine's IANA zone. Resolved per call: `Date#getHours` reads a zone V8 caches on
+ *  first use, which makes the process default untestable once anything has read a clock. */
+function systemTz(): string {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+}
+
+const hourFmtCache = new Map<string, Intl.DateTimeFormat>();
+
+/**
+ * The two-digit hour of an ISO timestamp in `tz`, or null when there is nothing to read.
+ *
+ * Formats against an explicit zone rather than calling `getHours()`, so the conversion
+ * depends on an argument instead of ambient process state. Deliberately not
+ * src/report/parsers/util.ts's localHour: that file is vendored verbatim from upstream
+ * and the report subtree stays self-contained. This one keys the activeHours histogram,
+ * so it returns the zero-padded string that map is indexed by.
+ */
+function hourIn(iso: string, tz: string): string | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  let fmt = hourFmtCache.get(tz);
+  if (!fmt) {
+    fmt = new Intl.DateTimeFormat('en-US', { timeZone: tz, hour: '2-digit', hour12: false });
+    hourFmtCache.set(tz, fmt);
+  }
+  const h = fmt.formatToParts(d).find((p) => p.type === 'hour')?.value;
+  if (h === undefined) return null;
+  // en-US renders midnight as '24' in some ICU builds; the histogram is 00-23.
+  return String(Number(h) % 24).padStart(2, '0');
 }
 
 function queryDateRange(
@@ -999,7 +1041,7 @@ function queryDateRange(
   const where = 'WHERE ' + conditions.join(' AND ');
   return db
     .query<DateRangeRow, any[]>(
-      `SELECT file_path, cwd, tool, session_id, date, created_at, first_prompt, custom_title, message_count
+      `SELECT file_path, cwd, tool, session_id, date, created_at, started_at, first_prompt, custom_title, message_count
        FROM sessions ${where}
        ORDER BY created_at ASC, date ASC`,
     )
@@ -1133,6 +1175,8 @@ export async function getSessionMetrics(
   endDate: string,
   toolFilter: Tool | '',
   project: string,
+  /** IANA zone for the active-hours histogram. Defaults to the machine's. */
+  tz: string = systemTz(),
 ): Promise<SessionMetrics> {
   const db = getDb();
   await ensureIndexFresh();
@@ -1159,18 +1203,12 @@ export async function getSessionMetrics(
     dm.sessions++;
     dm.messages += r.message_count;
     dailyMap.set(day, dm);
-  }
 
-  for (const r of rows) {
-    try {
-      const lines = readSessionLines(r.file_path, r.tool as Tool);
-      const d = JSON.parse(lines[0] ?? '{}');
-      const ts = d.timestamp as string | undefined;
-      if (ts && ts.includes('T')) {
-        const hour = ts.slice(11, 13);
-        activeHours[hour] = (activeHours[hour] ?? 0) + 1;
-      }
-    } catch {}
+    // Local, not UTC. Transcript timestamps are Z-normalized, and slicing the hour out
+    // of the ISO string read it as wall-clock — shifting the whole histogram by the
+    // machine's offset, so a US-Central user's 9am showed up as 2pm or 3pm.
+    const hour = hourIn(r.started_at, tz);
+    if (hour !== null) activeHours[hour] = (activeHours[hour] ?? 0) + 1;
   }
 
   const projectBreakdown = [...projectMap.entries()]
