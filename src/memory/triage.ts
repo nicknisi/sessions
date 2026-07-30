@@ -8,7 +8,17 @@
 // the `nowMs` precedent in src/significance.ts:1-4, so a date-boundary test is
 // deterministic instead of green until the 31st of a month.
 
-import { getPersistedStates, listMemories, setAlwaysOn, setMerged, setScope, setState, updateEvidence } from './store';
+import {
+  getPersistedStates,
+  listMemories,
+  setAlwaysOn,
+  setMerged,
+  setScope,
+  setState,
+  updateEvidence,
+  upsertCandidates,
+} from './store';
+import { buildRecord } from './record';
 import type { MemoryEvidence, MemoryRecord, MemoryScope } from './types';
 
 /** How long a snooze suppresses a candidate. Exported so tuning is a one-line change. */
@@ -81,6 +91,17 @@ export interface ApproveOptions {
   alwaysOn?: boolean;
   /** Override the derived scope. Only `group` is assignable — repo/workflow stay derived. */
   scope?: MemoryScope;
+  /**
+   * Canonical phrasing to store in place of the mined utterance.
+   *
+   * A mined candidate is a verbatim user turn, which is what the miner can see and is
+   * routinely not what the fact IS: two of the first three memories approved on this
+   * machine were questions ("describe what it means to distill…"), stored as `kind:
+   * 'instruction'` and served to every future agent as binding. The triage skill already
+   * writes a clean statement of the fact — it just had nowhere to put it, because an id
+   * is a hash of its own text and `approve` took only an id. This is that field.
+   */
+  as?: string;
 }
 
 /**
@@ -94,10 +115,60 @@ export interface ApproveOptions {
  * re-confirming the memory. There is no CLI way to clear it yet; that is a deliberate
  * gap, not an oversight.
  */
-export function approve(id: string, options: ApproveOptions = {}): void {
-  setState(id, 'approved');
-  if (options.alwaysOn) setAlwaysOn(id, true);
-  if (options.scope) setScope(id, options.scope);
+export function approve(id: string, options: ApproveOptions = {}): string {
+  const target = options.as === undefined ? id : recanonicalize(id, options.as);
+  setState(target, 'approved');
+  if (options.alwaysOn) setAlwaysOn(target, true);
+  if (options.scope) setScope(target, options.scope);
+  return target;
+}
+
+/**
+ * Replace a record's text with the phrasing the skill judged canonical, and return the
+ * id that now carries the fact.
+ *
+ * The rewrite is a NEW row, because an id is a hash of its own normalized text and
+ * rewriting in place would leave every reference — merged members, an export bundle
+ * another author already holds — pointing at a hash that no longer describes its
+ * content. So the original becomes a member of the rewrite, through the same
+ * `merged_into` edge a clustering merge uses, and its evidence carries over.
+ *
+ * Evidence transfers VERBATIM rather than through `mergeInto`'s union. The union counts
+ * distinct texts across the cluster, and the canonical rewrite is not a phrasing the
+ * user ever used — folding it in would add one to `distinctPhrasings`, inflating the
+ * exact signal `shouldResurface` and the cross-author quorum rest on, for a sentence an
+ * agent wrote. The fact has the support it always had; only the wording improved.
+ */
+function recanonicalize(id: string, text: string): string {
+  const trimmed = text.trim();
+  if (!trimmed) throw new Error('--as needs a non-empty phrasing');
+
+  const all = listMemories();
+  const original = all.find((r) => r.id === id);
+  if (!original) throw new Error(`unknown memory id: ${id}`);
+
+  const rewritten = buildRecord({
+    text: trimmed,
+    kind: original.kind,
+    scope: original.scope,
+    author: original.author,
+    sessions: original.evidence.sessions,
+    dates: [original.evidence.firstSeen, original.evidence.lastSeen].filter((d) => d !== ''),
+    distinctPhrasings: original.evidence.distinctPhrasings,
+  });
+  // Normalization collapsed the rewrite onto the text it replaces — approve in place
+  // rather than merging a row into itself.
+  if (rewritten.id === id) return id;
+
+  // Replacing an existing key's value leaves insertion order intact, which buildRecord's
+  // determinism contract depends on.
+  upsertCandidates([{ ...rewritten, evidence: original.evidence }]);
+  // Members of the old canonical follow the fact, not the wording it used to have.
+  for (const member of all) {
+    if (member.mergedInto === id) setMerged(member.id, rewritten.id);
+  }
+  setMerged(id, rewritten.id);
+  return rewritten.id;
 }
 
 /**

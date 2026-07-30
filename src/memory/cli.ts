@@ -51,7 +51,8 @@ Usage:
   sessions memory mine --since-last  Mine only what changed since the last mine
   sessions memory pending          Count and preview candidates awaiting triage
   sessions memory approve <id>     Keep a candidate as a durable memory
-                                   (--always-on, --scope group:<name>|repo:<path>)
+                                   (--as "<text>", --always-on,
+                                    --scope group:<name>|repo:<path>)
   sessions memory reject <id>      Dismiss a candidate; it stops being emitted
   sessions memory snooze <id>      Hide a candidate without rejecting it
   sessions memory merge <id> <id>...  Fold paraphrases into the first id
@@ -64,6 +65,11 @@ Options:
   --since-last          Mine only sessions changed since the last mine
   --json                Emit the candidate batch as JSON on stdout (the default)
   --out <path>          Write the export bundle to a file instead of stdout
+  --as "<text>"         (approve) Store this phrasing instead of the mined
+                        utterance. A mined candidate is a verbatim user turn and
+                        is often a question rather than the fact it implies; this
+                        is where the triage skill writes the fact itself. The
+                        original is kept as evidence, not discarded
   --always-on           (approve) Return this memory for every topic, and first
   --scope group:<name>  (approve) Assign a project group, not the derived scope
   --scope repo:<path>   (approve) Bind to one repo — the path is resolved to its
@@ -180,6 +186,8 @@ export interface TriageArgs {
   /** `--scope group:<name>` or `--scope repo:<path>` was passed. A repo key is still the
    *  RAW path here — `canonicalizeScope` resolves it, because this parser does no I/O. */
   scope?: MemoryScope;
+  /** `--as "<text>"`: store this phrasing instead of the mined utterance. */
+  as?: string;
   /** `-h`/`--help` was passed; the caller prints help and exits 0. */
   help: boolean;
 }
@@ -272,6 +280,14 @@ export function parseTriageArgs(argv: string[]): TriageArgs {
       const value = argv[++i];
       if (!value) throw new UsageError('--scope requires a value (group:<name>)');
       args.scope = parseScopeValue(value);
+    } else if (a === '--as') {
+      // Consumed positionally rather than checked for a leading dash: a canonical
+      // phrasing legitimately starts with one ("--json is the agent seam"), and rejecting
+      // that would make the flag unusable for exactly the sentences worth storing.
+      const value = argv[++i];
+      if (value === undefined) throw new UsageError('--as requires the phrasing to store, in quotes');
+      if (!value.trim()) throw new UsageError('--as needs a non-empty phrasing');
+      args.as = value;
     } else if (a.startsWith('-')) {
       throw new UsageError(`unknown option: ${a}`);
     } else if (args.id !== undefined) {
@@ -551,6 +567,7 @@ export function assertActionAcceptsFlags(action: TriageAction, args: TriageArgs)
   if (action === 'approve') return;
   if (args.alwaysOn) throw new UsageError(`${action} does not take --always-on (it applies to approve only)`);
   if (args.scope) throw new UsageError(`${action} does not take --scope (it applies to approve only)`);
+  if (args.as) throw new UsageError(`${action} does not take --as (it applies to approve only)`);
 }
 
 /**
@@ -604,9 +621,13 @@ function runTriage(action: TriageAction, argv: string[]): void {
       // Resolved here rather than in the parser: this is the I/O layer, and the failure it
       // can raise (a path that is not a repo) must reach the user before anything is written.
       const scope = args.scope ? canonicalizeScope(args.scope) : undefined;
-      approve(id, { alwaysOn: args.alwaysOn, scope });
+      // `approve` returns the id that now carries the fact, which differs from the one
+      // passed in whenever --as rewrote the text. Reporting the argument instead would
+      // print an id that is no longer the canonical row.
+      const kept = approve(id, { alwaysOn: args.alwaysOn, scope, as: args.as });
       const notes = [args.alwaysOn ? 'always-on' : '', scope ? `scope ${scope.type}:${scope.key}` : ''].filter(Boolean);
-      process.stderr.write(`  approved ${id}${notes.length > 0 ? ` (${notes.join(', ')})` : ''}\n`);
+      process.stderr.write(`  approved ${kept}${notes.length > 0 ? ` (${notes.join(', ')})` : ''}\n`);
+      if (kept !== id) process.stderr.write(`  rephrased — ${id} folded in as evidence\n`);
       return;
     }
     case 'reject':
