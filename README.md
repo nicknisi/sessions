@@ -287,10 +287,11 @@ To turn it off, run `sessions uninstall` (which also removes the plugin and MCP 
 
 ## Usage reports
 
-`sessions report` does a fresh pass over your local Claude Code, Codex, Pi, and OpenCode logs and produces a token/cost usage report. By default it renders a self-contained HTML dashboard and opens it in your browser; JSON output is available for piping.
+`sessions report` reads your local Claude Code, Codex, Pi, and OpenCode logs and produces a token/cost usage report. By default it renders a self-contained HTML dashboard and opens it in your browser; JSON is available for piping and `--format text` prints a summary straight to the terminal.
 
 ```sh
 sessions report                              # HTML dashboard, opens in your browser
+sessions report --format text --today        # quick terminal summary
 sessions report --out ./report.html          # save the dashboard instead of opening it
 sessions report --format json --stdout       # print JSON to stdout (for piping)
 sessions report --days 30 --tool claude      # last 30 days, Claude Code only
@@ -299,13 +300,15 @@ sessions report --month 2026-05              # a specific calendar month
 sessions report --here                       # current project only
 ```
 
+Parsed transcripts are cached against their mtime and size, so only what changed is re-read; a bounded period additionally skips files last written before the window. Pass `--no-cache` to force a full read.
+
 The selected period is shown prominently at the top of both outputs (and in the JSON `period`).
 
 ### Report options
 
 | Flag                                                                        | Description                                                                                                                                     |
 | --------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--format json\|html\|both`                                                 | What to emit. Default `html`.                                                                                                                   |
+| `--format json\|html\|both\|text`                                           | What to emit. Default `html`. `text` prints to stdout and writes no file.                                                                       |
 | `--out <path>`                                                              | Save output instead of opening in the browser. For `both`, a directory → `usage-report.json` + `report.html`; for a single format, a file path. |
 | `--here`                                                                    | Restrict to the current project.                                                                                                                |
 | `--from YYYY-MM-DD` / `--to YYYY-MM-DD`                                     | Inclusive local-date range. Default: all time.                                                                                                  |
@@ -317,19 +320,25 @@ The selected period is shown prominently at the top of both outputs (and in the 
 | `--stdout`                                                                  | Print the JSON to stdout and skip the JSON file (HTML is still written if requested).                                                           |
 | `--offline`                                                                 | Skip the pricing refresh; use cached/embedded pricing data.                                                                                     |
 | `--refresh-pricing`                                                         | Force a pricing refresh even if the cache is fresh.                                                                                             |
+| `--no-cache`                                                                | Bypass the incremental parse cache and re-read every transcript.                                                                                |
 
 ### What's in the report
 
 Both outputs are built from the same data:
 
 - **Summary** — total cost, tokens, sessions, messages, active days, current/longest streak, peak hour, and most-used model.
-- **Breakdowns** — by tool, provider, model, and project.
+- **Cache** — hit rate, read and write volume, and what the prompt cache saved against uncached input rates.
+- **Breakdowns** — by tool, provider, model, project, and git branch (cost per feature).
+- **Subagents** — spend by dispatched agent type, plus the costliest individual dispatches. Roughly half of a heavy Task user's tokens land here; they are counted in every total above, and this says who spent them.
+- **Most expensive sessions** — ranked by cost and named with their title or opening prompt, pulled read-only from the search index when one exists.
 - **Daily series** — per-day tokens/cost/sessions/messages with an hourly histogram.
 - **Insights** — a weekly trend plus hour-of-day and weekday activity profiles.
 
+In the HTML, every stat, section heading, and table column explains itself on hover — what is counted, what is excluded, and what the cost is an estimate of.
+
 The JSON is a sessions-owned `UsageReport` (`{ "generator": "sessions", "version": 1, ... }`). The HTML is fully self-contained (inline SVG charts, no external assets) and adapts to light/dark.
 
-Cost is estimated from [LiteLLM](https://github.com/BerriAI/litellm) pricing data, fetched at most once per day and cached locally, with an embedded snapshot as the offline fallback — a failed fetch never blocks the report. Pi sessions use the cost recorded in their own logs; OpenCode sessions use their recorded cost when present (Anthropic) and fall back to estimated pricing otherwise (OpenAI). Tokens for unknown models are still counted, with cost shown as `$0`. Token totals exclude cache reads (replayed context, mostly free reuse).
+Cost is estimated from [LiteLLM](https://github.com/BerriAI/litellm) pricing data, fetched at most once per day and cached locally, with an embedded snapshot as the offline fallback — a failed fetch never blocks the report. Pi sessions use the cost recorded in their own logs; OpenCode sessions use their recorded cost when present (Anthropic) and fall back to estimated pricing otherwise (OpenAI). A model with no published price is billed at the newest rate in its own family and flagged as an estimate in the report; one in no known family is counted at `$0`, loudly. Token totals exclude cache reads (replayed context, mostly free reuse).
 
 ## Wrapped
 
