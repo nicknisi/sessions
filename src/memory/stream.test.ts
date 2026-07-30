@@ -197,7 +197,7 @@ describe('the watermark table', () => {
 
 describe('mine --since-last', () => {
   test('the first run mines everything and records a watermark for what it saw', async () => {
-    const { stdout, stderr } = await capture(['mine', '--repo', repo, '--since-last']);
+    const { stdout, stderr } = await capture(['mine', '--repo', repo, '--since-last', '--json']);
     expect(texts(batchOf({ stdout }))).toEqual([S1, S2, S3].sort());
     expect(stderr).toContain('no watermark yet');
     expect([...readWatermark().keys()].sort()).toEqual([paths.s1, paths.s2, paths.s3].sort());
@@ -208,24 +208,24 @@ describe('mine --since-last', () => {
     // whole inventory. The saving is scans, never records: this pins the output
     // equivalence the optimization rests on.
     const backfill = texts(await mine({ repo }));
-    expect(texts(batchOf(await capture(['mine', '--repo', repo, '--since-last'])))).toEqual(backfill);
+    expect(texts(batchOf(await capture(['mine', '--repo', repo, '--since-last', '--json'])))).toEqual(backfill);
   });
 
   test('a second consecutive run emits an empty batch and exits without erroring', async () => {
-    await capture(['mine', '--repo', repo, '--since-last']);
-    const { stdout, stderr } = await capture(['mine', '--repo', repo, '--since-last']);
+    await capture(['mine', '--repo', repo, '--since-last', '--json']);
+    const { stdout, stderr } = await capture(['mine', '--repo', repo, '--since-last', '--json']);
     expect(JSON.parse(stdout)).toEqual([]);
     expect(stderr).toContain('0 sessions changed');
   });
 
   test('appending a corrective turn marks exactly that session changed', async () => {
-    await capture(['mine', '--repo', repo, '--since-last']);
+    await capture(['mine', '--repo', repo, '--since-last', '--json']);
     // Restored afterwards so the shared fixture stays pristine for its siblings; every
     // test re-baselines its own watermark, so the mtime churn is harmless.
     const before = readFileSync(paths.s2, 'utf-8');
     try {
       appendTurn(paths.s2, APPENDED, repo);
-      const batch = batchOf(await capture(['mine', '--repo', repo, '--since-last']));
+      const batch = batchOf(await capture(['mine', '--repo', repo, '--since-last', '--json']));
       // Session 2's phrasings — both of them — and nothing from the untouched sessions.
       expect(texts(batch)).toEqual([APPENDED, S2].sort());
     } finally {
@@ -234,26 +234,26 @@ describe('mine --since-last', () => {
   });
 
   test('changing mtime alone still counts as changed', async () => {
-    await capture(['mine', '--repo', repo, '--since-last']);
+    await capture(['mine', '--repo', repo, '--since-last', '--json']);
     touchMtime(paths.s3);
 
-    expect(texts(batchOf(await capture(['mine', '--repo', repo, '--since-last'])))).toEqual([S3]);
+    expect(texts(batchOf(await capture(['mine', '--repo', repo, '--since-last', '--json'])))).toEqual([S3]);
   });
 
   test('deleting a watermark row makes that session changed again', async () => {
-    await capture(['mine', '--repo', repo, '--since-last']);
+    await capture(['mine', '--repo', repo, '--since-last', '--json']);
     getMemoryDb().run('DELETE FROM mine_watermark WHERE file_path = ?', [paths.s1]);
 
-    expect(texts(batchOf(await capture(['mine', '--repo', repo, '--since-last'])))).toEqual([S1]);
+    expect(texts(batchOf(await capture(['mine', '--repo', repo, '--since-last', '--json'])))).toEqual([S1]);
   });
 
   test('a rediscovered phrasing on a rejected memory stays rejected', async () => {
-    const first = batchOf(await capture(['mine', '--repo', repo, '--since-last']));
+    const first = batchOf(await capture(['mine', '--repo', repo, '--since-last', '--json']));
     const rejected = first.find((r) => r.text === S1)!;
     setState(rejected.id, 'rejected');
 
     touchMtime(paths.s1);
-    const batch = batchOf(await capture(['mine', '--repo', repo, '--since-last']));
+    const batch = batchOf(await capture(['mine', '--repo', repo, '--since-last', '--json']));
 
     expect(batch.find((r) => r.id === rejected.id)).toBeUndefined();
     expect(listMemories().find((r) => r.id === rejected.id)!.state).toBe('rejected');
@@ -268,9 +268,9 @@ describe('mine --since-last', () => {
     const a = writeSession(tmp, 'stream-shared-a', repo, [userTurn(shared, '2026-06-01T09:00:00Z')]);
     const b = writeSession(tmp, 'stream-shared-b', repo, [userTurn(shared, '2026-06-03T09:00:00Z')]);
     try {
-      await capture(['mine', '--repo', repo, '--since-last']);
+      await capture(['mine', '--repo', repo, '--since-last', '--json']);
       touchMtime(a);
-      const batch = batchOf(await capture(['mine', '--repo', repo, '--since-last']));
+      const batch = batchOf(await capture(['mine', '--repo', repo, '--since-last', '--json']));
 
       const record = batch.find((r) => r.text === shared)!;
       expect(record.evidence.sessions.sort()).toEqual([a, b].sort());
@@ -295,10 +295,10 @@ describe('mine --since-last', () => {
     const otherFact = 'Never hand edit the generated lockfile, always run the installer';
     const otherPath = writeSession(tmp, 'stream-other', other, [userTurn(otherFact, '2026-06-01T10:00:00Z')]);
     try {
-      await capture(['mine', '--repo', repo, '--since-last']);
+      await capture(['mine', '--repo', repo, '--since-last', '--json']);
       expect(readWatermark().has(otherPath)).toBe(false);
 
-      const batch = batchOf(await capture(['mine', '--repo', other, '--since-last']));
+      const batch = batchOf(await capture(['mine', '--repo', other, '--since-last', '--json']));
       expect(texts(batch)).toEqual([otherFact]);
       expect(readWatermark().has(otherPath)).toBe(true);
     } finally {
@@ -310,12 +310,12 @@ describe('mine --since-last', () => {
     setMemoryEnv(spreadTmp);
     closeDatabases();
     try {
-      const first = batchOf(await capture(['mine', '--all', '--since-last']));
+      const first = batchOf(await capture(['mine', '--all', '--since-last', '--json']));
       // Two containers is ambiguous and resolves toward `repo` (src/memory/mine.ts).
       expect(first.find((r) => r.text === SPREAD)!.scope.type).toBe('repo');
 
       writeSession(spreadTmp, 'spread-c', spreadRepoC, [userTurn(SPREAD, '2026-06-04T10:00:00Z')]);
-      const second = batchOf(await capture(['mine', '--all', '--since-last']));
+      const second = batchOf(await capture(['mine', '--all', '--since-last', '--json']));
       const widened = second.find((r) => r.text === SPREAD)!;
       expect(widened.scope.type).toBe('workflow');
       expect(widened.evidence.sessions).toHaveLength(3);
@@ -354,14 +354,14 @@ describe('distinctPhrasings stays 1, and snooze-resurface therefore cannot fire'
   const REWORDED = 'Always run the migration script first, before the api service is deployed';
 
   test('a new wording becomes a new record instead of bumping the existing one', async () => {
-    const first = batchOf(await capture(['mine', '--repo', repo, '--since-last']));
+    const first = batchOf(await capture(['mine', '--repo', repo, '--since-last', '--json']));
     const original = first.find((r) => r.text === S1)!;
     expect(original.evidence.distinctPhrasings).toBe(1);
 
     const before = readFileSync(paths.s1, 'utf-8');
     try {
       appendTurn(paths.s1, REWORDED, repo);
-      const second = batchOf(await capture(['mine', '--repo', repo, '--since-last']));
+      const second = batchOf(await capture(['mine', '--repo', repo, '--since-last', '--json']));
 
       const reworded = second.find((r) => r.text === REWORDED)!;
       expect(reworded.id).not.toBe(original.id);
@@ -375,7 +375,7 @@ describe('distinctPhrasings stays 1, and snooze-resurface therefore cannot fire'
   });
 
   test('a snoozed candidate stays hidden even once a paraphrase arrives and the date passes', async () => {
-    const first = batchOf(await capture(['mine', '--repo', repo, '--since-last']));
+    const first = batchOf(await capture(['mine', '--repo', repo, '--since-last', '--json']));
     const target = first.find((r) => r.text === S1)!;
     // An expiry in the past satisfies the DATE half of shouldResurface outright, so the
     // only thing left to decide the outcome is the phrasing count.
@@ -384,7 +384,7 @@ describe('distinctPhrasings stays 1, and snooze-resurface therefore cannot fire'
     const before = readFileSync(paths.s1, 'utf-8');
     try {
       appendTurn(paths.s1, REWORDED, repo);
-      const second = batchOf(await capture(['mine', '--repo', repo, '--since-last']));
+      const second = batchOf(await capture(['mine', '--repo', repo, '--since-last', '--json']));
 
       expect(second.find((r) => r.id === target.id)).toBeUndefined();
       expect(listMemories().find((r) => r.id === target.id)!.state).toBe('snoozed');

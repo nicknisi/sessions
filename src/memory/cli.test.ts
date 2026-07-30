@@ -67,8 +67,10 @@ describe('parseMineArgs', () => {
     expect(() => parseMineArgs(['--all', '--repo', '/repos/app'])).toThrow('--all and --repo are mutually exclusive');
   });
 
-  test('--json is accepted and changes nothing — the batch is always JSON', () => {
-    expect(parseMineArgs(['--json', '--all'])).toEqual({ all: true, help: false });
+  test('--json selects the machine seam; prose is what a human gets by default', () => {
+    expect(parseMineArgs(['--json', '--all'])).toEqual({ all: true, help: false, json: true });
+    // Absent rather than false, so the bare-parse shape stays bare.
+    expect(parseMineArgs(['--all'])).toEqual({ all: true, help: false });
   });
 
   test('an unknown option is a usage error, not a silently ignored flag', () => {
@@ -115,7 +117,7 @@ describe('applyPersistedStates', () => {
 
 describe('memory mine', () => {
   test('an empty corpus prints an empty batch and returns, rather than erroring', async () => {
-    const { stdout } = await capture(['mine', '--repo', join(tmp, 'no-such-repo')]);
+    const { stdout } = await capture(['mine', '--repo', join(tmp, 'no-such-repo'), '--json']);
     expect(JSON.parse(stdout)).toEqual([]);
   });
 
@@ -125,17 +127,17 @@ describe('memory mine', () => {
     // rather than re-presented as a fresh candidate on every run. The row itself
     // survives — durability.test.ts asserts that a rejected memory keeps receiving
     // evidence refreshes — so only the batch narrows.
-    const first = JSON.parse((await capture(['mine', '--repo', repo])).stdout) as MemoryRecord[];
+    const first = JSON.parse((await capture(['mine', '--repo', repo, '--json'])).stdout) as MemoryRecord[];
     const mined = first.find((r) => r.text === FACT);
     expect(mined).toBeDefined();
     expect(mined!.state).toBe('candidate');
 
     setState(mined!.id, 'approved');
-    const second = JSON.parse((await capture(['mine', '--repo', repo])).stdout) as MemoryRecord[];
+    const second = JSON.parse((await capture(['mine', '--repo', repo, '--json'])).stdout) as MemoryRecord[];
     expect(second.find((r) => r.id === mined!.id)!.state).toBe('approved');
 
     setState(mined!.id, 'rejected');
-    const third = JSON.parse((await capture(['mine', '--repo', repo])).stdout) as MemoryRecord[];
+    const third = JSON.parse((await capture(['mine', '--repo', repo, '--json'])).stdout) as MemoryRecord[];
     expect(third.find((r) => r.id === mined!.id)).toBeUndefined();
     expect(listMemories().find((r) => r.id === mined!.id)!.state).toBe('rejected');
   });
@@ -157,9 +159,9 @@ describe('memory pending', () => {
     getMemoryDb().run('DELETE FROM memory');
   });
 
-  test('--json is accepted and changes nothing; anything else is a usage error', () => {
+  test('--json selects the machine seam; anything else is a usage error', () => {
     expect(parsePendingArgs([])).toEqual({ help: false });
-    expect(parsePendingArgs(['--json'])).toEqual({ help: false });
+    expect(parsePendingArgs(['--json'])).toEqual({ help: false, json: true });
     expect(parsePendingArgs(['-h']).help).toBe(true);
     expect(() => parsePendingArgs(['--all'])).toThrow('unknown option: --all');
     // No positional either — `pending` takes no id.
@@ -167,14 +169,14 @@ describe('memory pending', () => {
   });
 
   test('an empty store reports zero rather than erroring — the skill parses this', async () => {
-    const { stdout } = await capture(['pending']);
+    const { stdout } = await capture(['pending', '--json']);
     expect(JSON.parse(stdout)).toEqual({ count: 0, preview: [] });
   });
 
   test('the count is the true total and the preview is capped, which is the whole point', async () => {
     const all = Array.from({ length: PENDING_PREVIEW + 2 }, (_, i) => candidate(i));
     upsertCandidates(all);
-    const batch = JSON.parse((await capture(['pending'])).stdout) as PendingBatch;
+    const batch = JSON.parse((await capture(['pending', '--json'])).stdout) as PendingBatch;
     expect(batch.count).toBe(PENDING_PREVIEW + 2);
     expect(batch.preview).toHaveLength(PENDING_PREVIEW);
     expect(batch.count).not.toBe(batch.preview.length);
@@ -185,7 +187,7 @@ describe('memory pending', () => {
     upsertCandidates([pendingOne!, approved!, rejected!]);
     setState(approved!.id, 'approved');
     setState(rejected!.id, 'rejected');
-    const batch = JSON.parse((await capture(['pending'])).stdout) as PendingBatch;
+    const batch = JSON.parse((await capture(['pending', '--json'])).stdout) as PendingBatch;
     expect(batch.count).toBe(1);
     expect(batch.preview[0]!.id).toBe(pendingOne!.id);
   });
