@@ -1,12 +1,21 @@
-import { existsSync, mkdirSync, writeFileSync, readFileSync, cpSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync, cpSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { homedir } from 'node:os';
 import { C } from './colors';
 import { PLUGIN_FILES } from './plugin-files';
 import { enableSessionHook, disableSessionHook } from './hooks';
 import { getDataDir } from './paths';
+import {
+  cleanDeadConfigs,
+  codexManualBlock,
+  detectClients,
+  unwireCodex,
+  unwireJsonClient,
+  wireCodex,
+  wireJsonClient,
+  type McpClient,
+  type WireResult,
+} from './mcp-config';
 
-const home = homedir();
 /** The sessions data dir. Single source of truth is getDataDir() — the memory store
  *  lives in the same directory, and the two must never disagree about where it is. */
 function sessionsDir(): string {
@@ -31,32 +40,6 @@ function ownedInstallPaths(): string[] {
 const PLUGIN_VERSION = '1.19.0'; // x-release-please-version
 const MARKETPLACE_NAME = 'sessions';
 const PLUGIN_NAME = 'sessions';
-
-interface ToolConfig {
-  name: string;
-  detected: boolean;
-  mcpConfigPath: string;
-}
-
-function detectTools(): ToolConfig[] {
-  return [
-    {
-      name: 'Claude Code',
-      detected: existsSync(join(home, '.claude')),
-      mcpConfigPath: join(home, '.claude', '.mcp.json'),
-    },
-    {
-      name: 'Cursor',
-      detected: existsSync(join(home, '.cursor')),
-      mcpConfigPath: join(home, '.cursor', '.mcp.json'),
-    },
-    {
-      name: 'Codex',
-      detected: existsSync(join(home, '.codex')),
-      mcpConfigPath: join(home, '.codex', '.mcp.json'),
-    },
-  ];
-}
 
 function findPluginSource(): string {
   const candidates = [
@@ -128,30 +111,22 @@ function sessionsCommand(): string {
   return 'sessions';
 }
 
-function configureMcp(tool: ToolConfig): boolean {
-  try {
-    const cmd = sessionsCommand();
-    let config: Record<string, unknown> = {};
+/**
+ * Write the MCP entry into the file this client actually reads.
+ *
+ * Claude Code has no config of its own here: its server arrives with the plugin, which
+ * is also the reason the old dotfile bug went unnoticed for so long — the one client
+ * most likely to be tested worked through a path setup never touched.
+ */
+function wire(client: McpClient): WireResult {
+  if (!client.configPath) return { status: 'unchanged' };
+  const cmd = sessionsCommand();
+  return client.id === 'codex' ? wireCodex(client.configPath, cmd) : wireJsonClient(client.configPath, client.id, cmd);
+}
 
-    if (existsSync(tool.mcpConfigPath)) {
-      try {
-        config = JSON.parse(readFileSync(tool.mcpConfigPath, 'utf-8'));
-      } catch {}
-    }
-
-    const servers = (config.mcpServers ?? {}) as Record<string, unknown>;
-    servers.sessions = {
-      command: cmd,
-      args: ['--mcp'],
-    };
-    config.mcpServers = servers;
-
-    mkdirSync(dirname(tool.mcpConfigPath), { recursive: true });
-    writeFileSync(tool.mcpConfigPath, JSON.stringify(config, null, 2) + '\n');
-    return true;
-  } catch {
-    return false;
-  }
+function unwire(client: McpClient): WireResult {
+  if (!client.configPath) return { status: 'unchanged' };
+  return client.id === 'codex' ? unwireCodex(client.configPath) : unwireJsonClient(client.configPath);
 }
 
 function runClaude(...args: string[]): boolean {
@@ -212,22 +187,38 @@ export function runSetup(opts: SetupOptions = {}): void {
     process.exit(1);
   }
 
-  const tools = detectTools();
-  const detected = tools.filter((t) => t.detected);
+  for (const path of cleanDeadConfigs()) {
+    w(`  ${C.green}✓${C.reset} Removed dead config ${C.dim}${path}${C.reset}\n`);
+  }
+
+  const detected = detectClients().filter((t) => t.detected);
 
   if (detected.length === 0) {
-    w(`\n  ${C.dim}No AI tools detected. Install Claude Code, Cursor, or Codex first.${C.reset}\n\n`);
+    w(`\n  ${C.dim}No AI tools detected. Install Claude Code, Cursor, Codex, or Pi first.${C.reset}\n\n`);
     process.exit(0);
   }
 
   for (const tool of detected) {
-    if (configureMcp(tool)) {
-      w(`  ${C.green}✓${C.reset} MCP server added to ${C.dim}${tool.name}${C.reset}\n`);
-    } else {
-      w(`  ${C.red}✗${C.reset} Failed to configure MCP for ${tool.name}\n`);
+    // Report what the write actually did. The previous version printed a checkmark for
+    // every client whose file it managed to create, including three no client reads.
+    const res = wire(tool);
+    if (res.status === 'added') {
+      w(
+        `  ${C.green}✓${C.reset} MCP server added to ${C.dim}${tool.name}${C.reset} ${C.dim}(${tool.configPath})${C.reset}\n`,
+      );
+    } else if (res.status === 'unchanged' && tool.configPath) {
+      w(`  ${C.dim}ℹ${C.reset} MCP server already configured for ${C.dim}${tool.name}${C.reset}\n`);
+    } else if (res.status === 'refused') {
+      w(`  ${C.yellow}!${C.reset} Left ${C.dim}${tool.configPath}${C.reset} alone — ${res.reason}\n`);
+      if (tool.id === 'codex') {
+        w(`  ${C.dim}  Add this yourself:${C.reset}\n`);
+        for (const line of codexManualBlock(sessionsCommand()).split('\n')) w(`  ${C.dim}    ${line}${C.reset}\n`);
+      }
+    } else if (res.status === 'failed') {
+      w(`  ${C.red}✗${C.reset} Failed to configure MCP for ${tool.name} — ${res.reason}\n`);
     }
 
-    if (tool.name === 'Claude Code') {
+    if (tool.id === 'claude') {
       const result = registerClaudePlugin();
       if (result.marketplace) {
         w(`  ${C.green}✓${C.reset} Marketplace added to ${C.dim}${tool.name}${C.reset}\n`);
@@ -243,7 +234,7 @@ export function runSetup(opts: SetupOptions = {}): void {
   }
 
   // SessionStart auto-injection hook — opt-in, Claude Code only for now.
-  const claudeDetected = detected.some((t) => t.name === 'Claude Code');
+  const claudeDetected = detected.some((t) => t.id === 'claude');
   if (claudeDetected && shouldEnableHook(opts)) {
     const res = enableSessionHook('claude');
     if (res.changed) {
@@ -269,20 +260,19 @@ export function runUninstall(): void {
 
   w(`\n${C.bold}sessions uninstall${C.reset}\n\n`);
 
-  const tools = detectTools();
-  for (const tool of tools.filter((t) => t.detected)) {
-    try {
-      if (existsSync(tool.mcpConfigPath)) {
-        const config = JSON.parse(readFileSync(tool.mcpConfigPath, 'utf-8'));
-        if (config.mcpServers?.sessions) {
-          delete config.mcpServers.sessions;
-          writeFileSync(tool.mcpConfigPath, JSON.stringify(config, null, 2) + '\n');
-          w(`  ${C.green}✓${C.reset} Removed MCP config from ${C.dim}${tool.name}${C.reset}\n`);
-        }
-      }
-    } catch {}
+  for (const path of cleanDeadConfigs()) {
+    w(`  ${C.green}✓${C.reset} Removed dead config ${C.dim}${path}${C.reset}\n`);
+  }
 
-    if (tool.name === 'Claude Code') {
+  for (const tool of detectClients().filter((t) => t.detected)) {
+    const res = unwire(tool);
+    if (res.status === 'added') {
+      w(`  ${C.green}✓${C.reset} Removed MCP config from ${C.dim}${tool.name}${C.reset}\n`);
+    } else if (res.status === 'refused' || res.status === 'failed') {
+      w(`  ${C.yellow}!${C.reset} Left ${C.dim}${tool.configPath}${C.reset} alone — ${res.reason}\n`);
+    }
+
+    if (tool.id === 'claude') {
       unregisterClaudePlugin();
       w(`  ${C.green}✓${C.reset} Removed plugin from ${C.dim}${tool.name}${C.reset}\n`);
 
