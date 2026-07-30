@@ -14,7 +14,15 @@ import type {
   ToolId,
 } from './types.ts';
 
-import type { CacheStats, SubagentReport, BranchBreakdown, SessionCost, ReportFacets } from './facets.ts';
+import type {
+  CacheStats,
+  SubagentReport,
+  SessionCost,
+  SessionDistribution,
+  ModelWeek,
+  BurnStats,
+  ReportFacets,
+} from './facets.ts';
 
 export type { ToolBreakdown, ProviderBreakdown, ModelBreakdown, ProjectBreakdown, DailyEntry, ModelRef, ToolId };
 export type {
@@ -22,8 +30,10 @@ export type {
   SubagentReport,
   SubagentTypeBreakdown,
   SubagentDispatch,
-  BranchBreakdown,
   SessionCost,
+  SessionDistribution,
+  ModelWeek,
+  BurnStats,
 } from './facets.ts';
 
 export interface UsageSummary {
@@ -81,9 +91,14 @@ export interface UsageReport {
   // aggregation does not model, computed from the same events.
   cache: CacheStats;
   subagents: SubagentReport;
-  byBranch: BranchBreakdown[];
   topSessions: SessionCost[];
   totalSessions: number;
+  sessionDistribution: SessionDistribution;
+  modelWeekly: ModelWeek[];
+  modelOrder: string[];
+  /** Pace against the period. Null for an all-time report, which has no period to
+   *  pace against. */
+  burn: BurnStats | null;
 }
 
 // Map the internal aggregation result to the sessions-owned public schema,
@@ -117,8 +132,13 @@ export function toUsageReport(data: TokenmaxingData, facets: ReportFacets): Usag
     warnings: [],
     cache: facets.cache,
     subagents: facets.subagents,
-    byBranch: facets.byBranch,
     topSessions: facets.topSessions,
     totalSessions: facets.totalSessions,
+    sessionDistribution: facets.sessionDistribution,
+    modelWeekly: facets.modelWeekly,
+    modelOrder: facets.modelOrder,
+    // Filled by runReport, which is the only caller that knows the requested
+    // window and can gather the window before it.
+    burn: null,
   };
 }

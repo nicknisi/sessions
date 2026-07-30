@@ -3,8 +3,10 @@ import type {
   ToolBreakdown,
   ModelBreakdown,
   ProjectBreakdown,
-  BranchBreakdown,
   SessionCost,
+  SessionDistribution,
+  ModelWeek,
+  BurnStats,
   SubagentReport,
   CacheStats,
   PricingWarning,
@@ -75,8 +77,15 @@ const GLOSSARY = {
   byModel:
     'Cost per model. A model with no published price is flagged in the banner above rather than counted as zero.',
   byProject: 'Cost per project directory, from each message’s working directory.',
-  byBranch:
-    'Cost per git branch, recorded per message rather than per session — so a session that switched branches is split across them. Effectively cost per feature.',
+  weeklyTrend: 'Cost per week over the period, so a ramp or a drop is visible as a shape rather than a single total.',
+  modelMix:
+    'Weekly cost stacked by model, newest week last. A single total per model hides a shift between them; this shows it happening. Models beyond the top few are pooled into "other".',
+  burn: 'Spend so far against a straight-line projection to the end of the period, and against the equally long window immediately before it.',
+  distribution:
+    'The shape of session spend across every session in the period, not just the ones in the table. A max far above the median means a few sessions carry the bill.',
+  distinctSessions:
+    'Sessions counted once each. This is lower than the figure at the top of the page, which counts a session again on every day it touched — the two answer different questions.',
+  costPerDispatch: 'What one invocation of this agent type costs on average — total spend divided by dispatches.',
   subagents:
     'Spend by agents dispatched with the Task tool, plus auto-compaction. Their tokens are already inside every total above; this breaks out who spent them.',
   dispatch: 'One Task/Agent invocation. A dispatch can span many messages.',
@@ -246,6 +255,10 @@ table.tbl th.num,table.tbl td.num{text-align:right;font-family:var(--mono);font-
 table.tbl td.t{font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:26em;}
 table.tbl td.dim{color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:14em;}
 .trunc{font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-top:9px;}
+.legend{display:flex;flex-wrap:wrap;gap:6px 18px;margin-top:12px;font-family:var(--mono);font-size:10.5px;color:var(--muted);}
+.lg{display:inline-flex;align-items:center;gap:6px;}
+.lg .sw{width:10px;height:10px;background:var(--accent);flex:none;}
+.lg b{color:var(--ink);font-weight:700;}
 svg.bars rect{transition:opacity .15s ease-out;}
 svg.bars rect:hover{opacity:.7;}
 .tip{position:fixed;pointer-events:none;background:var(--ink);color:var(--bg);font-family:var(--sans);font-size:12px;line-height:1.45;padding:7px 10px;border-radius:5px;opacity:0;transform:translateX(-50%);max-width:34ch;text-wrap:pretty;font-variant-numeric:tabular-nums;z-index:var(--z-tooltip);box-shadow:0 4px 14px color-mix(in oklch,var(--ink) 22%,transparent);}
@@ -322,35 +335,38 @@ ${cell(fmtUSD(c.savedUSD), 'saved vs uncached', GLOSSARY.saved)}
 
 function subagentSection(sub: SubagentReport): string {
   if (sub.dispatches === 0) return '';
-  const byType = barList(
-    sub.byType.slice(0, 8).map((t) => ({
-      name: t.agentType,
-      value: t.costUSD,
-      tip: `${fmtTokens(t.tokens)} tokens · ${t.dispatches} dispatches · ${t.messages} msgs`,
-    })),
-  );
+  const typeRows = sub.byType
+    .slice(0, 10)
+    .map(
+      (t) =>
+        `<tr><td class="t">${esc(t.agentType)}</td><td class="num">${fmtInt(t.dispatches)}</td><td class="num">${fmtUSD(t.costPerDispatchUSD)}</td><td class="num">${fmtUSD(t.costUSD)}</td></tr>`,
+    )
+    .join('');
+  const typeTrunc =
+    sub.byType.length > 10 ? `<div class="trunc">showing 10 of ${fmtInt(sub.byType.length)} agent types</div>` : '';
   const rows = sub.topDispatches
+    .slice(0, 10)
     .map(
       (d) =>
-        `<tr><td class="t">${esc(d.agentType)}</td><td class="dim">${esc(d.project)}</td><td class="dim">${esc(d.date)}</td><td class="num">${fmtTokens(d.tokens)}</td><td class="num">${fmtUSD(d.costUSD)}</td></tr>`,
+        `<tr><td class="t"${tip(`${d.project} · ${d.date} · ${fmtTokens(d.tokens)} tokens · ${d.messages} messages`)}>${esc(d.agentType)}</td><td class="num">${fmtUSD(d.costUSD)}</td></tr>`,
     )
     .join('');
   // Say what the table leaves out — a silent top-N reads as "this is all of them".
   const trunc =
-    sub.totalDispatches > sub.topDispatches.length
-      ? `<div class="trunc">showing top ${sub.topDispatches.length} of ${fmtInt(sub.totalDispatches)} dispatches · full list in the JSON report</div>`
+    sub.totalDispatches > 10
+      ? `<div class="trunc">showing top 10 of ${fmtInt(sub.totalDispatches)} dispatches · more in the JSON report</div>`
       : '';
   return `<section class="blk">${h2('Subagents', GLOSSARY.subagents, `${fmtPct(sub.shareOfCost)} of spend · ${fmtInt(sub.dispatches)} dispatches`)}
 <div class="cols">
-<div><table class="tbl"><thead><tr><th${tip(GLOSSARY.dispatch)}>Agent type</th><th>Project</th><th>First seen</th><th class="num"${tip(GLOSSARY.tokens)}>Tokens</th><th class="num">Cost</th></tr></thead><tbody>${rows}</tbody></table>${trunc}</div>
-<div><div class="barlist">${byType}</div></div>
+<div><table class="tbl"><thead><tr><th${tip(GLOSSARY.dispatch)}>Agent type</th><th class="num">Dispatches</th><th class="num"${tip(GLOSSARY.costPerDispatch)}>Each</th><th class="num">Total</th></tr></thead><tbody>${typeRows}</tbody></table>${typeTrunc}</div>
+<div><table class="tbl"><thead><tr><th>Costliest dispatch</th><th class="num">Cost</th></tr></thead><tbody>${rows}</tbody></table>${trunc}</div>
 </div></section>`;
 }
 
 // The one view a dollar total cannot give you: which pieces of work cost the
 // most. Intent comes from the search index; without it the row still carries
 // project, branch, and date, which is usually enough to recognise the session.
-function sessionSection(sessions: SessionCost[], total: number): string {
+function sessionSection(sessions: SessionCost[], total: number, dist: SessionDistribution): string {
   if (sessions.length === 0) return '';
   const rows = sessions
     .map((s) => {
@@ -364,18 +380,125 @@ function sessionSection(sessions: SessionCost[], total: number): string {
       ? `<div class="trunc">showing top ${sessions.length} of ${fmtInt(total)} sessions · full list in the JSON report</div>`
       : '';
   return `<section class="blk">${h2('Most expensive sessions', GLOSSARY.topSessions, 'intent from the session index')}
+${distributionStrip(dist)}
 <table class="tbl"><thead><tr><th${tip(GLOSSARY.topSessions)}>Session</th><th${tip(GLOSSARY.sessionWhere)}>Project · branch</th><th>Started</th><th class="num"${tip(GLOSSARY.sessionSubagent)}>Subagents</th><th class="num">Cost</th></tr></thead><tbody>${rows}</tbody></table>${trunc}</section>`;
 }
 
-function branchSection(branches: BranchBreakdown[]): string {
-  if (branches.length === 0) return '';
-  return `<div>${h2('By branch', GLOSSARY.byBranch)}<div class="barlist">${barList(
-    branches.slice(0, 8).map((b) => ({
-      name: b.branch,
-      value: b.costUSD,
-      tip: `${b.project} · ${fmtTokens(b.tokens)} tokens · ${b.sessions} sessions`,
-    })),
-  )}</div></div>`;
+// Stacked vertical bars. The palette is one accent at stepped opacity rather than
+// a set of hues: the page commits to a single accent the reader picks, and six
+// competing colours would fight it. Six steps stay tellable apart against the
+// legend; beyond that the series is pooled into "other" by the caller.
+const STACK_OPACITY = [1, 0.78, 0.6, 0.45, 0.33, 0.22];
+
+function stackedBars(
+  weeks: { label: string; parts: { key: string; value: number }[]; total: number }[],
+  keys: string[],
+  w: number,
+  h: number,
+): string {
+  const max = Math.max(1, ...weeks.map((k) => k.total));
+  const n = Math.max(1, weeks.length);
+  const bw = w / n;
+  let grid = '';
+  for (let g = 1; g <= 3; g++) {
+    const y = (h - ((h - 4) * g) / 4).toFixed(1);
+    grid += `<line x1="0" y1="${y}" x2="${w}" y2="${y}" stroke="var(--grid)" stroke-width="1"/>`;
+  }
+  const cols = weeks
+    .map((week, i) => {
+      const x = (i * bw + 1).toFixed(1);
+      const width = Math.max(1, bw - 2).toFixed(1);
+      let y = h;
+      let out = '';
+      // Draw from the baseline up in the same key order every week, so a band
+      // stays in the same place and the eye can follow it across the series.
+      for (const key of keys) {
+        const value = week.parts.find((p) => p.key === key)?.value ?? 0;
+        if (value <= 0) continue;
+        const bh = (value / max) * (h - 6);
+        y -= bh;
+        const op = STACK_OPACITY[Math.min(keys.indexOf(key), STACK_OPACITY.length - 1)];
+        out += `<rect data-tip="${esc(`${week.label} · ${key}: ${fmtUSD(value)}`)}" x="${x}" y="${y.toFixed(1)}" width="${width}" height="${bh.toFixed(1)}" fill="var(--accent)" opacity="${op}"/>`;
+      }
+      return out;
+    })
+    .join('');
+  return `<svg viewBox="0 0 ${w} ${h}" width="100%" height="${h}" preserveAspectRatio="none" class="bars">${grid}${cols}</svg>`;
+}
+
+function legend(keys: string[], totals: Map<string, number>): string {
+  return `<div class="legend">${keys
+    .map(
+      (k, i) =>
+        `<span class="lg"><span class="sw" style="opacity:${STACK_OPACITY[Math.min(i, STACK_OPACITY.length - 1)]}"></span>${esc(k)} <b>${fmtUSD(totals.get(k) ?? 0)}</b></span>`,
+    )
+    .join('')}</div>`;
+}
+
+// Cap the number of drawn series and pool the rest, so a corpus with thirty model
+// ids does not become thirty indistinguishable bands.
+const MODEL_SERIES = 5;
+const OTHER = 'other';
+
+function modelMixSection(weeks: ModelWeek[], order: string[]): string {
+  if (weeks.length < 2 || order.length === 0) return '';
+  const top = order.slice(0, MODEL_SERIES);
+  const pooled = order.length > top.length;
+  const keys = pooled ? [...top, OTHER] : top;
+  const totals = new Map<string, number>();
+  const series = weeks.map((wk) => {
+    const parts: { key: string; value: number }[] = [];
+    let other = 0;
+    for (const [model, cost] of Object.entries(wk.byModel)) {
+      if (top.includes(model)) parts.push({ key: model, value: cost });
+      else other += cost;
+    }
+    if (other > 0) parts.push({ key: OTHER, value: other });
+    for (const p of parts) totals.set(p.key, (totals.get(p.key) ?? 0) + p.value);
+    return { label: wk.weekEnding, parts, total: wk.totalUSD };
+  });
+  return `<section class="blk">${h2('Model mix', GLOSSARY.modelMix, 'weekly cost, stacked')}${stackedBars(series, keys, 920, 170)}
+${legend(keys, totals)}</section>`;
+}
+
+function weeklySection(weeks: { weekEnding: string; costUSD: number; messages: number }[]): string {
+  // One bar is not a trend; a single-week period says nothing this chart could add.
+  if (weeks.length < 2) return '';
+  const bars = weeks.map((w) => ({
+    value: w.costUSD,
+    tip: `week ending ${w.weekEnding}: ${fmtUSD(w.costUSD)} · ${fmtInt(w.messages)} msgs`,
+  }));
+  const first = weeks[0]!.weekEnding;
+  const last = weeks[weeks.length - 1]!.weekEnding;
+  return `<section class="blk">${h2('Weekly trend', GLOSSARY.weeklyTrend, 'USD per week')}${vBars(bars, 920, 170, (b) => b.tip.slice(b.tip.indexOf('$')).split(' ')[0]!)}
+<div class="axis"><span>${esc(formatDate(first))}</span><span>${esc(formatDate(last))}</span></div></section>`;
+}
+
+function burnStrip(burn: BurnStats | null): string {
+  if (!burn) return '';
+  const change =
+    burn.changePct === null
+      ? 'no prior window'
+      : `${burn.changePct >= 0 ? '+' : ''}${(burn.changePct * 100).toFixed(0)}% vs prior ${burn.periodDays}d`;
+  const projection = burn.inProgress
+    ? cell(fmtUSD(burn.projectedUSD), `projected (day ${burn.elapsedDays}/${burn.periodDays})`, GLOSSARY.burn)
+    : cell(String(burn.periodDays), 'days in period', GLOSSARY.burn);
+  return `<div class="statgrid sub">
+${cell(fmtUSD(burn.dailyMeanUSD), 'per active day', GLOSSARY.burn)}
+${projection}
+${cell(burn.priorPeriodUSD === null ? '—' : fmtUSD(burn.priorPeriodUSD), 'prior period', GLOSSARY.burn)}
+${cell(esc(change.split(' ')[0]!), 'change', GLOSSARY.burn)}
+</div>`;
+}
+
+function distributionStrip(d: SessionDistribution): string {
+  if (d.count === 0) return '';
+  return `<div class="statgrid sub">
+${cell(fmtInt(d.count), 'distinct sessions', GLOSSARY.distinctSessions)}
+${cell(fmtUSD(d.medianUSD), 'median', GLOSSARY.distribution)}
+${cell(fmtUSD(d.p90USD), 'p90', GLOSSARY.distribution)}
+${cell(fmtUSD(d.maxUSD), 'most expensive', GLOSSARY.distribution)}
+</div>`;
 }
 
 export function renderHtml(data: UsageReport): string {
@@ -459,6 +582,7 @@ ${cell(fmtInt(s.messages), 'messages', GLOSSARY.messages)}
 ${cell(String(s.activeDays), 'active days', GLOSSARY.activeDays)}
 </div>
 ${cacheStrip(data.cache)}
+${burnStrip(data.burn)}
 <p class="note">${streak} · busiest at <b>${esc(hourLabel(s.peakHourLocal))}</b> · top model <strong>${esc(s.favoriteModel.label)}</strong>${subNote}</p>
 </div>
 <section class="blk">${h2('Daily cost', GLOSSARY.dailyCost, 'USD per day')}${dailyBars}
@@ -471,10 +595,11 @@ ${firstDay && lastDay ? `<div class="axis"><span>${esc(formatDate(firstDay))}</s
 <div>${h2('By tool', GLOSSARY.byTool)}<div class="barlist">${byTool}</div></div>
 <div>${h2('By model', GLOSSARY.byModel)}<div class="barlist">${byModel}</div></div>
 <div>${h2('By project', GLOSSARY.byProject)}<div class="barlist">${byProject}</div></div>
-${branchSection(data.byBranch)}
 </section>
+${weeklySection(data.insights.weekly)}
+${modelMixSection(data.modelWeekly, data.modelOrder)}
 ${subagentSection(data.subagents)}
-${sessionSection(data.topSessions, data.totalSessions)}
+${sessionSection(data.topSessions, data.totalSessions, data.sessionDistribution)}
 <footer class="rep"><span>sessions usage report</span><span>${s.activeDays} active days</span></footer>
 </div>
 <div class="tip" id="tip"></div>

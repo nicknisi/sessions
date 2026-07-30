@@ -327,10 +327,12 @@ The selected period is shown prominently at the top of both outputs (and in the 
 Both outputs are built from the same data:
 
 - **Summary** — total cost, tokens, sessions, messages, active days, current/longest streak, peak hour, and most-used model.
+- **Pace** — spend per active day, a straight-line projection to the end of the period, and the equally long window immediately before it. Only for a bounded period; an all-time report has nothing to pace against.
 - **Cache** — hit rate, read and write volume, and what the prompt cache saved against uncached input rates.
-- **Breakdowns** — by tool, provider, model, project, and git branch (cost per feature).
-- **Subagents** — spend by dispatched agent type, plus the costliest individual dispatches. Roughly half of a heavy Task user's tokens land here; they are counted in every total above, and this says who spent them.
-- **Most expensive sessions** — ranked by cost and named with their title or opening prompt, pulled read-only from the search index when one exists.
+- **Breakdowns** — by tool, provider, model, and project.
+- **Weekly trend and model mix** — cost per week, and cost per week stacked by model, so a shift between models is visible while it happens.
+- **Subagents** — spend by dispatched agent type with the cost of a single dispatch of each, plus the costliest individual dispatches. Roughly half of a heavy Task user's tokens land here; they are counted in every total above, and this says who spent them.
+- **Sessions** — the distribution of session spend (median, p90, max across every session), and the most expensive ones named with their title or opening prompt, pulled read-only from the search index when one exists.
 - **Daily series** — per-day tokens/cost/sessions/messages with an hourly histogram.
 - **Insights** — a weekly trend plus hour-of-day and weekday activity profiles.
 

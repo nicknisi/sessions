@@ -15,6 +15,8 @@ function fmtTokens(n: number): string {
   return String(n);
 }
 
+const fmtInt = (n: number): string => n.toLocaleString('en-US');
+
 const pct = (frac: number): string => (frac * 100).toFixed(1) + '%';
 
 function hourLabel(h: number): string {
@@ -61,6 +63,17 @@ export function renderText(r: UsageReport): string {
   out += row('Active days', `${s.activeDays} (streak ${s.currentStreakDays}, longest ${s.longestStreakDays})`);
   out += row('Peak hour', hourLabel(s.peakHourLocal));
 
+  if (r.burn) {
+    const b = r.burn;
+    out += section('Pace');
+    out += row('Per active day', fmtUSD(b.dailyMeanUSD));
+    if (b.inProgress) out += row(`Projected (day ${b.elapsedDays} of ${b.periodDays})`, fmtUSD(b.projectedUSD));
+    if (b.priorPeriodUSD !== null) {
+      const delta = b.changePct === null ? '' : `  (${b.changePct >= 0 ? '+' : ''}${(b.changePct * 100).toFixed(0)}%)`;
+      out += row(`Prior ${b.periodDays} days`, `${fmtUSD(b.priorPeriodUSD)}${delta}`);
+    }
+  }
+
   // Cache: the volume the headline token count deliberately leaves out, plus
   // what the cache is actually buying.
   out += section('Cache');
@@ -76,10 +89,19 @@ export function renderText(r: UsageReport): string {
       `${fmtUSD(r.subagents.costUSD)} — ${pct(r.subagents.shareOfCost)} of total, ${r.subagents.dispatches} dispatches`,
     );
     for (const t of r.subagents.byType.slice(0, 8)) {
-      out += row(fit(t.agentType, 34), `${fmtUSD(t.costUSD)}  ${t.dispatches}×`, 4);
+      out += row(fit(t.agentType, 30), `${fmtUSD(t.costUSD)}  ${t.dispatches}× @ ${fmtUSD(t.costPerDispatchUSD)}`, 4);
     }
     const hidden = r.subagents.byType.length - 8;
     if (hidden > 0) out += `    … ${hidden} more type${hidden === 1 ? '' : 's'}\n`;
+  }
+
+  if (r.sessionDistribution.count > 0) {
+    const d = r.sessionDistribution;
+    out += section('Session spend');
+    out += row('Median / p90 / max', `${fmtUSD(d.medianUSD)} / ${fmtUSD(d.p90USD)} / ${fmtUSD(d.maxUSD)}`);
+    // Lower than the header's figure, which re-counts a session on each day it
+    // touched. Labelled so the difference does not read as a bug.
+    out += row('Distinct sessions', fmtInt(d.count));
   }
 
   if (r.topSessions.length > 0) {
@@ -104,10 +126,16 @@ export function renderText(r: UsageReport): string {
     }
   }
 
-  if (r.byBranch.length > 0) {
-    out += section('By branch');
-    for (const b of r.byBranch.slice(0, 8)) {
-      out += row(fit(`${b.project} ${b.branch}`, 44), fmtUSD(b.costUSD), 2);
+  if (r.modelWeekly.length > 1) {
+    out += section('Model mix by week');
+    const top = r.modelOrder.slice(0, 4);
+    for (const w of r.modelWeekly.slice(-6)) {
+      const split = top
+        .filter((m) => (w.byModel[m] ?? 0) > 0)
+        .map((m) => `${m.replace(/^claude-/, '')} ${fmtUSD(w.byModel[m] ?? 0)}`)
+        .join('  ');
+      out += row(w.weekEnding, fmtUSD(w.totalUSD));
+      if (split) out += `      ${split}\n`;
     }
   }
 

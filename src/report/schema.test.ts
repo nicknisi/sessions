@@ -44,7 +44,10 @@ describe('UsageReport contract', () => {
       'insights',
       'cache',
       'subagents',
-      'byBranch',
+      'sessionDistribution',
+      'modelWeekly',
+      'modelOrder',
+      'burn',
     ]) {
       expect(report).toHaveProperty(key);
     }
@@ -55,9 +58,10 @@ describe('UsageReport contract', () => {
     expect(report.cache.hitRate).toBeCloseTo(10000 / 11200, 4);
     expect(report.subagents.dispatches).toBe(0);
     expect(report.subagents.byType).toEqual([]);
-    expect(report.byBranch).toHaveLength(1);
-    expect(report.byBranch[0]!.branch).toBe('main');
-    expect(report.byBranch[0]!.project).toBe('sessions');
+    expect(report.sessionDistribution.count).toBe(1);
+    expect(report.modelOrder).toEqual(['claude-opus-4-6']);
+    // Only runReport knows the requested window, so the mapper leaves burn unset.
+    expect(report.burn).toBeNull();
   });
 
   test('insights shape; weekly entries carry no PR fields', () => {

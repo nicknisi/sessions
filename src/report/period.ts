@@ -17,6 +17,37 @@ function lastDayOfMonth(y: number, m: number): number {
   return new Date(Date.UTC(y, m, 0)).getUTCDate();
 }
 
+/**
+ * The day a preset's period actually runs to, which is not the same as the last
+ * day of data it reports. `--this-month` reports up to today (there is no data
+ * from the future) but the month runs to its last day — and pacing a month needs
+ * the month, not the part of it that has happened.
+ *
+ * Returns null for presets with no forward horizon, where the period and the
+ * data range are the same thing.
+ */
+export function periodRunsTo(preset: PeriodPreset, month: string | undefined, today: string): string | null {
+  const [ty, tm, td] = today.split('-').map(Number);
+  const y = ty!;
+  const m = tm!;
+  const d = td!;
+  switch (preset) {
+    case 'this-month':
+      return fmt(y, m, lastDayOfMonth(y, m));
+    case 'this-week': {
+      // The Sunday that closes the Monday-start week containing today.
+      const dt = new Date(Date.UTC(y, m - 1, d));
+      dt.setUTCDate(dt.getUTCDate() + ((7 - dt.getUTCDay()) % 7));
+      return dt.toISOString().slice(0, 10);
+    }
+    case 'this-year':
+      return fmt(y, 12, 31);
+    // today / last-month / month are already closed at their reported end.
+    default:
+      return null;
+  }
+}
+
 export function resolvePeriod(
   preset: PeriodPreset,
   month: string | undefined,

@@ -6,12 +6,12 @@ import { gatherEvents, defaultRoots, type ReportRoots } from './extract.ts';
 import { aggregate } from './aggregate.ts';
 import { renderHtml } from './html.ts';
 import { renderText } from './text.ts';
-import { computeFacets } from './facets.ts';
+import { computeFacets, computeBurn } from './facets.ts';
 import { lookupIntents } from './session-intent.ts';
 import { toUsageReport } from './schema.ts';
 import { drainPricingWarnings, resetPricingWarnings, mergeRuntimePricing } from './pricing.ts';
 import { loadRuntimePricing } from './pricing-cache.ts';
-import { resolvePeriod, type PeriodPreset } from './period.ts';
+import { resolvePeriod, periodRunsTo, type PeriodPreset } from './period.ts';
 import { resolveProject } from './project.ts';
 import { localDate } from './parsers/util.ts';
 import { writeStdoutFully } from '../stdout.ts';
@@ -127,6 +127,14 @@ export function parseReportArgs(argv: string[]): ReportOptions {
   return opts;
 }
 
+/** Start of the equally long window immediately before [from, to]. */
+function previousWindowStart(from: string, to: string): string {
+  const days = Math.round((Date.parse(to + 'T00:00:00Z') - Date.parse(from + 'T00:00:00Z')) / 86_400_000) + 1;
+  const dt = new Date(Date.parse(from + 'T00:00:00Z'));
+  dt.setUTCDate(dt.getUTCDate() - days);
+  return dt.toISOString().slice(0, 10);
+}
+
 function daysAgo(todayLocal: string, n: number): string {
   const [y, m, d] = todayLocal.split('-').map(Number);
   const dt = new Date(Date.UTC(y!, m! - 1, d!));
@@ -143,26 +151,45 @@ export async function runReport(opts: ReportOptions): Promise<ReportResult> {
   // Precedence: a named preset wins, then --days, then explicit --from/--to.
   let from = opts.from;
   let to = opts.to;
+  let runsTo: string | null = null;
   if (opts.preset) {
     ({ from, to } = resolvePeriod(opts.preset, opts.month, todayLocal));
+    runsTo = periodRunsTo(opts.preset, opts.month, todayLocal);
   } else if (opts.days) {
     from = daysAgo(todayLocal, opts.days);
   }
 
+  // The equally long window immediately before this one, gathered so the report
+  // can say whether spend is up or down. Only the comparison total is taken from
+  // it — these events never enter the report's own figures.
+  const priorFrom = from ? previousWindowStart(from, to ?? todayLocal) : undefined;
+
   // Resolved before gathering so a bounded period can skip transcripts that were
   // last written before the window — the difference between reading the whole
-  // corpus and reading the part that can matter.
-  const events = await gatherEvents(opts.roots ?? defaultRoots(), tools, { since: from, noCache: opts.noCache });
+  // corpus and reading the part that can matter. `since` reaches back to the
+  // comparison window, which is why the range filter below is what defines the
+  // report, not the gather.
+  const events = await gatherEvents(opts.roots ?? defaultRoots(), tools, {
+    since: priorFrom ?? from,
+    noCache: opts.noCache,
+  });
   // Project scoping matches by resolved name on both sides, so events whose
   // cwd lacks a known project ('unknown') drop out of a --here report.
   const hereProject = opts.here ? resolveProject(opts.cwd ?? process.cwd()) : undefined;
-  const inRange = events.filter((e) => {
-    if (hereProject && resolveProject(e.projectPath) !== hereProject) return false;
+  const inScope = events.filter((e) => !hereProject || resolveProject(e.projectPath) === hereProject);
+  const inRange = inScope.filter((e) => {
     const d = localDate(e.timestamp, tz);
     if (from && d < from) return false;
     if (to && d > to) return false;
     return true;
   });
+  const priorRange =
+    priorFrom && from
+      ? inScope.filter((e) => {
+          const d = localDate(e.timestamp, tz);
+          return d >= priorFrom && d < from;
+        })
+      : null;
 
   if (inRange.length === 0) {
     const scope = hereProject ? ` for project ${hereProject}` : '';
@@ -189,6 +216,8 @@ export async function runReport(opts: ReportOptions): Promise<ReportResult> {
   const intents = lookupIntents(facets.topSessions.map((s) => ({ tool: s.tool, sessionId: s.sessionId })));
   for (const s of facets.topSessions) s.intent = intents.get(`${s.tool}|${s.sessionId}`) ?? null;
 
+  const burn = from ? computeBurn(inRange, priorRange, { from, to: to ?? todayLocal, runsTo }, todayLocal) : null;
+
   // Clear any pricing warnings from a prior run so the collector reflects only
   // this aggregation (computeCost accumulates as a side effect during aggregate).
   resetPricingWarnings();
@@ -197,6 +226,7 @@ export async function runReport(opts: ReportOptions): Promise<ReportResult> {
   // The internal aggregate always reports "to today"; reflect the requested
   // window instead so an explicit range (e.g. --month 2026-05) reads correctly.
   report.period = { from: from ?? data.period.from, to: to ?? data.period.to };
+  report.burn = burn;
 
   // Drain unpriced-model warnings into the report and surface them loudly. A
   // model with tokens but no price match is never silently zeroed — it is either

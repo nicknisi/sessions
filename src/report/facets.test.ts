@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach } from 'bun:test';
-import { computeFacets, TOP_DISPATCHES, TOP_SESSIONS } from './facets.ts';
+import { computeFacets, computeBurn, TOP_DISPATCHES, TOP_SESSIONS } from './facets.ts';
 import { resetPricing, resetPricingWarnings, drainPricingWarnings } from './pricing.ts';
 import type { UsageEvent } from './parsers/types.ts';
 
@@ -113,39 +113,6 @@ describe('subagent facet', () => {
   });
 });
 
-describe('branch facet', () => {
-  test('splits one project across branches and counts sessions per branch', () => {
-    const { byBranch } = computeFacets(
-      [
-        ev({ branch: 'main', sessionId: 's1' }),
-        ev({ branch: 'feat/x', sessionId: 's2', tokens: { input: 9_000_000 } }),
-        ev({ branch: 'feat/x', sessionId: 's3', tokens: { input: 9_000_000 } }),
-      ],
-      'UTC',
-    );
-    expect(byBranch.map((b) => b.branch)).toEqual(['feat/x', 'main']);
-    expect(byBranch[0]!.sessions).toBe(2);
-    expect(byBranch[0]!.project).toBe('sessions');
-  });
-
-  test('events from a tool that logs no branch are omitted, not bucketed as unknown', () => {
-    const { byBranch } = computeFacets([ev({ tool: 'codex', provider: 'openai', model: 'gpt-5.5' })], 'UTC');
-    expect(byBranch).toEqual([]);
-  });
-
-  test('the same branch name in two projects stays separate', () => {
-    const { byBranch } = computeFacets(
-      [
-        ev({ branch: 'main', projectPath: '/Users/x/Developer/alpha' }),
-        ev({ branch: 'main', projectPath: '/Users/x/Developer/beta' }),
-      ],
-      'UTC',
-    );
-    expect(byBranch).toHaveLength(2);
-    expect(byBranch.map((b) => b.project).sort()).toEqual(['alpha', 'beta']);
-  });
-});
-
 describe('session-cost facet', () => {
   test('groups by session, ranks by cost, and reports the true total', () => {
     const { topSessions, totalSessions } = computeFacets(
@@ -220,5 +187,129 @@ describe('session-cost facet', () => {
     const { topSessions, totalSessions } = computeFacets(many, 'UTC');
     expect(topSessions).toHaveLength(TOP_SESSIONS);
     expect(totalSessions).toBe(TOP_SESSIONS + 5);
+  });
+});
+
+describe('cost per dispatch', () => {
+  const sub = (id: string, input: number): UsageEvent =>
+    ev({ agent: { id, type: 'Explore' }, tokens: { input, output: 0, cacheRead: 0, cacheWrite: 0 } });
+
+  test('divides total spend by dispatches, not by messages', () => {
+    // Three messages, two dispatches: the average is per dispatch.
+    const { subagents } = computeFacets([sub('a1', 1_000_000), sub('a1', 1_000_000), sub('a2', 2_000_000)], 'UTC');
+    const t = subagents.byType[0]!;
+    expect(t.messages).toBe(3);
+    expect(t.dispatches).toBe(2);
+    expect(t.costUSD).toBeCloseTo(20, 2);
+    expect(t.costPerDispatchUSD).toBeCloseTo(10, 2);
+  });
+});
+
+describe('session distribution', () => {
+  const at = (id: string, input: number): UsageEvent =>
+    ev({ sessionId: id, tokens: { input, output: 0, cacheRead: 0, cacheWrite: 0 } });
+
+  test('covers every session, not just the ones in the table', () => {
+    const many = Array.from({ length: TOP_SESSIONS + 20 }, (_, i) => at(`s${i}`, 200_000 * (i + 1)));
+    const { sessionDistribution, topSessions } = computeFacets(many, 'UTC');
+    expect(topSessions).toHaveLength(TOP_SESSIONS);
+    expect(sessionDistribution.count).toBe(TOP_SESSIONS + 20);
+  });
+
+  test('median, p90 and max describe the shape', () => {
+    // Costs of $1..$10 at $1 per 200k input tokens on opus-4-8 ($5/MTok).
+    const evs = Array.from({ length: 10 }, (_, i) => at(`s${i}`, 200_000 * (i + 1)));
+    const { sessionDistribution: d } = computeFacets(evs, 'UTC');
+    expect(d.medianUSD).toBeCloseTo(5, 2);
+    expect(d.p90USD).toBeCloseTo(9, 2);
+    expect(d.maxUSD).toBeCloseTo(10, 2);
+    expect(d.meanUSD).toBeCloseTo(5.5, 2);
+  });
+
+  test('one session is its own median and max', () => {
+    const { sessionDistribution: d } = computeFacets([at('s1', 1_000_000)], 'UTC');
+    expect(d.count).toBe(1);
+    expect(d.medianUSD).toBe(d.maxUSD);
+  });
+
+  test('no sessions yields zeros rather than NaN', () => {
+    const { sessionDistribution: d } = computeFacets([], 'UTC');
+    expect(d).toEqual({ count: 0, medianUSD: 0, p90USD: 0, maxUSD: 0, meanUSD: 0 });
+  });
+});
+
+describe('model mix', () => {
+  const on = (day: string, model: string, input: number): UsageEvent =>
+    ev({ model, timestamp: `${day}T12:00:00Z`, tokens: { input, output: 0, cacheRead: 0, cacheWrite: 0 } });
+
+  test('splits each week by model and orders models by total cost', () => {
+    const { modelWeekly, modelOrder } = computeFacets(
+      [
+        on('2026-06-01', 'claude-opus-4-8', 1_000_000),
+        on('2026-06-08', 'claude-haiku-4-5', 1_000_000),
+        on('2026-06-08', 'claude-opus-4-8', 1_000_000),
+      ],
+      'UTC',
+    );
+    expect(modelOrder).toEqual(['claude-opus-4-8', 'claude-haiku-4-5']);
+    expect(modelWeekly).toHaveLength(2);
+    expect(Object.keys(modelWeekly[1]!.byModel).sort()).toEqual(['claude-haiku-4-5', 'claude-opus-4-8']);
+  });
+
+  test('fills the gap weeks so the series can be drawn without holes', () => {
+    const { modelWeekly } = computeFacets(
+      [on('2026-06-01', 'claude-opus-4-8', 1000), on('2026-06-29', 'claude-opus-4-8', 1000)],
+      'UTC',
+    );
+    expect(modelWeekly.length).toBeGreaterThanOrEqual(5);
+    expect(modelWeekly.some((w) => w.totalUSD === 0)).toBe(true);
+  });
+});
+
+describe('burn', () => {
+  const spend = (day: string, input: number): UsageEvent =>
+    ev({ timestamp: `${day}T12:00:00Z`, tokens: { input, output: 0, cacheRead: 0, cacheWrite: 0 } });
+
+  test('projects a running period from the days elapsed', () => {
+    // $1/day for 5 of 10 days -> $10 projected.
+    const evs = Array.from({ length: 5 }, (_, i) => spend(`2026-06-0${i + 1}`, 200_000));
+    const b = computeBurn(evs, null, { from: '2026-06-01', to: '2026-06-10' }, '2026-06-05');
+    expect(b.inProgress).toBe(true);
+    expect(b.elapsedDays).toBe(5);
+    expect(b.periodDays).toBe(10);
+    expect(b.spentUSD).toBeCloseTo(5, 2);
+    expect(b.projectedUSD).toBeCloseTo(10, 2);
+  });
+
+  test('a finished period projects to exactly what it cost', () => {
+    const b = computeBurn([spend('2026-06-01', 200_000)], null, { from: '2026-06-01', to: '2026-06-10' }, '2026-07-01');
+    expect(b.inProgress).toBe(false);
+    expect(b.projectedUSD).toBe(b.spentUSD);
+    expect(b.elapsedDays).toBe(b.periodDays);
+  });
+
+  test('the last day of a period is not still in progress', () => {
+    const b = computeBurn([spend('2026-06-10', 200_000)], null, { from: '2026-06-01', to: '2026-06-10' }, '2026-06-10');
+    expect(b.inProgress).toBe(false);
+  });
+
+  test('compares against the prior window when one was gathered', () => {
+    const now = [spend('2026-06-01', 400_000)];
+    const before = [spend('2026-05-01', 200_000)];
+    const b = computeBurn(now, before, { from: '2026-06-01', to: '2026-06-10' }, '2026-07-01');
+    expect(b.priorPeriodUSD).toBeCloseTo(1, 2);
+    expect(b.changePct).toBeCloseTo(1, 2); // doubled
+  });
+
+  test('no prior window means no comparison, not a zero one', () => {
+    const b = computeBurn([spend('2026-06-01', 200_000)], null, { from: '2026-06-01', to: '2026-06-10' }, '2026-07-01');
+    expect(b.priorPeriodUSD).toBeNull();
+    expect(b.changePct).toBeNull();
+  });
+
+  test('a prior window that cost nothing yields no percentage rather than infinity', () => {
+    const b = computeBurn([spend('2026-06-01', 200_000)], [], { from: '2026-06-01', to: '2026-06-10' }, '2026-07-01');
+    expect(b.priorPeriodUSD).toBe(0);
+    expect(b.changePct).toBeNull();
   });
 });

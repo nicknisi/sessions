@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { resolvePeriod } from './period.ts';
+import { resolvePeriod, periodRunsTo } from './period.ts';
 
 const TODAY = '2026-06-15';
 
@@ -38,5 +38,29 @@ describe('resolvePeriod', () => {
   test('month requires YYYY-MM', () => {
     expect(() => resolvePeriod('month', 'nope', TODAY)).toThrow();
     expect(() => resolvePeriod('month', undefined, TODAY)).toThrow();
+  });
+});
+
+describe('periodRunsTo', () => {
+  test('this-month runs to the end of the month, not to today', () => {
+    expect(periodRunsTo('this-month', undefined, '2026-07-30')).toBe('2026-07-31');
+    expect(periodRunsTo('this-month', undefined, '2026-02-03')).toBe('2026-02-28');
+  });
+
+  test('this-week runs to the closing Sunday', () => {
+    // 2026-07-30 is a Thursday; the Monday-start week closes Sunday 2026-08-02.
+    expect(periodRunsTo('this-week', undefined, '2026-07-30')).toBe('2026-08-02');
+    // A Sunday closes on itself.
+    expect(periodRunsTo('this-week', undefined, '2026-08-02')).toBe('2026-08-02');
+  });
+
+  test('this-year runs to December 31', () => {
+    expect(periodRunsTo('this-year', undefined, '2026-07-30')).toBe('2026-12-31');
+  });
+
+  test('closed periods have no forward horizon', () => {
+    expect(periodRunsTo('today', undefined, '2026-07-30')).toBeNull();
+    expect(periodRunsTo('last-month', undefined, '2026-07-30')).toBeNull();
+    expect(periodRunsTo('month', '2026-05', '2026-07-30')).toBeNull();
   });
 });

@@ -62,7 +62,6 @@ describe('renderHtml', () => {
     expect(html).toContain('>Subagents</span>');
     expect(html).toContain('Explore');
     expect(html).toContain('Most expensive sessions');
-    expect(html).toContain('By branch');
     expect(html).toContain('feat/thing');
   });
 
