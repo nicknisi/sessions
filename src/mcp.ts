@@ -46,6 +46,34 @@ const INSTRUCTIONS =
 const READ_ONLY = { readOnlyHint: true, openWorldHint: false } as const;
 
 /**
+ * Hard ceilings on every caller-supplied page size. A DEFAULT is not a bound: an agent
+ * that passes `limit: 100000` gets the whole index back, and `limit: -1` is worse than
+ * unbounded — SQLite treats a negative LIMIT as "no limit at all", so the one number that
+ * looks like it must return nothing returns everything. Either one reproduces the payload
+ * blowup the projections in this file exist to prevent, and neither is a hypothetical: the
+ * caller is a model reading a `describe()` string.
+ *
+ * The ceilings live at the tool boundary rather than in cache.ts because they are budgets
+ * for a model's context, not facts about the query. `sessions search` passes 1,000 for an
+ * interactive fzf list and is right to (src/cli.ts) — a human scrolling a terminal has no
+ * context window to blow.
+ */
+export const MAX_SEARCH_RESULTS = 50;
+export const MAX_GREP_HITS = 200;
+export const MAX_MESSAGES_PER_PAGE = 100;
+export const MAX_PRIMER_RECENT = 25;
+
+/**
+ * A bounded page-size input: integer, at least 1, at most `max`, defaulting to `def`.
+ *
+ * `.int()` is not pedantry either — `limit: 2.5` reaches SQLite as a float and the row
+ * count becomes an implementation detail of value coercion.
+ */
+function pageSize(def: number, max: number, description: string) {
+  return z.number().int().min(1).max(max).optional().default(def).describe(description);
+}
+
+/**
  * What every tool handler returns. `structuredContent` is not optional in practice: each
  * tool declares an `outputSchema`, and the SDK rejects any non-`isError` result that
  * omits it — including the empty-result sentinels, which is why every sentinel below
@@ -295,7 +323,7 @@ function registerTools(server: McpServer): void {
           .describe(
             'Filter to sessions that touched or read these paths — pass a path suffix or full path (matching is substring; longer paths are more precise). Multiple paths must all match. With no query, results are newest-first.',
           ),
-        limit: z.number().optional().default(20).describe('Max results to return (default 20)'),
+        limit: pageSize(20, MAX_SEARCH_RESULTS, `Max results to return (default 20, max ${MAX_SEARCH_RESULTS})`),
       },
       outputSchema: SearchSessionsOutput,
       annotations: READ_ONLY,
@@ -319,13 +347,11 @@ function registerTools(server: McpServer): void {
         project: z.string().optional().describe('Filter to sessions from this project directory path.'),
         after: z.string().optional().describe('Only sessions on/after this date (YYYY-MM-DD).'),
         before: z.string().optional().describe('Only sessions on/before this date (YYYY-MM-DD).'),
-        limit: z
-          .number()
-          .int()
-          .min(1)
-          .optional()
-          .default(50)
-          .describe('Max hit snippets to return (default 50). totalHits still counts all.'),
+        limit: pageSize(
+          50,
+          MAX_GREP_HITS,
+          `Max hit snippets to return (default 50, max ${MAX_GREP_HITS}). totalHits still counts all.`,
+        ),
       },
       outputSchema: GrepSessionsOutput,
       annotations: READ_ONLY,
@@ -344,12 +370,17 @@ function registerTools(server: McpServer): void {
         filePath: z.string().describe('The session filePath from search_sessions results'),
         offset: z
           .number()
+          .int()
+          .min(0)
           .optional()
           .default(0)
           .describe(
             'Message index to start from (default 0). messageHits[].index values from search_sessions align 1:1.',
           ),
-        limit: z.number().optional().default(20).describe('Max messages to return (default 20)'),
+        // The tightest ceiling of the four: a message carries its full text, so this is the
+        // one page whose size in tokens is unbounded per row. `total` comes back with every
+        // page, so paging is the supported way to read more.
+        limit: pageSize(20, MAX_MESSAGES_PER_PAGE, `Max messages to return (default 20, max ${MAX_MESSAGES_PER_PAGE})`),
         include_tools: z
           .boolean()
           .optional()
@@ -438,8 +469,16 @@ function registerTools(server: McpServer): void {
         'Get a repo-scoped context primer (recent sessions in detail + older headlines) for re-injecting prior work into a new session. Use when starting substantive work in a repo that likely has session history — especially resuming after a break or when the user asks "where did we leave off" / "catch me up". Synthesize the JSON into prose.',
       inputSchema: {
         cwd: z.string().optional().describe('Repo path to scope to. Defaults to the server process cwd.'),
-        limit: z.number().optional().describe('Recent-tier size (default 10).'),
-        days: z.number().optional().describe('Only include sessions from the last N days.'),
+        // No `.default()`: getContextPrimer owns the default (10), and restating it here
+        // would make the schema the second place it lives.
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(MAX_PRIMER_RECENT)
+          .optional()
+          .describe(`Recent-tier size (default 10, max ${MAX_PRIMER_RECENT}).`),
+        days: z.number().int().min(1).optional().describe('Only include sessions from the last N days.'),
         tool: z.enum(['claude', 'codex', 'pi', 'opencode']).optional().describe('Filter to one tool.'),
         worktree: z
           .boolean()

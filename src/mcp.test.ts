@@ -497,6 +497,96 @@ test('tool surface: two createServer() instances in one process both connect', a
   await b.close();
 });
 
+describe('input bounds', () => {
+  // Payload size is the whole point of this surface, and a DEFAULT does not bound anything:
+  // the caller is a model reading a `describe()` string, and it can pass whatever number it
+  // likes. `limit: -1` is the sharpest case — SQLite reads a negative LIMIT as no limit at
+  // all, so the one value that looks like it must return nothing returned the entire index.
+  // These go over the protocol on purpose: the run* seams take a plain number and never see
+  // the input schema, so they cannot cover this.
+
+  /**
+   * The refusal an input-schema violation produces, as seen by the client.
+   *
+   * The SDK does NOT reject the request: it catches the zod error and returns a normal
+   * result carrying `isError: true` and the -32602 text. Asserting on a rejection would
+   * therefore pass for any tool that merely threw, and fail for the behavior we want.
+   */
+  async function refused(client: Client, name: string, args: Record<string, unknown>): Promise<string> {
+    const res = await client.callTool({ name, arguments: args });
+    const text = (res.content as { type: string; text: string }[])[0]!.text;
+    expect({ tool: name, args, isError: res.isError }).toEqual({ tool: name, args, isError: true });
+    // Structurally an input rejection, not a handler that happened to fail downstream.
+    expect(text).toMatch(/-32602|Input validation error/);
+    return text;
+  }
+
+  test('search_sessions refuses limit: -1 instead of returning the whole index', async () => {
+    const client = await connect();
+    // Not a wrong-shape complaint: this exact call used to succeed and return every row,
+    // because SQLite reads `LIMIT -1` as no limit.
+    expect(await refused(client, 'search_sessions', { limit: -1 })).toMatch(/Too small|>=1/);
+    await client.close();
+  });
+
+  test('search_sessions refuses a limit above the ceiling, and accepts the ceiling itself', async () => {
+    const client = await connect();
+    expect(await refused(client, 'search_sessions', { limit: mcp.MAX_SEARCH_RESULTS + 1 })).toMatch(/Too big|<=/);
+
+    const ok = await client.callTool({ name: 'search_sessions', arguments: { limit: mcp.MAX_SEARCH_RESULTS } });
+    expect(ok.isError).toBeFalsy();
+    await client.close();
+  });
+
+  test('a fractional limit is refused rather than left to value coercion', async () => {
+    const client = await connect();
+    expect(await refused(client, 'search_sessions', { limit: 2.5 })).toMatch(/int/i);
+    await client.close();
+  });
+
+  test('every paged tool bounds its size, not just search_sessions', async () => {
+    const client = await connect();
+    const sessionB = join(tmp, 'claude', 'proj', 'b.jsonl');
+    const overs: { name: string; args: Record<string, unknown> }[] = [
+      { name: 'grep_sessions', args: { pattern: 'retry', limit: mcp.MAX_GREP_HITS + 1 } },
+      { name: 'grep_sessions', args: { pattern: 'retry', limit: -1 } },
+      { name: 'get_session_messages', args: { filePath: sessionB, limit: mcp.MAX_MESSAGES_PER_PAGE + 1 } },
+      // A negative offset reads from the END of the transcript through slice()'s
+      // wraparound — a different page than the one the caller asked for, silently.
+      { name: 'get_session_messages', args: { filePath: sessionB, offset: -5 } },
+      { name: 'get_context_primer', args: { cwd: REPO_ROOT, limit: mcp.MAX_PRIMER_RECENT + 1 } },
+      { name: 'get_context_primer', args: { cwd: REPO_ROOT, days: 0 } },
+    ];
+    for (const { name, args } of overs) await refused(client, name, args);
+    await client.close();
+  });
+
+  test('the declared ceilings reach the client in tools/list, so a model can read them', async () => {
+    const client = await connect();
+    const { tools } = await client.listTools();
+    const limitOf = (name: string): Record<string, unknown> =>
+      (tools.find((t) => t.name === name)!.inputSchema.properties as Record<string, Record<string, unknown>>).limit!;
+
+    expect(limitOf('search_sessions')).toMatchObject({ type: 'integer', minimum: 1, maximum: mcp.MAX_SEARCH_RESULTS });
+    expect(limitOf('grep_sessions')).toMatchObject({ maximum: mcp.MAX_GREP_HITS });
+    expect(limitOf('get_session_messages')).toMatchObject({ maximum: mcp.MAX_MESSAGES_PER_PAGE });
+    expect(limitOf('get_context_primer')).toMatchObject({ maximum: mcp.MAX_PRIMER_RECENT });
+    // The default has to survive the added bounds — it is what an omitted limit means.
+    expect(limitOf('search_sessions')).toMatchObject({ default: 20 });
+    await client.close();
+  });
+
+  test('the producer clamps too, for every caller that is not an input schema', async () => {
+    // cache.searchSessions is a library function the CLI calls with 1,000 and is right to.
+    // The floor is against nonsense, not against large: -1 must not mean "unlimited".
+    const all = await cache.searchSessions('', {});
+    expect(all.length).toBeGreaterThan(1); // the fixture really does hold more than one row
+    expect(await cache.searchSessions('', { limit: -1 })).toHaveLength(1);
+    expect(await cache.searchSessions('', { limit: Number.NaN })).toHaveLength(all.length);
+    expect(await cache.searchSessions('retry', { limit: -1 })).toHaveLength(1); // the FTS branch too
+  });
+});
+
 test('schema conformance: every tool validates against its declared outputSchema', async () => {
   const client = await connect();
   const sessionB = join(tmp, 'claude', 'proj', 'b.jsonl');

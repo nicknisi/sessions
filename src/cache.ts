@@ -548,6 +548,22 @@ export async function getIndexDb(): Promise<Database> {
   return getDb();
 }
 
+/**
+ * A row count safe to hand to a `LIMIT ?` placeholder (or a `.slice()` that stands in for
+ * one): at least 1, an integer, never NaN.
+ *
+ * SQLite reads a NEGATIVE limit as no limit at all, so `-1` — the value most likely to be
+ * passed meaning "none" — selects every matching row instead. A fractional limit is no
+ * better defined. Callers at the MCP boundary are bounded by their input schemas
+ * (src/mcp.ts), and this is the floor under every other caller, including the next one.
+ * `grepSessions` keeps its own guard because 0 is meaningful there: it returns the
+ * uncapped totals with no snippets.
+ */
+function rowLimit(value: number | undefined, fallback: number): number {
+  if (value === undefined || !Number.isFinite(value)) return fallback;
+  return Math.max(1, Math.floor(value));
+}
+
 export interface SearchOptions {
   tool?: Tool | '';
   project?: string;
@@ -564,7 +580,7 @@ export async function searchSessions(query: string, opts: SearchOptions = {}): P
 
   const toolFilter = opts.tool ?? '';
   const project = opts.project ?? '';
-  const limit = opts.limit ?? 50;
+  const limit = rowLimit(opts.limit, 50);
 
   interface SessionRow {
     file_path: string;
@@ -1215,8 +1231,8 @@ export async function getContextPrimer(repo: RepoInfo, opts: ContextOptions): Pr
   const db = getDb();
   await ensureIndexFresh();
 
-  const limit = opts.limit ?? 10;
-  const headlineCap = opts.headlineCap ?? 40;
+  const limit = rowLimit(opts.limit, 10);
+  const headlineCap = rowLimit(opts.headlineCap, 40);
   const toolFilter = opts.tool ?? '';
   const root = opts.worktreeOnly ? repo.currentWorktree : repo.container;
 
@@ -1307,6 +1323,10 @@ export async function getContextPrimer(repo: RepoInfo, opts: ContextOptions): Pr
   return { repoLabel, toolFilter, recent, headlines, isEmpty: false };
 }
 
+/** Fallback row cap when a caller hands `recentSessionsForRepo` an unusable limit. The MCP
+ *  surface passes MAX_LISTED_RESOURCES (src/mcp.ts); this is only the floor under nonsense. */
+const MAX_REPO_SESSION_ROWS = 50;
+
 /** One indexed session projected to just what an MCP `resources/list` entry needs. */
 export interface RepoSessionRow {
   session_id: string;
@@ -1351,7 +1371,7 @@ export async function recentSessionsForRepo(
        ORDER BY created_at DESC, date DESC
        LIMIT ?`,
     )
-    .all(...params, limit);
+    .all(...params, rowLimit(limit, MAX_REPO_SESSION_ROWS));
 
   // COUNT(DISTINCT session_id), not COUNT(*): the total has to be countable against the
   // grouped rows above, or a repo with a collision reports more sessions than exist.
