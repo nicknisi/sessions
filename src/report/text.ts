@@ -36,10 +36,15 @@ function section(title: string): string {
   return rule() + `  ${title}\n` + rule();
 }
 
-/** Truncate a label to fit alongside its value, ellipsis-first so the tail (the
- *  distinguishing part of a branch or path) survives. */
+/** Truncate an identifier — a model id, branch, or path — keeping the tail, which
+ *  is the part that distinguishes it. */
 function fit(label: string, max: number): string {
   return label.length <= max ? label : '…' + label.slice(label.length - (max - 1));
+}
+
+/** Truncate prose, keeping the head. A sentence read from the end is noise. */
+function head(text: string, max: number): string {
+  return text.length <= max ? text : text.slice(0, max - 1).trimEnd() + '…';
 }
 
 export function renderText(r: UsageReport): string {
@@ -75,6 +80,14 @@ export function renderText(r: UsageReport): string {
     }
     const hidden = r.subagents.byType.length - 8;
     if (hidden > 0) out += `    … ${hidden} more type${hidden === 1 ? '' : 's'}\n`;
+  }
+
+  if (r.topSessions.length > 0) {
+    out += section('Most expensive sessions');
+    for (const s of r.topSessions.slice(0, 8)) {
+      out += row(s.intent ? head(s.intent, 44) : s.sessionId.slice(0, 8), fmtUSD(s.costUSD), 2);
+      out += `      ${s.project}${s.branch ? ` · ${s.branch}` : ''} · ${s.date}\n`;
+    }
   }
 
   if (r.byModel.length > 0) {

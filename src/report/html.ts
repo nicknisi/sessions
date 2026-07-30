@@ -4,6 +4,7 @@ import type {
   ModelBreakdown,
   ProjectBreakdown,
   BranchBreakdown,
+  SessionCost,
   SubagentReport,
   CacheStats,
   PricingWarning,
@@ -184,7 +185,7 @@ table.tbl{width:100%;border-collapse:collapse;font-size:12.5px;}
 table.tbl th{text-align:left;font-family:var(--mono);font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);padding:0 10px 6px 0;border-bottom:1px solid var(--track);white-space:nowrap;}
 table.tbl td{padding:6px 10px 6px 0;border-bottom:1px solid var(--grid);}
 table.tbl th.num,table.tbl td.num{text-align:right;font-family:var(--mono);font-size:11.5px;font-variant-numeric:tabular-nums;padding-right:0;}
-table.tbl td.t{font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:16em;}
+table.tbl td.t{font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:26em;}
 table.tbl td.dim{color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:14em;}
 .trunc{font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-top:9px;}
 svg.bars rect{transition:opacity .15s ease-out;}
@@ -277,6 +278,26 @@ function subagentSection(sub: SubagentReport): string {
 <div><table class="tbl"><thead><tr><th>Agent type</th><th>Project</th><th>First seen</th><th class="num">Tokens</th><th class="num">Cost</th></tr></thead><tbody>${rows}</tbody></table>${trunc}</div>
 <div><div class="barlist">${byType}</div></div>
 </div></section>`;
+}
+
+// The one view a dollar total cannot give you: which pieces of work cost the
+// most. Intent comes from the search index; without it the row still carries
+// project, branch, and date, which is usually enough to recognise the session.
+function sessionSection(sessions: SessionCost[], total: number): string {
+  if (sessions.length === 0) return '';
+  const rows = sessions
+    .map((s) => {
+      const where = s.branch ? `${s.project} · ${s.branch}` : s.project;
+      const sub = s.subagentCostUSD > 0 ? `${fmtUSD(s.subagentCostUSD)} sub` : '';
+      return `<tr><td class="t">${esc(s.intent ?? s.sessionId.slice(0, 8))}</td><td class="dim">${esc(where)}</td><td class="dim">${esc(s.date)}</td><td class="num">${esc(sub)}</td><td class="num">${fmtUSD(s.costUSD)}</td></tr>`;
+    })
+    .join('');
+  const trunc =
+    total > sessions.length
+      ? `<div class="trunc">showing top ${sessions.length} of ${fmtInt(total)} sessions · full list in the JSON report</div>`
+      : '';
+  return `<section class="blk"><h2>Most expensive sessions <span class="hint">intent from the session index</span></h2>
+<table class="tbl"><thead><tr><th>Session</th><th>Project · branch</th><th>Started</th><th class="num">Subagents</th><th class="num">Cost</th></tr></thead><tbody>${rows}</tbody></table>${trunc}</section>`;
 }
 
 function branchSection(branches: BranchBreakdown[]): string {
@@ -386,6 +407,7 @@ ${firstDay && lastDay ? `<div class="axis"><span>${esc(formatDate(firstDay))}</s
 ${branchSection(data.byBranch)}
 </section>
 ${subagentSection(data.subagents)}
+${sessionSection(data.topSessions, data.totalSessions)}
 <footer class="rep"><span>sessions usage report</span><span>${s.activeDays} active days</span></footer>
 </div>
 <div class="tip" id="tip"></div>

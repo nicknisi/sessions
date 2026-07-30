@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach } from 'bun:test';
-import { computeFacets, TOP_DISPATCHES } from './facets.ts';
+import { computeFacets, TOP_DISPATCHES, TOP_SESSIONS } from './facets.ts';
 import { resetPricing, resetPricingWarnings, drainPricingWarnings } from './pricing.ts';
 import type { UsageEvent } from './parsers/types.ts';
 
@@ -143,5 +143,82 @@ describe('branch facet', () => {
     );
     expect(byBranch).toHaveLength(2);
     expect(byBranch.map((b) => b.project).sort()).toEqual(['alpha', 'beta']);
+  });
+});
+
+describe('session-cost facet', () => {
+  test('groups by session, ranks by cost, and reports the true total', () => {
+    const { topSessions, totalSessions } = computeFacets(
+      [
+        ev({ sessionId: 'cheap', tokens: { input: 1000 } }),
+        ev({ sessionId: 'dear', tokens: { input: 5_000_000 } }),
+        ev({ sessionId: 'dear', tokens: { input: 5_000_000 } }),
+      ],
+      'UTC',
+    );
+    expect(totalSessions).toBe(2);
+    expect(topSessions[0]!.sessionId).toBe('dear');
+    expect(topSessions[0]!.messages).toBe(2);
+    expect(topSessions[0]!.intent).toBeNull();
+  });
+
+  test('the same session id under two tools stays two sessions', () => {
+    const { totalSessions } = computeFacets(
+      [ev({ sessionId: 'x' }), ev({ sessionId: 'x', tool: 'codex', provider: 'openai', model: 'gpt-5.5' })],
+      'UTC',
+    );
+    expect(totalSessions).toBe(2);
+  });
+
+  test('reports the branch the session spent the most on, not the first seen', () => {
+    const { topSessions } = computeFacets(
+      [
+        ev({ sessionId: 's1', branch: 'main', tokens: { input: 1000 } }),
+        ev({ sessionId: 's1', branch: 'feat/x', tokens: { input: 5_000_000 } }),
+      ],
+      'UTC',
+    );
+    expect(topSessions[0]!.branch).toBe('feat/x');
+  });
+
+  test('a session from a tool that logs no branch reports null, not empty string', () => {
+    const { topSessions } = computeFacets([ev({ tool: 'codex', provider: 'openai', model: 'gpt-5.5' })], 'UTC');
+    expect(topSessions[0]!.branch).toBeNull();
+  });
+
+  test('separates the subagent share of a session from its total', () => {
+    const { topSessions } = computeFacets(
+      [
+        ev({ sessionId: 's1', tokens: { input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 } }),
+        ev({
+          sessionId: 's1',
+          agent: { id: 'a1', type: 'Explore' },
+          tokens: { input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 },
+        }),
+      ],
+      'UTC',
+    );
+    expect(topSessions[0]!.costUSD).toBeCloseTo(10, 2);
+    expect(topSessions[0]!.subagentCostUSD).toBeCloseTo(5, 2);
+  });
+
+  test('is dated by the session’s first message', () => {
+    const { topSessions } = computeFacets(
+      [
+        ev({ sessionId: 's1', timestamp: '2026-06-05T10:00:00Z' }),
+        ev({ sessionId: 's1', timestamp: '2026-06-02T10:00:00Z' }),
+      ],
+      'UTC',
+    );
+    expect(topSessions[0]!.date).toBe('2026-06-02');
+  });
+
+  test('the list is capped at TOP_SESSIONS', () => {
+    const many = Array.from({ length: TOP_SESSIONS + 5 }, (_, i) =>
+      ev({ sessionId: `s${i}`, tokens: { input: 1000 * (i + 1) } }),
+    );
+    const { topSessions, totalSessions } = computeFacets(many, 'UTC');
+    expect(topSessions).toHaveLength(TOP_SESSIONS);
+    expect(totalSessions).toBe(TOP_SESSIONS + 5);
   });
 });

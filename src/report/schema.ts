@@ -14,10 +14,17 @@ import type {
   ToolId,
 } from './types.ts';
 
-import type { CacheStats, SubagentReport, BranchBreakdown, ReportFacets } from './facets.ts';
+import type { CacheStats, SubagentReport, BranchBreakdown, SessionCost, ReportFacets } from './facets.ts';
 
 export type { ToolBreakdown, ProviderBreakdown, ModelBreakdown, ProjectBreakdown, DailyEntry, ModelRef, ToolId };
-export type { CacheStats, SubagentReport, SubagentTypeBreakdown, SubagentDispatch, BranchBreakdown } from './facets.ts';
+export type {
+  CacheStats,
+  SubagentReport,
+  SubagentTypeBreakdown,
+  SubagentDispatch,
+  BranchBreakdown,
+  SessionCost,
+} from './facets.ts';
 
 export interface UsageSummary {
   totalCostUSD: number;
@@ -75,6 +82,8 @@ export interface UsageReport {
   cache: CacheStats;
   subagents: SubagentReport;
   byBranch: BranchBreakdown[];
+  topSessions: SessionCost[];
+  totalSessions: number;
 }
 
 // Map the internal aggregation result to the sessions-owned public schema,
@@ -109,5 +118,7 @@ export function toUsageReport(data: TokenmaxingData, facets: ReportFacets): Usag
     cache: facets.cache,
     subagents: facets.subagents,
     byBranch: facets.byBranch,
+    topSessions: facets.topSessions,
+    totalSessions: facets.totalSessions,
   };
 }

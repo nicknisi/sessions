@@ -59,8 +59,9 @@ describe('renderHtml', () => {
   test('renders the facet sections', () => {
     const html = renderHtml(toUsageReport(data, computeFacets(events, 'UTC')));
     expect(html).toContain('cache hit rate');
-    expect(html).toContain('Subagents');
+    expect(html).toContain('<h2>Subagents');
     expect(html).toContain('Explore');
+    expect(html).toContain('Most expensive sessions');
     expect(html).toContain('By branch');
     expect(html).toContain('feat/thing');
   });
@@ -80,7 +81,9 @@ describe('renderHtml', () => {
         computeFacets(solo, 'UTC'),
       ),
     );
-    expect(html).not.toContain('Subagents');
+    // The section heading, not the word: the session table has a Subagents column
+    // header that renders either way.
+    expect(html).not.toContain('<h2>Subagents');
     // the cache strip is unconditional — it describes volume, not an event class
     expect(html).toContain('cache hit rate');
   });

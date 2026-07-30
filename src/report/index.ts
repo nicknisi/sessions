@@ -7,6 +7,7 @@ import { aggregate } from './aggregate.ts';
 import { renderHtml } from './html.ts';
 import { renderText } from './text.ts';
 import { computeFacets } from './facets.ts';
+import { lookupIntents } from './session-intent.ts';
 import { toUsageReport } from './schema.ts';
 import { drainPricingWarnings, resetPricingWarnings, mergeRuntimePricing } from './pricing.ts';
 import { loadRuntimePricing } from './pricing-cache.ts';
@@ -176,6 +177,12 @@ export async function runReport(opts: ReportOptions): Promise<ReportResult> {
   // otherwise every unpriced model would be warned about twice and its token
   // count doubled in the drained warning.
   const facets = computeFacets(inRange, tz);
+
+  // Name the expensive sessions from the search index, if there is one. Best
+  // effort by design: a report on a machine that has never indexed still works,
+  // it just shows ids instead of intents.
+  const intents = lookupIntents(facets.topSessions.map((s) => ({ tool: s.tool, sessionId: s.sessionId })));
+  for (const s of facets.topSessions) s.intent = intents.get(`${s.tool}|${s.sessionId}`) ?? null;
 
   // Clear any pricing warnings from a prior run so the collector reflects only
   // this aggregation (computeCost accumulates as a side effect during aggregate).
