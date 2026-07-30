@@ -55,3 +55,16 @@ jobs:
           bun-version: ${{ env.BUN_VERSION }}
       - run: bun install --frozen-lockfile
       - run: bun run build
+
+  # Runs deliberately on a runner with no agent CLI installed. Several suites used to
+  # pass only because `claude` happened to be on the developer's PATH; keeping the
+  # runner bare is what stops that class of test from regressing silently.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: bun install --frozen-lockfile
+      - run: bun run test

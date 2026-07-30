@@ -27,6 +27,11 @@ const ROAST_TOOLS: RoastTool[] = [
   { id: 'pi', label: 'Pi', bin: 'pi', args: (p) => ['-p', p] },
 ];
 
+/** The table entry for `id`, without asking PATH whether it is installed. */
+function namedRoastTool(id?: RoastToolId): RoastTool {
+  return ROAST_TOOLS.find((t) => t.id === id) ?? ROAST_TOOLS[0]!;
+}
+
 /** First installed roast tool (honoring `preferred`), or null if none on PATH. */
 export function detectRoastTool(preferred?: RoastToolId): RoastTool | null {
   const ordered = preferred ? [...ROAST_TOOLS].sort((a) => (a.id === preferred ? -1 : 1)) : ROAST_TOOLS;
@@ -125,7 +130,10 @@ export interface RoastOptions {
  *  output). Never throws — the roast is sugar, the page must survive without it. */
 export async function runRoast(d: WrappedData, opts: RoastOptions = {}): Promise<WrappedExtra[]> {
   const log = opts.log ?? ((m: string) => process.stderr.write(m + '\n'));
-  const tool = detectRoastTool(opts.preferred);
+  // An injected runner supplies the execution mechanism, so looking for an
+  // executable on PATH is meaningless — and doing it anyway made these paths
+  // testable only on a machine that happened to have an agent CLI installed.
+  const tool = opts.runner ? namedRoastTool(opts.preferred) : detectRoastTool(opts.preferred);
   if (!tool) {
     log(
       opts.preferred
