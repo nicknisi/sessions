@@ -15,7 +15,10 @@ import {
   type ContextSession,
   type ContextHeadline,
   type MessageHit,
+  type PrimerMemory,
 } from './types';
+import { activeMemoryFor } from './memory/retrieve';
+import type { MemoryRecord } from './memory/types';
 import { extractMessages, getSessionMessages, extractSessionMetadata, summarizeMessages } from './parser';
 import { extractFiles, extractFilesRead } from './extract-files';
 import { extractCommands } from './extract-commands';
@@ -1275,6 +1278,36 @@ function parseFiles(json: string): string[] {
  * files (everything comes from the `sessions` table and the one `git worktree
  * list` call already made in resolveRepo).
  */
+/**
+ * How many approved memories the primer carries. Always-on rows are exempt: the flag
+ * exists so a standing constraint is never withheld, and a cap that could drop one would
+ * reintroduce exactly the silent suppression it was added to prevent.
+ *
+ * A count rather than a char budget, matching the primer's other tiers. Topic-conditional
+ * `get_memory` is still the precise path — this tier's job is to guarantee delivery, so it
+ * says how many it left out rather than pretending the list is complete.
+ */
+export const PRIMER_MEMORY_LIMIT = 8;
+
+/** Approved memories for a repo, always-on first, capped — plus the true in-scope total. */
+function primerMemory(container: string): { memory: PrimerMemory[]; memoryTotal: number } {
+  let all: MemoryRecord[];
+  try {
+    // No topic: the primer has no task to condition on. Opening the store must never be
+    // what fails a primer, so a broken or absent store degrades to no memory tier.
+    all = activeMemoryFor(container);
+  } catch {
+    return { memory: [], memoryTotal: 0 };
+  }
+  const alwaysOn = all.filter((r) => r.alwaysOn);
+  const rest = all.filter((r) => !r.alwaysOn);
+  const chosen = [...alwaysOn, ...rest.slice(0, Math.max(0, PRIMER_MEMORY_LIMIT - alwaysOn.length))];
+  return {
+    memory: chosen.map((r) => ({ text: r.text, kind: r.kind, scope: r.scope.type, alwaysOn: r.alwaysOn })),
+    memoryTotal: all.length,
+  };
+}
+
 export async function getContextPrimer(repo: RepoInfo, opts: ContextOptions): Promise<ContextPrimer> {
   const db = getDb();
   await ensureIndexFresh();
@@ -1311,9 +1344,13 @@ export async function getContextPrimer(repo: RepoInfo, opts: ContextOptions): Pr
     .all(...params);
 
   const repoLabel = basename(repo.container);
+  // Read regardless of whether any session matched: a repo with approved memory and no
+  // indexed history still has something to say, and the memory is the half that a
+  // topic-less delivery must not drop.
+  const { memory, memoryTotal } = primerMemory(repo.container);
 
   if (rows.length === 0) {
-    return { repoLabel, toolFilter, recent: [], headlines: [], isEmpty: true };
+    return { repoLabel, toolFilter, recent: [], headlines: [], memory, memoryTotal, isEmpty: memory.length === 0 };
   }
 
   // Rank the detail tier by recency-weighted significance instead of raw recency,
@@ -1369,7 +1406,7 @@ export async function getContextPrimer(repo: RepoInfo, opts: ContextOptions): Pr
     intent: r.custom_title || r.first_prompt,
   }));
 
-  return { repoLabel, toolFilter, recent, headlines, isEmpty: false };
+  return { repoLabel, toolFilter, recent, headlines, memory, memoryTotal, isEmpty: false };
 }
 
 /** Fallback row cap when a caller hands `recentSessionsForRepo` an unusable limit. The MCP

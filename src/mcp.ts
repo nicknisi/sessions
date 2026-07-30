@@ -493,7 +493,15 @@ function registerTools(server: McpServer): void {
       if (!repo) {
         // No repo means no primer to report, so the payload is synthesized rather than
         // read. Typed as ContextPrimer so a shape change in types.ts breaks the build here.
-        const none: ContextPrimer = { repoLabel: '', toolFilter: tool ?? '', recent: [], headlines: [], isEmpty: true };
+        const none: ContextPrimer = {
+          repoLabel: '',
+          toolFilter: tool ?? '',
+          recent: [],
+          headlines: [],
+          memory: [],
+          memoryTotal: 0,
+          isEmpty: true,
+        };
         return sentinel('Not inside a git repository.', none);
       }
       const primer = await getContextPrimer(repo, { limit, days, tool: tool ?? '', worktreeOnly: worktree });

@@ -184,5 +184,11 @@ export const GetContextPrimerOutput = z.object({
     }),
   ),
   headlines: z.array(z.object({ date: z.string(), tool: toolName, branch: z.string(), intent: z.string() })),
+  // Approved memory for this repo, carried unconditionally: `get_memory` is
+  // topic-conditional and an agent has to choose to call it, so the primer is the only
+  // guaranteed delivery. `memoryTotal` is the true in-scope count, so a capped list can
+  // say what it left out instead of reading as the whole set.
+  memory: z.array(z.object({ text: z.string(), kind: z.string(), scope: z.string(), alwaysOn: z.boolean() })),
+  memoryTotal: z.number(),
   isEmpty: z.boolean(),
 });

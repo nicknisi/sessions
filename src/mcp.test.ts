@@ -777,6 +777,8 @@ describe('empty results', () => {
       toolFilter: '',
       recent: [],
       headlines: [],
+      memory: [],
+      memoryTotal: 0,
       isEmpty: true,
     });
     await client.close();

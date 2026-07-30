@@ -119,6 +119,32 @@ export function parseContextArgs(argv: string[]): ContextArgs {
 const EMPTY_LINE = 'No past sessions found for this repo.';
 
 /** Render a context primer as markdown: a `## Recent` detail tier + an `## Earlier` headline tier. */
+/**
+ * `## Memory`: what this user has already established here, ahead of what merely happened.
+ *
+ * First in the primer, and unconditional. `get_memory` is topic-conditional and an agent
+ * has to choose to call it — the same "only fires when the model decides to" dependency
+ * that left the previous lesson store at one row for months. This tier is the guaranteed
+ * delivery; the tool stays the precise one.
+ *
+ * Standing constraints are marked, because "do not do X, ever" and "this repo uses Y" are
+ * read differently, and the count left out is stated rather than implied — a primer that
+ * silently shows 8 of 40 reads as the whole set.
+ */
+function renderMemory(primer: ContextPrimer): string[] {
+  if (primer.memory.length === 0) return [];
+  const out = ['\n## Memory\n'];
+  for (const m of primer.memory) {
+    const marks = [m.alwaysOn ? 'standing' : '', m.scope === 'repo' ? '' : m.scope].filter(Boolean);
+    out.push(`- ${m.text}${marks.length > 0 ? ` _(${marks.join(' · ')})_` : ''}`);
+  }
+  const omitted = primer.memoryTotal - primer.memory.length;
+  if (omitted > 0) {
+    out.push(`- _+${omitted} more — call \`get_memory\` with a topic for the ones relevant to your task_`);
+  }
+  return out;
+}
+
 export function renderMarkdown(primer: ContextPrimer, full: boolean): string {
   if (primer.isEmpty) {
     return `# Context primer: ${primer.repoLabel}\n\n${EMPTY_LINE}\n`;
@@ -128,6 +154,7 @@ export function renderMarkdown(primer: ContextPrimer, full: boolean): string {
   out.push(`# Context primer: ${primer.repoLabel}`);
   if (primer.toolFilter) out.push(`\n_Filtered to ${primer.toolFilter} sessions._`);
 
+  out.push(...renderMemory(primer));
   out.push('\n## Recent\n');
   for (const s of primer.recent) {
     out.push(`### ${s.date} · ${s.tool} · ${s.branch}`);

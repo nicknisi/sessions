@@ -102,10 +102,29 @@ export interface ContextHeadline {
   intent: string;
 }
 
+/** An approved memory as the primer carries it — the claim and enough to weigh it. */
+export interface PrimerMemory {
+  text: string;
+  kind: string;
+  scope: string;
+  /** A standing constraint: carried first, and never withheld by the cap. */
+  alwaysOn: boolean;
+}
+
 export interface ContextPrimer {
   repoLabel: string; // basename(container)
   toolFilter: Tool | '';
   recent: ContextSession[];
   headlines: ContextHeadline[];
+  /**
+   * Approved memories for this repo, always-on first, capped at PRIMER_MEMORY_LIMIT.
+   *
+   * The primer is the only guaranteed delivery: `get_memory` is topic-conditional and
+   * an agent has to choose to call it, which is the same "only fires when the model
+   * decides to" failure that left the previous lesson store at one row for months.
+   */
+  memory: PrimerMemory[];
+  /** Approved and in scope, so a capped primer can say how many it left out. */
+  memoryTotal: number;
   isEmpty: boolean;
 }

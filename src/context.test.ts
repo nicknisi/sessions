@@ -371,6 +371,8 @@ describe('files cap', () => {
         },
       ],
       headlines: [],
+      memory: [],
+      memoryTotal: 0,
     };
     // 5 shown of 40 touched, not 5 of the 10 that survived the cap.
     expect(ctx.renderMarkdown(primer, false)).toContain('(+35 more)');
@@ -400,6 +402,8 @@ describe('cli', () => {
         },
       ],
       headlines: [{ date: '2026-06-10', tool: 'codex', branch: 'main', intent: 'earlier task' }],
+      memory: [],
+      memoryTotal: 0,
     };
 
     const md = ctx.renderMarkdown(primer, false);
@@ -420,6 +424,8 @@ describe('cli', () => {
       isEmpty: true,
       recent: [],
       headlines: [],
+      memory: [],
+      memoryTotal: 0,
     };
     const md = ctx.renderMarkdown(primer, false);
     expect(md).toContain('No past sessions found for this repo.');
@@ -447,6 +453,8 @@ describe('cli', () => {
         },
       ],
       headlines: [],
+      memory: [],
+      memoryTotal: 0,
     };
 
     const compact = ctx.renderMarkdown(primer, false);
