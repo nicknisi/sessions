@@ -13,6 +13,7 @@ import type {
   DailyEntry,
 } from './schema.ts';
 import { equivalenceChoices, pickEquivalence } from '../equivalence.ts';
+import { SITE_HOST, SITE_URL } from '../site.ts';
 
 const esc = (s: string): string =>
   s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -377,7 +378,8 @@ a:hover{color:var(--link-hover);}
 
 /* --- header ------------------------------------------------------------- */
 .topline{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:30px;}
-.brand{font-family:var(--mono);font-size:12px;font-weight:700;letter-spacing:.24em;text-transform:uppercase;color:var(--accent);}
+.brand{font-family:var(--mono);font-size:12px;font-weight:700;letter-spacing:.24em;text-transform:uppercase;color:var(--accent);border-bottom:0;}
+.brand:hover{color:var(--link-hover);}
 .topline .right{display:flex;align-items:center;gap:16px;flex-wrap:wrap;}
 .period{font-family:var(--mono);font-size:10.5px;color:var(--ink-2);letter-spacing:.08em;text-transform:uppercase;}
 .sharelink{font-family:var(--mono);font-size:10.5px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;border-bottom:0;color:var(--accent);}
@@ -525,6 +527,11 @@ table.tbl th[data-tip]{cursor:help;text-decoration:underline dotted var(--dot);t
 .pricewarn .models{font-family:var(--mono);font-size:12px;word-break:break-all;color:var(--ink-2);}
 .pricewarn .models .m+.m::before{content:", ";color:var(--ink-3);}
 footer.rep{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-top:26px;font-family:var(--mono);font-size:10px;color:var(--ink-3);letter-spacing:.08em;text-transform:uppercase;}
+/* The footer's own register, not the page's link register: an underlined accent
+   rule across a 10px uppercase mono line reads as damage. It earns the underline
+   on hover, where it has to look clickable. */
+footer.rep a{color:var(--accent);border-bottom:0;}
+footer.rep a:hover{color:var(--link-hover);border-bottom:1px solid currentColor;}
 
 /* --- tooltip ------------------------------------------------------------ */
 .tip{position:fixed;left:0;top:0;pointer-events:none;background:var(--tip-bg);color:var(--tip-ink);font-family:var(--sans);font-size:12px;line-height:1.45;padding:7px 10px;border-radius:6px;opacity:0;transform:translateX(-50%);max-width:34ch;text-wrap:pretty;font-variant-numeric:tabular-nums;z-index:var(--z-tooltip);box-shadow:var(--tip-shadow);}
@@ -1345,7 +1352,9 @@ function summaryText(data: UsageReport, dv: Derived): string[] {
     );
   }
   if (tail.length > 0) parts.push(tail.join(', ') + '.');
-  parts.push('Computed locally with sessions report.');
+  // Last line of what lands in someone's clipboard, so it carries the domain —
+  // a pasted summary is otherwise unattributable.
+  parts.push(`Computed locally with sessions report · ${SITE_HOST}`);
   return parts;
 }
 
@@ -1374,7 +1383,10 @@ function cardData(data: UsageReport, dv: Derived, cols: HeatColumn[]): CardData 
       [fmtPct(data.subagents.shareOfCost), 'SPENT BY SUBAGENTS', false],
     ],
     heat: cols.map((c) => c.levels),
-    footer: ['sessions report · computed locally', `${fmtInt(dv.activeDays)} active days`],
+    // Two lines, right-aligned, drawn at y=571 and y=595 on a 630px card. A
+    // third would land at 619 with only 11px of card left under the baseline,
+    // so the domain rides on the first line rather than getting its own.
+    footer: [`sessions report · ${SITE_HOST}`, `computed locally · ${fmtInt(dv.activeDays)} active days`],
     summary: summaryText(data, dv),
     // summaryText puts the token count in its second sentence.
     eqSlot: 2,
@@ -1415,7 +1427,7 @@ ${FONT_LINK}
 <body>
 <div class="page"><div class="shell">
 <div class="topline">
-<span class="brand">sessions</span>
+<a class="brand" href="${SITE_URL}">sessions</a>
 <span class="right">
 <span class="period">${esc(periodLabel(data.period.from, data.period.to))} · local data only</span>
 <a class="sharelink" href="#share">share ↓</a>
@@ -1437,7 +1449,7 @@ ${cacheSection(data.cache, data.subagents, dv.total)}
 ${subagentTables(data.subagents)}
 ${sessionSection(data.topSessions, data.totalSessions, data.sessionDistribution)}
 ${shareCardSection(cardData(data, dv, cols))}
-<footer class="rep"><span>sessions usage report</span><span>estimated from public list prices</span><span>computed locally · no telemetry</span></footer>
+<footer class="rep"><span>sessions usage report</span><span>estimated from public list prices</span><span>computed locally · no telemetry</span><a href="${SITE_URL}">${SITE_HOST}</a></footer>
 </div></div>
 <div class="tip" id="tip"></div>
 <script>${JS}</script>

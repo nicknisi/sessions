@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runWrapped, parseWrappedArgs, parseExtras } from './index.ts';
 import { longestGapRange } from './compute.ts';
+import { SITE_URL } from '../site.ts';
 
 const tmp = mkdtempSync(join(tmpdir(), 'sessions-wrapped-run-'));
 afterAll(() => rmSync(tmp, { recursive: true, force: true }));
@@ -233,8 +234,26 @@ describe('runWrapped', () => {
     expect(html.startsWith('<!DOCTYPE html>')).toBe(true);
     expect(html).toContain('wrapped');
     expect(html).toContain('2026');
-    expect(html).not.toContain('http://');
-    expect(html).not.toContain('https://');
+    // The deck fetches NOTHING: no stylesheet, no script, no image, no font.
+    // It uses the system stack precisely so the file works with the network
+    // off. Checked by the positions that actually cause a GET rather than by
+    // the raw string "https://", because the credits card now carries a link
+    // to the project site — a link is something the reader may follow, not
+    // something the document goes and gets.
+    for (const pattern of [
+      /\bsrc=["']([^"']+)["']/g,
+      /<link\b[^>]*\bhref=["']([^"']+)["']/g,
+      /url\(\s*['"]?([^)'"]+)['"]?\s*\)/g,
+      /@import\s+(?:url\()?\s*['"]([^'"]+)['"]/g,
+    ]) {
+      for (const m of html.matchAll(pattern)) {
+        expect(m[1]).not.toMatch(/^https?:\/\//);
+      }
+    }
+    // ...and the only external link is the project's own site.
+    const anchors = [...html.matchAll(/<a\b[^>]*\bhref=["'](https?:\/\/[^"']+)["']/g)].map((m) => m[1]);
+    expect(anchors.length).toBeGreaterThan(0);
+    for (const href of anchors) expect(href).toBe(SITE_URL);
     expect(html).not.toContain('innerHTML');
     // The story spine renders.
     expect(html).toContain('id="cover"');

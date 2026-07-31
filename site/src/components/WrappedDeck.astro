@@ -1,0 +1,128 @@
+---
+/**
+ * Four cards from `sessions wrapped`, in the deck's own grammar: a radial wash
+ * of the accent up from the bottom edge, an outlined numeral echoing behind the
+ * headline, a mono kicker, and display type at the scale the real deck runs it.
+ *
+ * The strip stays DARK in both site themes, on purpose. The wrapped page
+ * commits to dark — it is a mood, and it has no light deck — so rendering these
+ * cards light when the site is light would misrepresent the artifact. The card
+ * ground is pinned here rather than inherited.
+ *
+ * Every figure is invented; the caption says so.
+ */
+const CARDS = [
+  {
+    kicker: 'Tokens',
+    echo: '1.24B',
+    headline: ['1.24', 'billion', 'tokens'],
+    note: "that's the Voyager 1 record, transmitted 380 times",
+    foot: 'across claude · codex · pi · opencode',
+  },
+  {
+    kicker: 'The receipt',
+    echo: '$412',
+    headline: ['$412.68', 'at API', 'rates'],
+    note: 'about 68 oat-milk lattes',
+    foot: 'estimated from LiteLLM pricing · not a bill',
+  },
+  {
+    kicker: 'Most said',
+    echo: '47',
+    headline: ["“You're", 'absolutely', 'right”'],
+    note: '47 times · your record was 6 in one session',
+    foot: 'mined from what you actually said to each other',
+  },
+  {
+    kicker: 'Your type',
+    echo: 'IV',
+    headline: ['The', 'night', 'refactorer'],
+    note: 'nocturnal · high-interrupt · one-repo-at-a-time',
+    foot: 'built from three behavioural axes, evidence on the card',
+  },
+];
+---
+
+<figure class="deck m-0">
+  <div
+    class="strip flex snap-x snap-mandatory gap-4 overflow-x-auto pb-3"
+    role="group"
+    aria-label="Four sample cards from sessions wrapped"
+  >
+    {
+      CARDS.map(card => (
+        <article class="card relative flex aspect-[3/4] w-[280px] flex-none snap-start flex-col justify-end overflow-hidden rounded-card p-6 max-[560px]:w-[236px]">
+          <span class="echo" aria-hidden="true">
+            {card.echo}
+          </span>
+          <div class="relative">
+            <p class="kicker">{card.kicker}</p>
+            <h3 class="deck-display text-[clamp(26px,4.4vw,34px)]">
+              {card.headline.map(line => (
+                <span class="block">{line}</span>
+              ))}
+            </h3>
+            <p class="mt-3 text-[13px] leading-[1.45] text-[oklch(72%_0_0)]">{card.note}</p>
+            <p class="mt-3 font-mono text-[10px] leading-[1.5] text-[oklch(52%_0_0)]">{card.foot}</p>
+          </div>
+        </article>
+      ))
+    }
+  </div>
+
+  <figcaption class="meta-label mt-3 normal-case">
+    Sample cards, invented for this page · the real deck picks its slides from your data
+  </figcaption>
+</figure>
+
+<style>
+  /* The deck is dark in both site themes because the artifact is. Pinning the
+     ground here rather than inheriting it is the honest rendering. */
+  .card {
+    --card-bg: oklch(13% 0.01 280);
+    --card-ink: oklch(97% 0 0);
+    background:
+      radial-gradient(120% 90% at 50% 110%, color-mix(in oklch, var(--accent) 20%, transparent), transparent 62%),
+      var(--card-bg);
+    color: var(--card-ink);
+    border: 1px solid oklch(24% 0.01 280);
+  }
+
+  /* The deck's signature: the figure repeated as an outline behind itself,
+     rotated off-axis and bled past the corner. */
+  .echo {
+    position: absolute;
+    right: -6%;
+    bottom: -4%;
+    z-index: 0;
+    font-weight: 700;
+    font-size: 7.2rem;
+    line-height: 0.8;
+    letter-spacing: -0.04em;
+    color: transparent;
+    -webkit-text-stroke: 1.5px color-mix(in oklch, var(--accent) 42%, transparent);
+    rotate: -6deg;
+    white-space: nowrap;
+    user-select: none;
+    pointer-events: none;
+  }
+
+  .kicker {
+    margin: 0 0 10px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+
+  /* A scrollbar under a snap strip reads as chrome; the strip's own overflow
+     and the partially visible fourth card are the affordance. */
+  .strip {
+    scrollbar-width: none;
+  }
+  .strip::-webkit-scrollbar {
+    display: none;
+  }
+</style>

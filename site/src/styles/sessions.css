@@ -1,0 +1,328 @@
+@import 'tailwindcss';
+
+/* ═══════════════════════════════════════════════════════════════════
+   sessions.engineering — the product's own visual world, as tokens.
+
+   This is not a new design system. Everything here already exists in
+   src/report/html.ts and src/wrapped/html.ts, the two HTML artifacts the
+   CLI writes. The site is the third surface, and the newcomer: when this
+   file and the report disagree, the report is right.
+
+   See DESIGN.md at the repo root for the durable rules.
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* Self-hosted latin subsets — the site makes no external requests, exactly
+   like the report and wrapped HTML it documents. */
+@font-face {
+  font-family: 'Space Grotesk';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/space-grotesk-400.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Space Grotesk';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('/fonts/space-grotesk-500.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Space Grotesk';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('/fonts/space-grotesk-700.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/jetbrains-mono-400.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('/fonts/jetbrains-mono-700.woff2') format('woff2');
+}
+
+/* ─── Accents ──────────────────────────────────────────────────────────
+   Four accents, each stored as a hue and a chroma and NOTHING else. Every
+   other value below is computed from that pair, the same way palette() in
+   src/report/html.ts computes it:
+
+     dark   accent = oklch(82% c h)
+     light  accent = oklch(48% c*0.92 h)
+
+   Switching accent therefore sets two numbers and ~14 derived colours
+   follow. That is the single-source property the report has, and the
+   reason the two can never drift.
+
+   Order is the report's picker order and must not be re-sorted.
+   ─────────────────────────────────────────────────────────────────── */
+:root {
+  --accent-h: 288;
+  --accent-c: 0.2;
+}
+:root[data-accent='cyan'] {
+  --accent-h: 212;
+  --accent-c: 0.14;
+}
+:root[data-accent='magenta'] {
+  --accent-h: 348;
+  --accent-c: 0.21;
+}
+:root[data-accent='mono'] {
+  --accent-h: 265;
+  --accent-c: 0.022;
+}
+
+@custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *));
+
+/* The dark deck. Cool ground (hue 265) — this is read beside a terminal, and
+   the artifact it is selling opens dark. */
+:root,
+:root[data-theme='dark'] {
+  color-scheme: dark;
+
+  --bg: oklch(10.5% 0.012 265);
+  --shell: oklch(13.5% 0.014 265);
+  --surface: oklch(17% 0.018 265);
+  --line: oklch(26% 0.02 265);
+  --line-soft: oklch(21% 0.015 265);
+  --track: oklch(24% 0.015 265);
+  --ink: oklch(95% 0.005 265);
+  --ink-2: oklch(66% 0.02 265);
+  --ink-3: oklch(57% 0.02 265);
+
+  --accent: oklch(82% var(--accent-c) var(--accent-h));
+  --accent-ink: oklch(17% 0.05 var(--accent-h));
+  --accent-mid: oklch(52% calc(var(--accent-c) * 0.6) calc(var(--accent-h) + 8));
+  --accent-deep: oklch(36% calc(var(--accent-c) * 0.35) calc(var(--accent-h) + 18));
+  --accent-wash: oklch(82% var(--accent-c) var(--accent-h) / 0.1);
+  --link-hover: oklch(92% calc(var(--accent-c) * 0.8) var(--accent-h));
+  --glow: 0 0 60px oklch(82% var(--accent-c) var(--accent-h) / 0.32);
+  --shadow: 0 24px 70px oklch(0% 0 0 / 0.5);
+
+  /* Five heat levels; index 0 is "no activity". Same ramp the report's
+     hour-of-day heatmap and wrapped's rhythm grid use. */
+  --heat-0: oklch(23% 0.012 265);
+  --heat-1: oklch(36% calc(var(--accent-c) * 0.35) calc(var(--accent-h) + 18));
+  --heat-2: oklch(52% calc(var(--accent-c) * 0.6) calc(var(--accent-h) + 10));
+  --heat-3: oklch(68% calc(var(--accent-c) * 0.85) calc(var(--accent-h) + 4));
+  --heat-4: oklch(82% var(--accent-c) var(--accent-h));
+}
+
+/* The light deck is paper, not an inverted screen: warm ground (hue 95)
+   against cool ink. The hue flip is deliberate — keep it. */
+:root[data-theme='light'] {
+  color-scheme: light;
+
+  --bg: oklch(95.5% 0.004 95);
+  --shell: oklch(92.5% 0.005 95);
+  --surface: oklch(99.5% 0.002 95);
+  --line: oklch(87% 0.008 95);
+  --line-soft: oklch(92% 0.006 95);
+  --track: oklch(90% 0.008 95);
+  --ink: oklch(21% 0.01 265);
+  --ink-2: oklch(44% 0.015 265);
+  --ink-3: oklch(52% 0.015 265);
+
+  --accent: oklch(48% calc(var(--accent-c) * 0.92) var(--accent-h));
+  --accent-ink: oklch(98% 0.02 var(--accent-h));
+  --accent-mid: oklch(78% calc(var(--accent-c) * 0.5) calc(var(--accent-h) + 6));
+  --accent-deep: oklch(89% calc(var(--accent-c) * 0.28) calc(var(--accent-h) + 10));
+  --accent-wash: oklch(48% calc(var(--accent-c) * 0.92) var(--accent-h) / 0.08);
+  --link-hover: oklch(34% calc(var(--accent-c) * 0.8) var(--accent-h));
+  --glow: none;
+  --shadow: 0 18px 50px oklch(21% 0.01 265 / 0.1);
+
+  --heat-0: oklch(93% 0.005 95);
+  --heat-1: oklch(89% calc(var(--accent-c) * 0.28) calc(var(--accent-h) + 10));
+  --heat-2: oklch(78% calc(var(--accent-c) * 0.55) calc(var(--accent-h) + 5));
+  --heat-3: oklch(62% calc(var(--accent-c) * 0.8) var(--accent-h));
+  --heat-4: oklch(47% calc(var(--accent-c) * 0.95) var(--accent-h));
+}
+
+@theme inline {
+  /* Clear Tailwind's palette. If `bg-blue-500` is reachable someone reaches
+     for it, and the only colours that may exist here are the product's. */
+  --color-*: initial;
+  --color-transparent: transparent;
+  --color-current: currentColor;
+
+  --color-bg: var(--bg);
+  --color-shell: var(--shell);
+  --color-surface: var(--surface);
+  --color-line: var(--line);
+  --color-line-soft: var(--line-soft);
+  --color-track: var(--track);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-ink-3: var(--ink-3);
+
+  --color-accent: var(--accent);
+  --color-accent-ink: var(--accent-ink);
+  --color-accent-mid: var(--accent-mid);
+  --color-accent-deep: var(--accent-deep);
+  --color-accent-wash: var(--accent-wash);
+  --color-link-hover: var(--link-hover);
+
+  --color-heat-0: var(--heat-0);
+  --color-heat-1: var(--heat-1);
+  --color-heat-2: var(--heat-2);
+  --color-heat-3: var(--heat-3);
+  --color-heat-4: var(--heat-4);
+
+  --font-display: 'Space Grotesk', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* The radii encode nesting depth rather than taste. See DESIGN.md. */
+  --radius-shell: 20px;
+  --radius-card: 16px;
+  --radius-pop: 10px;
+  --radius-ctl: 8px;
+  --radius-chip: 6px;
+
+  --shadow-deck: var(--shadow);
+  --shadow-glow: var(--glow);
+
+  --animate-blink: blink 1.15s steps(1) infinite;
+  --animate-pulse-tick: pulse-tick 2.4s ease-in-out infinite;
+
+  @keyframes blink {
+    0%,
+    45% {
+      opacity: 1;
+    }
+    50%,
+    95% {
+      opacity: 0;
+    }
+  }
+  /* The "now" tick on the spine, breathing. Animates opacity and scale only —
+     both compositor properties, so it never triggers layout. */
+  @keyframes pulse-tick {
+    0%,
+    100% {
+      opacity: 1;
+      scale: 1;
+    }
+    50% {
+      opacity: 0.55;
+      scale: 0.82;
+    }
+  }
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+  body {
+    margin: 0;
+    font-family: var(--font-display);
+    font-size: 15px;
+    line-height: 1.55;
+    color: var(--ink);
+    background: var(--bg);
+    text-wrap: pretty;
+    -webkit-font-smoothing: antialiased;
+    transition:
+      background 0.18s ease-out,
+      color 0.18s ease-out;
+  }
+  h1,
+  h2,
+  h3,
+  h4 {
+    margin: 0;
+    font-weight: 700;
+    line-height: 1.08;
+    letter-spacing: -0.03em;
+  }
+  /* Anchor targets clear the 56px sticky header. */
+  :target,
+  [id] {
+    scroll-margin-top: 88px;
+  }
+  ::selection {
+    background: color-mix(in oklch, var(--accent) 32%, transparent);
+  }
+  :focus {
+    outline: none;
+  }
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 3px;
+  }
+  /* Every figure on this site is countable, so none of them may shift width
+     while a neighbour animates. */
+  code,
+  kbd,
+  samp,
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/* The report's section heading, exactly: mono, 11px, 700, .18em, uppercase,
+   accent. This one rule is the strongest signal that the site and the
+   product are one thing — do not restyle it. */
+@utility rule-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+/* The wordmark voice — one step wider than a section label. */
+@utility brandmark {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+}
+
+/* A quiet mono caption: the report's .period and .hint. */
+@utility meta-label {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 400;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+/* Wrapped's display voice: huge, heavy, tight, uppercase. */
+@utility deck-display {
+  font-weight: 700;
+  line-height: 0.95;
+  letter-spacing: -0.035em;
+  text-transform: uppercase;
+}
+
+/* The spine itself — one hairline running the full height of its container,
+   fading in at the top and out at the bottom so it never ends abruptly. */
+@utility spine-rail {
+  background: linear-gradient(180deg, transparent, var(--line) 6%, var(--line) 94%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+  html {
+    scroll-behavior: auto;
+  }
+}

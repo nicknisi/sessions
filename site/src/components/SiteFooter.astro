@@ -1,0 +1,21 @@
+---
+interface Props {
+  class?: string;
+}
+const { class: className = '' } = Astro.props;
+
+const link = 'text-accent no-underline transition-colors hover:text-link-hover hover:underline hover:underline-offset-2';
+---
+
+<footer
+  class:list={[
+    'flex flex-wrap items-center justify-between gap-x-8 gap-y-3 border-t border-line pt-6 text-[13px] text-ink-3',
+    className,
+  ]}
+>
+  <span>
+    Made by <a href="https://nicknisi.com" class={link}>Nick Nisi</a> ·
+    <a href="https://github.com/nicknisi/sessions" class={link}>source and releases</a> · MIT
+  </span>
+  <span class="meta-label">Everything runs on your machine</span>
+</footer>

@@ -1,0 +1,255 @@
+---
+/**
+ * Read mode. Every fact on this page is generated from the repo at build time:
+ * the help text is what `sessions --help` prints, the MCP tools are the ones
+ * src/mcp.ts registers with the titles it gives them, and the skills are the
+ * frontmatter of the SKILL.md files that ship.
+ *
+ * That is deliberate rather than clever. A hand-maintained reference is a copy,
+ * and a copy rots — so the page holds no restated facts to rot, and `bun run
+ * build` fails when the source moves out from under it.
+ */
+import Deck from '../layouts/Deck.astro';
+import SiteHeader from '../components/SiteHeader.astro';
+import SiteFooter from '../components/SiteFooter.astro';
+import Panel from '../components/Panel.astro';
+import { readVersion } from '../lib/repo';
+import { readCliHelp } from '../lib/cli-help';
+import { mcpGroups } from '../data/mcp';
+import { skillList } from '../data/skills';
+
+const version = readVersion();
+const help = readCliHelp();
+const { groups, total: toolCount } = mcpGroups();
+const skills = skillList();
+const tools = groups.flatMap(group => group.tools);
+
+const NAV = [
+  { href: '/', label: 'Overview' },
+  { href: '#cli', label: 'CLI', keep: 'optional' as const },
+  { href: '#mcp', label: 'MCP', keep: 'optional' as const },
+  { href: '#skills', label: 'Skills', keep: 'optional' as const },
+  { href: 'https://github.com/nicknisi/sessions', label: 'GitHub', keep: 'always' as const },
+];
+
+const TOC = [
+  { href: '#cli', label: 'CLI' },
+  { href: '#mcp', label: `MCP tools (${toolCount})` },
+  { href: '#skills', label: `Skills (${skills.length})` },
+  { href: '#report', label: 'Report flags' },
+  { href: '#wrapped', label: 'Wrapped flags' },
+  { href: '#memory', label: 'Memory' },
+];
+
+/** Flag tables. These are documented in the README rather than parseable out of
+ *  an arg loop, so they are authored — and kept to the flags, which change far
+ *  less often than the prose around them. */
+const REPORT_FLAGS = [
+  ['--format json|html|both|text', 'What to emit. Default html. text prints to stdout and writes no file.'],
+  ['--out <path>', 'Save instead of opening in the browser.'],
+  ['--here', 'Restrict to the current project.'],
+  ['--from / --to YYYY-MM-DD', 'Inclusive local-date range. Default: all time.'],
+  ['--days N', 'Last N days.'],
+  ['--today / --this-week / --this-month / --last-month / --this-year', 'Presets that resolve to a date range.'],
+  ['--month YYYY-MM', 'A specific calendar month.'],
+  ['--tool claude|codex|pi|opencode', 'Restrict to one tool. Default: all four.'],
+  ['--tz <IANA>', 'Timezone for day/hour bucketing.'],
+  ['--stdout', 'Print JSON to stdout and skip the JSON file.'],
+  ['--offline', 'Skip the pricing refresh; use cached or embedded pricing.'],
+  ['--refresh-pricing', 'Force a pricing refresh even if the cache is fresh.'],
+  ['--no-cache', 'Bypass the incremental parse cache and re-read every transcript.'],
+];
+
+const WRAPPED_FLAGS = [
+  ['--year <YYYY>', 'Wrap a past calendar year. Default: this year.'],
+  ['--roast', 'Let an agent CLI improvise extra roast slides. Opt-in, fails open.'],
+  ['--roast-with <tool>', 'Choose the CLI. Default order: claude, then codex, then pi.'],
+  ['--extras <path>', 'Inject up to six slides of your own from a JSON array.'],
+  ['--stdout', 'Print the underlying JSON instead of opening the page.'],
+  ['--out <path>', 'Write the HTML somewhere instead of opening it.'],
+  ['--tool claude|codex|pi|opencode', 'Restrict to one tool.'],
+];
+
+const MEMORY_COMMANDS = [
+  ['memory mine', 'Mine past sessions for durable facts. --repo scopes, --all mines everything, --since-last only what changed.'],
+  ['memory pending', 'Count and preview the untriaged backlog. Reads the store only; never mines.'],
+  ['memory approve <id>', 'Keep a candidate. --always-on exempts it from topic filtering; --scope group:<name> or repo:<path> binds it.'],
+  ['memory reject <id>', 'Dismiss a candidate. It stops being emitted.'],
+  ['memory snooze <id>', 'Hide a candidate without rejecting it.'],
+  ['memory merge <id> <id>…', 'Fold paraphrases into the first id.'],
+  ['memory export', 'Write approved memories as a portable bundle. No local paths leave the machine.'],
+  ['memory import <path>', 'Merge another author’s bundle in as candidates. Never lands as approved.'],
+];
+
+const cell = 'border-t border-line-soft px-4 py-2.5 align-top';
+---
+
+<Deck
+  title="sessions — reference"
+  description="Every flag, MCP tool, and skill sessions ships. Generated from the source at build time, so it cannot drift from the binary."
+>
+  <SiteHeader homeHref="/" links={NAV} version={version} />
+
+  <div
+    class="mx-auto grid max-w-[1180px] grid-cols-[200px_minmax(0,1fr)] gap-14 px-7 pt-12 pb-20 max-[980px]:grid-cols-[minmax(0,1fr)] max-[980px]:gap-8 max-[560px]:px-4"
+  >
+    <aside class="sticky top-[84px] grid content-start gap-4 self-start max-[980px]:static">
+      <p class="meta-label m-0">On this page</p>
+      <nav
+        class="grid gap-2.5 border-l border-line pl-4 max-[980px]:flex max-[980px]:flex-wrap max-[980px]:gap-x-5 max-[980px]:gap-y-2 max-[980px]:border-l-0 max-[980px]:pl-0"
+      >
+        {
+          TOC.map(item => (
+            <a
+              href={item.href}
+              class="font-mono text-[11.5px] text-ink-2 no-underline transition-colors hover:text-accent"
+            >
+              {item.label}
+            </a>
+          ))
+        }
+      </nav>
+      <p class="meta-label m-0 leading-[1.7] normal-case max-[980px]:hidden">
+        Generated from the<br />source at build time
+      </p>
+    </aside>
+
+    <main id="main" class="min-w-0">
+      <header class="max-w-[68ch]">
+        <p class="rule-label">Reference · v{version}</p>
+        <h1 class="mt-4 text-[clamp(30px,4.6vw,46px)]">Every flag, tool, and skill.</h1>
+        <p class="mt-5 text-[15.5px] leading-[1.62] text-ink-2">
+          Nothing on this page is retyped. The help text below is what the binary prints, the {toolCount}
+          MCP tools are the ones the server registers, and the {skills.length} skills are the frontmatter
+          of the files that ship. The build fails if any of that stops being true.
+        </p>
+      </header>
+
+      <!-- ══ CLI ═══════════════════════════════════════════════════════════ -->
+      <section id="cli" class="mt-16">
+        <h2 class="rule-label">CLI</h2>
+        <p class="mt-3 mb-6 max-w-[62ch] text-[15px] leading-[1.6] text-ink-2">
+          Verbatim from <code class="font-mono text-[13.5px] text-ink">sessions --help</code>, read out
+          of <code class="font-mono text-[13.5px] text-ink">src/cli.ts</code> when this page was built.
+        </p>
+
+        <div class="overflow-hidden rounded-card border border-line bg-shell">
+          {
+            help.map((section, i) => (
+              <div class:list={[i > 0 && 'border-t border-line']}>
+                {section.heading && (
+                  <h3 class="rule-label border-b border-line-soft px-5 py-2.5 max-[560px]:px-3.5">
+                    {section.heading}
+                  </h3>
+                )}
+                <pre class="m-0 overflow-x-auto px-5 py-4 font-mono text-[12px] leading-[1.65] text-ink-2 max-[560px]:px-3.5">{section.lines.join('\n')}</pre>
+              </div>
+            ))
+          }
+        </div>
+      </section>
+
+      <!-- ══ MCP ═══════════════════════════════════════════════════════════ -->
+      <section id="mcp" class="mt-16">
+        <h2 class="rule-label">MCP tools · {toolCount}</h2>
+        <p class="mt-3 mb-6 max-w-[62ch] text-[15px] leading-[1.6] text-ink-2">
+          All read-only. Start the server with <code class="font-mono text-[13.5px] text-ink"
+            >sessions --mcp</code
+          > over stdio, or let <code class="font-mono text-[13.5px] text-ink">sessions setup</code> write
+          the config for every agent CLI it finds.
+        </p>
+
+        <div class="overflow-x-auto rounded-card border border-line bg-surface">
+          <table class="w-full min-w-[560px] border-collapse text-left">
+            <thead>
+              <tr>
+                <th class="meta-label px-4 py-2.5 font-normal">Tool</th>
+                <th class="meta-label px-4 py-2.5 font-normal">Title</th>
+                <th class="meta-label px-4 py-2.5 font-normal">What it is for</th>
+              </tr>
+            </thead>
+            <tbody>
+              {
+                tools.map(tool => (
+                  <tr>
+                    <td class:list={[cell, 'font-mono text-[12px] whitespace-nowrap text-accent']}>{tool.name}</td>
+                    <td class:list={[cell, 'text-[13px] text-ink']}>{tool.title}</td>
+                    <td class:list={[cell, 'text-[13px] leading-[1.5] text-ink-2']}>{tool.blurb}</td>
+                  </tr>
+                ))
+              }
+            </tbody>
+          </table>
+        </div>
+
+        <Panel class="mt-4" pad="tight">
+          <p class="meta-label m-0 mb-2">Manual config</p>
+          <pre class="m-0 overflow-x-auto font-mono text-[12px] leading-[1.6] text-ink-2">{`{
+  "mcpServers": {
+    "sessions": { "command": "sessions", "args": ["--mcp"] }
+  }
+}`}</pre>
+        </Panel>
+      </section>
+
+      <!-- ══ Skills ════════════════════════════════════════════════════════ -->
+      <section id="skills" class="mt-16">
+        <h2 class="rule-label">Skills · {skills.length}</h2>
+        <p class="mt-3 mb-6 max-w-[62ch] text-[15px] leading-[1.6] text-ink-2">
+          Trigger phrases are quoted straight out of each skill's own description — the text an agent
+          matches your phrasing against. Works with Claude Code, Cursor, Codex, and anything else
+          that reads the skills.sh format.
+        </p>
+
+        <ul class="m-0 grid list-none gap-3 p-0">
+          {
+            skills.map(skill => (
+              <Panel as="li" pad="tight">
+                <div class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+                  <code class="font-mono text-[13px] font-bold text-accent">/{skill.name}</code>
+                  {skill.argumentHint && <span class="meta-label">{skill.argumentHint}</span>}
+                </div>
+                <p class="mt-2 mb-0 text-[13.5px] leading-[1.55] text-ink-2">{skill.outcome}</p>
+                <p class="mt-2.5 mb-0 flex flex-wrap gap-1.5">
+                  {skill.phrases.map(phrase => (
+                    <span class="rounded-chip bg-track px-1.5 py-0.5 font-mono text-[10px] text-ink-3">
+                      “{phrase}”
+                    </span>
+                  ))}
+                </p>
+              </Panel>
+            ))
+          }
+        </ul>
+      </section>
+
+      <!-- ══ Flag tables ═══════════════════════════════════════════════════ -->
+      {
+        [
+          { id: 'report', title: 'Report flags', rows: REPORT_FLAGS, lede: 'Everything after `sessions report`.' },
+          { id: 'wrapped', title: 'Wrapped flags', rows: WRAPPED_FLAGS, lede: 'Everything after `sessions wrapped`.' },
+          { id: 'memory', title: 'Memory', rows: MEMORY_COMMANDS, lede: 'The triage lifecycle, as subcommands.' },
+        ].map(table => (
+          <section id={table.id} class="mt-16">
+            <h2 class="rule-label">{table.title}</h2>
+            <p class="mt-3 mb-6 max-w-[62ch] text-[15px] leading-[1.6] text-ink-2">{table.lede}</p>
+            <div class="overflow-x-auto rounded-card border border-line bg-surface">
+              <table class="w-full min-w-[520px] border-collapse text-left">
+                <tbody>
+                  {table.rows.map(([flag, description]) => (
+                    <tr>
+                      <td class:list={[cell, 'font-mono text-[12px] text-accent']}>{flag}</td>
+                      <td class:list={[cell, 'text-[13px] leading-[1.5] text-ink-2']}>{description}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        ))
+      }
+
+      <SiteFooter class="mt-20" />
+    </main>
+  </div>
+</Deck>

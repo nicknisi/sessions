@@ -4,6 +4,7 @@ import { renderHtml, palette } from './html.ts';
 import { toUsageReport } from './schema.ts';
 import { computeFacets } from './facets.ts';
 import type { UsageEvent } from './parsers/types.ts';
+import { SITE_HOST, SITE_URL } from '../site.ts';
 
 const events: UsageEvent[] = [
   {
@@ -60,13 +61,48 @@ describe('renderHtml', () => {
   // unreachable the stack falls back to the system faces. Anything else — an
   // image, a script, a stylesheet, an analytics beacon — would make the document
   // depend on a network it promises not to touch.
-  test('references no external resource except the font stylesheet', () => {
+  //
+  // Scanned by the positions that actually cause a GET rather than by every
+  // `https://` in the file. The page links to the project site now, and a link
+  // is something the reader may choose to follow — not something the document
+  // goes and gets. The two are different promises and only one of them is this
+  // test's; the other is the test below.
+  test('fetches no external resource except the font stylesheet', () => {
     const html = render();
-    const urls = html.match(/https?:\/\/[^"' )]+/g) ?? [];
-    expect(urls.length).toBeGreaterThan(0);
-    for (const u of urls) {
+    const fetched: string[] = [];
+    for (const pattern of [
+      /\bsrc=["']([^"']+)["']/g,
+      /<link\b[^>]*\bhref=["']([^"']+)["']/g,
+      /url\(\s*['"]?([^)'"]+)['"]?\s*\)/g,
+      /@import\s+(?:url\()?\s*['"]([^'"]+)['"]/g,
+    ]) {
+      for (const m of html.matchAll(pattern)) fetched.push(m[1]!);
+    }
+
+    const external = fetched.filter((u) => /^https?:\/\//.test(u));
+    // The font stylesheet and its preconnects, so an empty list would mean the
+    // scan stopped matching rather than that the page got cleaner.
+    expect(external.length).toBeGreaterThan(0);
+    for (const u of external) {
       expect(u).toMatch(/^https:\/\/fonts\.(googleapis|gstatic)\.com/);
     }
+  });
+
+  // Same reasoning as the wrapped card: a screenshot travels without its page,
+  // so the domain has to be in the payload the canvas paints, not only in the
+  // document's footer.
+  test('the share card payload carries the project site', () => {
+    const html = render();
+    const payload = html.match(/id="card-data"[^>]*>([\s\S]*?)<\/script>/);
+    expect(payload).not.toBeNull();
+    expect(payload![1]).toContain(SITE_HOST);
+  });
+
+  test('the only external links are to the project site', () => {
+    const html = render();
+    const anchors = [...html.matchAll(/<a\b[^>]*\bhref=["'](https?:\/\/[^"']+)["']/g)].map((m) => m[1]);
+    expect(anchors.length).toBeGreaterThan(0);
+    for (const href of anchors) expect(href).toBe(SITE_URL);
   });
 
   test('renders the facet sections', () => {

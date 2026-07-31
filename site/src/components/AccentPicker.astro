@@ -1,0 +1,81 @@
+---
+/**
+ * The report's accent picker, on the website.
+ *
+ * Same four accents, same order, same derivation — each swatch carries only a
+ * hue and a chroma and lets `oklch()` do the rest, exactly as
+ * `palette()` in src/report/html.ts does. Picking one rewrites two custom
+ * properties on the root element and every accent-derived colour on the page
+ * follows.
+ *
+ * It is a real control rather than decoration: the artifact this site is
+ * selling ships this control, so the site ships it too.
+ */
+const ACCENTS = [
+  { name: 'violet', h: 288, c: 0.2 },
+  { name: 'cyan', h: 212, c: 0.14 },
+  { name: 'magenta', h: 348, c: 0.21 },
+  { name: 'mono', h: 265, c: 0.022 },
+] as const;
+---
+
+{/* A plain group of toggle buttons rather than a radiogroup. `role="radio"`
+    comes with a keyboard contract — arrow keys move the selection, one stop in
+    the tab order — and claiming it without implementing it is worse for a
+    keyboard user than not claiming it at all. Four tab stops is honest. */}
+<div
+  data-accent-group
+  role="group"
+  aria-label="Accent colour"
+  class="flex flex-none items-center gap-1.5 rounded-ctl border border-line bg-surface px-2 py-[5px] max-[620px]:hidden"
+>
+  {
+    ACCENTS.map(accent => (
+      <button
+        type="button"
+        aria-pressed={accent.name === 'violet' ? 'true' : 'false'}
+        data-accent-pick={accent.name}
+        title={`${accent.name} accent`}
+        aria-label={`${accent.name} accent`}
+        class="swatch"
+        style={`--sh:${accent.h};--sc:${accent.c}`}
+      />
+    ))
+  }
+</div>
+
+<style>
+  .swatch {
+    width: 11px;
+    height: 11px;
+    flex: none;
+    padding: 0;
+    cursor: pointer;
+    border-radius: 50%;
+    border: 1px solid var(--line);
+    background: oklch(82% var(--sc) var(--sh));
+    transition:
+      box-shadow 0.15s ease-out,
+      scale 0.15s ease-out;
+  }
+  :root[data-theme='light'] .swatch {
+    background: oklch(48% calc(var(--sc) * 0.92) var(--sh));
+  }
+  .swatch:hover {
+    scale: 1.18;
+  }
+  .swatch:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  /* The selected state is driven by the root attribute rather than by a class
+     the picker maintains, so it is correct on first paint even when the boot
+     script restored a stored accent the server never knew about. */
+  :root[data-accent='violet'] .swatch[data-accent-pick='violet'],
+  :root[data-accent='cyan'] .swatch[data-accent-pick='cyan'],
+  :root[data-accent='magenta'] .swatch[data-accent-pick='magenta'],
+  :root[data-accent='mono'] .swatch[data-accent-pick='mono'] {
+    box-shadow: 0 0 0 2px var(--surface), 0 0 0 3.5px var(--accent);
+  }
+</style>

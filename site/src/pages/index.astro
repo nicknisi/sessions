@@ -1,0 +1,441 @@
+---
+/**
+ * ── DIRECTION CONTRACT ────────────────────────────────────────────────────
+ * THESIS: your session history is a thing with a shape, and sessions is three
+ *   operations on that shape. Refuses the dev-tool README page — sticky TOC,
+ *   prose sections, code blocks — which describes a tool instead of showing it.
+ * OWN-WORLD: the product's own artifacts, inherited not invented. Cool near-black
+ *   ground, one OKLCH accent the reader picks from the report's own four,
+ *   Space Grotesk display over JetBrains Mono labels, 16px panels, hairline
+ *   borders, no shadows.
+ * STORY: my agents keep re-deriving decisions I already made → the transcripts
+ *   were on my disk the whole time → three things to do with them → install.
+ * FIRST VIEWPORT: wordmark bar with a live accent picker; display headline at
+ *   clamp(34→64px) over a 68ch lede; the brew command as the one primary action;
+ *   four mono counters on a hairline. The spine starts below the fold, so the
+ *   offer lands before the device does.
+ * FORM: recall-loop spine — candidate 4 of my grounded list, seed 24dd40a8,
+ *   surface scope, persuade mode.
+ * ─────────────────────────────────────────────────────────────────────────
+ */
+import Deck from '../layouts/Deck.astro';
+import SiteHeader from '../components/SiteHeader.astro';
+import SiteFooter from '../components/SiteFooter.astro';
+import Spine from '../components/Spine.astro';
+import SpineNode from '../components/SpineNode.astro';
+import SessionRow from '../components/SessionRow.astro';
+import SectionHead from '../components/SectionHead.astro';
+import Panel from '../components/Panel.astro';
+import InstallBlock from '../components/InstallBlock.astro';
+import RecallFigure from '../components/RecallFigure.astro';
+import ReportSpecimen from '../components/ReportSpecimen.astro';
+import WrappedDeck from '../components/WrappedDeck.astro';
+import SourcesFigure from '../components/SourcesFigure.astro';
+import { readVersion } from '../lib/repo';
+import { mcpGroups } from '../data/mcp';
+import { skillList } from '../data/skills';
+
+const version = readVersion();
+const { groups, total: toolCount } = mcpGroups();
+const skills = skillList();
+
+const NAV = [
+  { href: '#mcp', label: 'MCP' },
+  { href: '#report', label: 'Report', keep: 'optional' as const },
+  { href: '#wrapped', label: 'Wrapped', keep: 'optional' as const },
+  { href: '/reference', label: 'Reference', keep: 'optional' as const },
+  { href: 'https://github.com/nicknisi/sessions', label: 'GitHub', keep: 'always' as const },
+];
+
+const STATS = [
+  { figure: '4', label: 'agent CLIs, one index' },
+  { figure: String(toolCount), label: 'MCP tools, all read-only' },
+  { figure: String(skills.length), label: 'skills that compose them' },
+  { figure: '0', label: 'bytes that leave your machine' },
+];
+
+/** The accumulating past, at the top of the spine. Invented, and said so. */
+const HISTORY = [
+  { date: 'mar 3', project: 'authkit-web', tool: 'claude' as const, prompt: 'Refactor the auth middleware to use JWT' },
+  { date: 'apr 22', project: 'api-server', tool: 'codex' as const, prompt: 'Add rate limiting to the /api/v2 endpoints' },
+  { date: 'jun 8', project: 'sessions', tool: 'pi' as const, prompt: 'Why is the FTS5 index rebuilding every run?' },
+  { date: 'jul 14', project: 'authkit-web', tool: 'opencode' as const, prompt: 'Port the session store to the new schema' },
+];
+
+const REFUSALS = [
+  {
+    title: 'Nothing is uploaded',
+    body: 'Every transcript searched is already on your disk, the index is a local SQLite file, and the report and wrapped are HTML written to your machine and opened from it. There is no account and no server. The one seam that talks to anything is <code>--roast</code>, which hands your computed <em>stats</em> — counts and project names, never transcript text — to an agent CLI you already have installed.',
+  },
+  {
+    title: 'Every MCP tool is read-only',
+    body: 'All eight are annotated read-only and none of them writes. Memory is the only thing that persists a decision, and it changes only when you triage a candidate yourself. A store nobody curates is just a log.',
+  },
+  {
+    title: 'Estimates say they are estimates',
+    body: 'Cost is estimated from LiteLLM pricing, cached daily with an offline snapshot. A model with no published price is billed at its family’s newest rate and flagged; one in no known family counts as $0, loudly. Roast slides are stamped “improvised by &lt;tool&gt;” so a generated line can never read as a counted one.',
+  },
+  {
+    title: 'Auto-injection is off until you ask',
+    body: 'A session-start hook can drop a small primer into every new Claude Code session — three recent sessions for the current repo. It is opt-in, because it costs tokens every single time, and this is your budget rather than a default worth taking on your behalf.',
+  },
+];
+
+const h3 = 'text-[19px] tracking-[-0.02em]';
+const lede = 'text-[15.5px] leading-[1.62] text-ink-2';
+---
+
+<Deck
+  title="sessions — search and memory across your AI coding sessions"
+  description="One full-text index over Claude Code, Codex, Pi, and OpenCode. Fuzzy-find and resume past sessions from the CLI, give agents recall over prior work via MCP, and see where your tokens go. Everything runs locally."
+>
+  <SiteHeader homeHref="#top" links={NAV} version={version} />
+
+  <div id="top" class="mx-auto max-w-[1280px] px-7 pt-14 pb-20 max-[560px]:px-4 max-[560px]:pt-10">
+    <!-- The hero lives inside <main> with everything else: it carries the h1
+         and the primary action, so skipping to the content must not skip it. -->
+    <main id="main">
+      <!-- ══ Hero ═════════════════════════════════════════════════════════ -->
+      <section class="max-w-[74ch]">
+        <p class="rule-label">Local-first recall for AI coding agents</p>
+
+        <h1 class="mt-5 text-[clamp(34px,6.4vw,64px)] leading-[1.02]">
+          Four agent CLIs.<br />One searchable memory.
+        </h1>
+
+        <p class="mt-6 max-w-[66ch] text-[17px] leading-[1.6] text-ink-2">
+          Every AI coding session leaves a transcript behind, and every one of them is effectively
+          write-only. <span class="font-mono text-[15px] text-ink">sessions</span> builds one full-text
+          index over Claude Code, Codex, Pi, and OpenCode — then hands it to your agents over MCP, so
+          the next one starts out knowing what the last one already decided.
+        </p>
+
+        <InstallBlock variant="primary" caret class="mt-9" />
+
+        <p class="meta-label mt-3 normal-case">
+          Standalone binary · no runtime · <code class="font-mono">sessions setup</code> wires up every
+          agent CLI it finds
+        </p>
+
+        <dl
+          class="mt-11 flex flex-wrap gap-x-12 gap-y-5 border-t border-line pt-7 max-[560px]:gap-x-8"
+        >
+          {
+            STATS.map(stat => (
+              <div>
+                <dt class="sr-only">{stat.label}</dt>
+                <dd class="m-0">
+                  <span class="font-mono text-[26px] font-bold tracking-[-0.03em] text-accent tabular">
+                    {stat.figure}
+                  </span>
+                  <span class="meta-label mt-1 block max-w-[18ch] normal-case">{stat.label}</span>
+                </dd>
+              </div>
+            ))
+          }
+        </dl>
+      </section>
+
+      <!-- ══ The spine ════════════════════════════════════════════════════ -->
+      <Spine class="mt-24 max-[820px]:mt-16">
+        <!-- ── The history itself ──────────────────────────────────────── -->
+        <SpineNode kind="mark" gap="none">
+          <h2 class="rule-label">What is already on your disk</h2>
+          <p class:list={[lede, 'mt-3 max-w-[58ch]']}>
+            Four tools, four layouts, one timeline. This is the list <code
+              class="font-mono text-[13.5px] text-ink">sessions</code
+            > pipes into fzf when you run it with no arguments.
+          </p>
+        </SpineNode>
+
+        {
+          HISTORY.map(session => (
+            <SpineNode kind="tick" date={session.date}>
+              <SessionRow {...session} />
+            </SpineNode>
+          ))
+        }
+
+        <SpineNode kind="tick" date="…">
+          <p class="meta-label m-0 normal-case">
+            1,847 more, indexed message by message — sample data, invented for this page
+          </p>
+        </SpineNode>
+
+        <!-- ── MCP ─────────────────────────────────────────────────────── -->
+        <SpineNode kind="mark" date="today" gap="lg" id="mcp">
+          <SectionHead label="MCP" operation="reaches back along the spine" title="Your agent asks the question for you.">
+            <p>
+              The point is not that <em>you</em> can search your history. It is that the agent does
+              it unprompted — before re-deriving a decision, when a why-question is not answered by
+              the code, when you say “didn’t we already fix this”.
+            </p>
+          </SectionHead>
+
+          <div class="mt-8">
+            <RecallFigure />
+          </div>
+
+          <!-- The eight tools -->
+          <div class="mt-14 grid gap-7">
+            <h3 class:list={[h3]}>
+              {toolCount} tools, grouped by what you are trying to do
+            </h3>
+            {
+              groups.map(group => (
+                <section>
+                  <h4 class="rule-label">{group.label}</h4>
+                  <p class="meta-label mt-1.5 mb-3 max-w-[62ch] normal-case">{group.lede}</p>
+                  <ul class="m-0 grid list-none gap-3 p-0 md:grid-cols-2">
+                    {group.tools.map(tool => (
+                      <Panel as="li" pad="tight">
+                        <code class="block font-mono text-[12.5px] font-bold text-accent">{tool.name}</code>
+                        <p class="mt-1.5 mb-0 text-[13.5px] leading-[1.55] text-ink-2">{tool.blurb}</p>
+                      </Panel>
+                    ))}
+                  </ul>
+                </section>
+              ))
+            }
+          </div>
+
+          <!-- The six skills -->
+          <div class="mt-14">
+            <h3 class:list={[h3]}>…and {skills.length} skills that compose them</h3>
+            <p class:list={[lede, 'mt-3 max-w-[62ch]']}>
+              A skill is the workflow, not the tool: <code class="font-mono text-[13.5px] text-ink"
+                >/recall</code
+              > searches by topic, digests the best candidates, and expands only the exchanges that
+              matched. Say any of the phrases below and it fires.
+            </p>
+
+            <ul class="mt-6 grid list-none gap-3 p-0 md:grid-cols-2">
+              {
+                skills.map(skill => (
+                  <Panel as="li" pad="tight">
+                    <div class="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+                      <code class="font-mono text-[12.5px] font-bold text-accent">/{skill.name}</code>
+                      {skill.argumentHint && (
+                        <span class="meta-label truncate text-[9.5px]">{skill.argumentHint}</span>
+                      )}
+                    </div>
+                    <p class="mt-1.5 mb-0 text-[13.5px] leading-[1.55] text-ink-2">{skill.outcome}</p>
+                    <p class="mt-2.5 mb-0 flex flex-wrap gap-1.5">
+                      {skill.phrases.map(phrase => (
+                        <span class="rounded-chip bg-track px-1.5 py-0.5 font-mono text-[10px] text-ink-3">
+                          “{phrase}”
+                        </span>
+                      ))}
+                    </p>
+                  </Panel>
+                ))
+              }
+            </ul>
+          </div>
+
+          <!-- Memory -->
+          <div class="mt-14">
+            <h3 class:list={[h3]}>And the half that outlives any one session</h3>
+            <p class:list={[lede, 'mt-3 max-w-[62ch]']}>
+              Search answers “what happened”. Memory answers “what am I not supposed to have to say
+              again” — build conventions, tooling constraints, the rules you have already stated.
+              Candidates are mined from your own transcripts; nothing becomes memory until you say
+              so.
+            </p>
+
+            <Panel class="mt-6">
+              <ol class="m-0 grid list-none gap-0 p-0 md:grid-cols-[auto_1fr_auto_1fr_auto_1fr] md:items-start md:gap-x-4">
+                {
+                  [
+                    { step: '01', name: 'mine', body: 'Durable facts pulled out of past sessions as candidates.' },
+                    { step: '02', name: 'triage', body: 'Approve, reject, or snooze each one. Paraphrases merge into a single fact.' },
+                    { step: '03', name: 'scope', body: 'Bound to this repo, a project group, or every repo you work in.' },
+                  ].map((stage, i) => (
+                    <>
+                      {i > 0 && (
+                        <li aria-hidden="true" class="my-3 h-px w-full self-center bg-line md:my-0 md:mt-4 md:w-auto md:min-w-6" />
+                      )}
+                      <li>
+                        <span class="meta-label">{stage.step}</span>
+                        <code class="mt-1 block font-mono text-[13px] font-bold text-accent">{stage.name}</code>
+                        <p class="mt-1.5 mb-0 max-w-[34ch] text-[13px] leading-[1.5] text-ink-2">{stage.body}</p>
+                      </li>
+                    </>
+                  ))
+                }
+              </ol>
+            </Panel>
+
+            <p class="meta-label mt-3 normal-case">
+              Approve with <code class="font-mono">--always-on</code> and a fact is returned for every
+              topic, first — so an agent that truncates drops the conditional tail, never the
+              invariants.
+            </p>
+          </div>
+        </SpineNode>
+
+        <!-- ── Report ──────────────────────────────────────────────────── -->
+        <SpineNode kind="mark" date="may 1–31" gap="lg" id="report">
+          <SectionHead label="Report" operation="brackets a span of the spine" title="Where the money actually went.">
+            <p>
+              <code class="font-mono text-[14px] text-ink">sessions report</code> reads the same four
+              transcript sources and writes a self-contained HTML dashboard — cost, tokens, cache
+              savings, and breakdowns by tool, provider, model, project, and subagent. Roughly half
+              of a heavy Task user’s tokens land in subagents; this is the view that says which
+              ones.
+            </p>
+          </SectionHead>
+
+          <div class="mt-8 max-w-[720px]">
+            <ReportSpecimen />
+          </div>
+
+          <div class="mt-8 grid max-w-[840px] gap-3 md:grid-cols-3">
+            {
+              [
+                {
+                  title: 'Every number explains itself',
+                  body: 'In the HTML, each stat, heading, and column says on hover what is counted, what is excluded, and what the cost is an estimate of.',
+                },
+                {
+                  title: 'Bounded periods get a pace',
+                  body: 'Spend per active day, a straight-line projection to the end of the period, and the equally long window immediately before it.',
+                },
+                {
+                  title: 'Incremental by default',
+                  body: 'Parsed transcripts are cached against mtime and size, so a second run re-reads only what changed.',
+                },
+              ].map(item => (
+                <Panel as="section" pad="tight">
+                  <h3 class="text-[14px] tracking-[-0.01em]">{item.title}</h3>
+                  <p class="mt-1.5 mb-0 text-[13px] leading-[1.5] text-ink-2">{item.body}</p>
+                </Panel>
+              ))
+            }
+          </div>
+
+          <div class="mt-6 overflow-x-auto rounded-card border border-line bg-shell px-5 py-4 font-mono text-[12.5px] leading-[1.9] max-[560px]:px-3.5">
+            <div><span class="pr-2.5 text-accent select-none">$</span>sessions report --this-month</div>
+            <div><span class="pr-2.5 text-accent select-none">$</span>sessions report --format text --today</div>
+            <div><span class="pr-2.5 text-accent select-none">$</span>sessions report --days 30 --tool claude</div>
+          </div>
+        </SpineNode>
+
+        <!-- ── Wrapped ─────────────────────────────────────────────────── -->
+        <SpineNode kind="mark" date="the year" gap="lg" id="wrapped">
+          <SectionHead label="Wrapped" operation="collapses the whole spine" title="The year, as a deck you scroll.">
+            <p>
+              <code class="font-mono text-[14px] text-ink">sessions wrapped</code> turns the same
+              index into a scroll-through story: tokens at human scale, the receipt, streaks, a
+              rhythm heatmap, your most significant session — and a set of stats mined from what you
+              and your agents actually said to each other.
+            </p>
+          </SectionHead>
+
+          <div class="mt-8">
+            <WrappedDeck />
+          </div>
+
+          <div class="mt-8 grid max-w-[840px] gap-3 md:grid-cols-3">
+            {
+              [
+                {
+                  title: 'The slides are chosen, not fixed',
+                  body: 'Every candidate stat is scored for how notable it is in your data, and only the top ones render. A daylight coder never sees a 3 AM slide.',
+                },
+                {
+                  title: 'It ends with a reveal',
+                  body: 'A coding personality built from three behavioural axes, with the evidence printed on the card — then a shareable image at 1200×630 or 1080×1920.',
+                },
+                {
+                  title: 'Roast mode is opt-in',
+                  body: 'Hands your stats to an agent CLI you already have and asks it to improvise. Only stats are sent, never transcripts, and it fails open.',
+                },
+              ].map(item => (
+                <Panel as="section" pad="tight">
+                  <h3 class="text-[14px] tracking-[-0.01em]">{item.title}</h3>
+                  <p class="mt-1.5 mb-0 text-[13px] leading-[1.5] text-ink-2">{item.body}</p>
+                </Panel>
+              ))
+            }
+          </div>
+
+          <p class="meta-label mt-5 max-w-[62ch] normal-case">
+            Token and cost math match <code class="font-mono">sessions report</code> exactly. Because AI
+            tools prune old transcripts, the page discloses when its data actually starts if that is
+            later than January 1.
+          </p>
+        </SpineNode>
+
+        <!-- ── How it works ────────────────────────────────────────────── -->
+        <SpineNode kind="mark" gap="lg" id="how">
+          <SectionHead label="How it works" title="Four layouts in, one index, three ways out.">
+            <p>
+              The index is SQLite with FTS5, built on first use and updated incrementally by
+              modification time. Hits are message-granular, so a match localizes to the exact message
+              rather than the session that contained it.
+            </p>
+          </SectionHead>
+
+          <div class="mt-9 max-w-[880px]">
+            <SourcesFigure />
+          </div>
+        </SpineNode>
+
+        <!-- ── What it refuses ─────────────────────────────────────────── -->
+        <SpineNode kind="mark" gap="lg" id="refuses">
+          <SectionHead label="Constraints" title="What it will not do.">
+            <p>
+              These are load-bearing. Recall over your own transcripts is only worth having if the
+              boundaries are boring and checkable.
+            </p>
+          </SectionHead>
+
+          <ul class="mt-8 grid list-none gap-3 p-0 md:grid-cols-2">
+            {
+              REFUSALS.map(refusal => (
+                <Panel as="li">
+                  <h3 class="text-[16px] tracking-[-0.02em]">{refusal.title}</h3>
+                  <p class="mt-2 mb-0 text-[13.5px] leading-[1.58] text-ink-2" set:html={refusal.body} />
+                </Panel>
+              ))
+            }
+          </ul>
+        </SpineNode>
+
+        <!-- ── Install ─────────────────────────────────────────────────── -->
+        <SpineNode kind="now" date="now" gap="lg" id="install">
+          <SectionHead label="Install" title="Two commands, then stop thinking about it.">
+            <p>
+              The Homebrew build is a standalone binary with no runtime. <code
+                class="font-mono text-[14px] text-ink">sessions setup</code
+              > detects the agent CLIs you have, writes the MCP config for each, and registers the
+              skills. Run it again after an upgrade.
+            </p>
+          </SectionHead>
+
+          <InstallBlock variant="primary" class="mt-7" />
+
+          <p class="meta-label mt-4 max-w-[62ch] normal-case">
+            <code class="font-mono">fzf</code> is optional — without it you get a numbered list
+            instead. Removing everything the installer wrote is <code class="font-mono"
+              >sessions uninstall</code
+            >; your triage decisions survive it.
+          </p>
+
+          <p class="mt-6">
+            <a
+              href="/reference"
+              class="inline-flex items-center gap-2 rounded-ctl border border-line bg-surface px-4 py-2.5 font-mono text-[11px] font-bold tracking-[0.1em] text-ink-2 uppercase no-underline transition-colors hover:border-accent hover:text-accent"
+            >
+              Full reference
+              <span aria-hidden="true">→</span>
+            </a>
+          </p>
+        </SpineNode>
+      </Spine>
+    </main>
+
+    <SiteFooter class="mt-20" />
+  </div>
+</Deck>

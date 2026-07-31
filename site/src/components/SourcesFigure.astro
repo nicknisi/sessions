@@ -1,0 +1,110 @@
+---
+/**
+ * Four transcript layouts on your disk, one index, three surfaces.
+ *
+ * Drawn in the site's own grammar rather than imported as a diagram: the boxes
+ * are real panels, the connectors are one inline SVG that inherits the accent,
+ * and the whole thing reflows to a vertical stack below 780px. Nothing here is
+ * an image, so it stays sharp, themeable, and readable to a screen reader.
+ *
+ * The paths are the real ones from `sessions`' session discovery.
+ */
+const SOURCES = [
+  { tool: 'Claude Code', path: '~/.claude/projects/' },
+  { tool: 'Codex', path: '~/.codex/sessions/' },
+  { tool: 'Pi', path: '~/.pi/agent/sessions/' },
+  { tool: 'OpenCode', path: '~/.local/share/opencode/' },
+];
+
+const OUTPUTS = [
+  { name: 'MCP server', detail: '8 read-only tools' },
+  { name: 'sessions report', detail: 'usage dashboard' },
+  { name: 'sessions wrapped', detail: 'the year, as a deck' },
+];
+---
+
+<figure class="flow m-0 grid items-center gap-x-4 gap-y-5">
+  <ul class="col-sources m-0 grid list-none gap-2 p-0">
+    {
+      SOURCES.map(source => (
+        <li class="rounded-ctl border border-line bg-surface px-3.5 py-2.5">
+          <div class="text-[13px] leading-tight">{source.tool}</div>
+          <code class="mt-0.5 block truncate font-mono text-[10.5px] text-ink-3">{source.path}</code>
+        </li>
+      ))
+    }
+  </ul>
+
+  {/* Converge. A viewBox with no fixed aspect lets the fan stretch to whatever
+      height the source list ends up being. */}
+  <svg class="join" viewBox="0 0 40 200" preserveAspectRatio="none" aria-hidden="true">
+    <g fill="none" stroke="var(--line)" stroke-width="1.4" vector-effect="non-scaling-stroke">
+      <path d="M0 26 C 24 26, 16 100, 40 100"></path>
+      <path d="M0 76 C 24 76, 16 100, 40 100"></path>
+      <path d="M0 124 C 24 124, 16 100, 40 100"></path>
+      <path d="M0 174 C 24 174, 16 100, 40 100"></path>
+    </g>
+  </svg>
+
+  <div class="col-index rounded-card border border-accent bg-surface px-4 py-4 text-center">
+    <div class="rule-label">One index</div>
+    <code class="mt-2 block font-mono text-[11px] break-all text-ink-2">~/.cache/sessions/index.db</code>
+    <div class="mt-2 text-[12px] leading-snug text-ink-3">SQLite + FTS5 · message-granular · incremental</div>
+  </div>
+
+  <svg class="join join-out" viewBox="0 0 40 200" preserveAspectRatio="none" aria-hidden="true">
+    <g fill="none" stroke="var(--accent)" stroke-width="1.4" vector-effect="non-scaling-stroke">
+      <path d="M0 100 C 24 100, 16 40, 40 40"></path>
+      <path d="M0 100 H 40"></path>
+      <path d="M0 100 C 24 100, 16 160, 40 160"></path>
+    </g>
+  </svg>
+
+  <ul class="col-outputs m-0 grid list-none gap-2 p-0">
+    {
+      OUTPUTS.map(output => (
+        <li class="rounded-ctl border border-line bg-surface px-3.5 py-2.5">
+          <div class="text-[13px] leading-tight">{output.name}</div>
+          <div class="mt-0.5 font-mono text-[10.5px] text-ink-3">{output.detail}</div>
+        </li>
+      ))
+    }
+  </ul>
+</figure>
+
+<style>
+  .flow {
+    grid-template-columns: minmax(0, 1fr) 40px minmax(0, 0.95fr) 40px minmax(0, 1fr);
+  }
+  .join {
+    width: 40px;
+    height: 100%;
+    min-height: 120px;
+    align-self: stretch;
+  }
+
+  /* Below 780px the fan has no width to fan in. The columns stack and the
+     curves collapse to a single short vertical run, which says the same thing.
+     The SVG's own strokes go rather than being squashed into one another — a
+     four-path fan at 1px wide is just a thicker line pretending to be a
+     diagram. */
+  @media (max-width: 780px) {
+    .flow {
+      grid-template-columns: minmax(0, 1fr);
+      justify-items: stretch;
+    }
+    .join {
+      width: 1px;
+      height: 26px;
+      min-height: 0;
+      justify-self: center;
+      background: var(--line);
+    }
+    .join-out {
+      background: var(--accent);
+    }
+    .join g {
+      display: none;
+    }
+  }
+</style>

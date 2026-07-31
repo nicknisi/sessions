@@ -1,0 +1,138 @@
+---
+import '../styles/sessions.css';
+
+interface Props {
+  title: string;
+  description: string;
+}
+
+const { title, description } = Astro.props;
+const canonical = new URL(Astro.url.pathname, Astro.site);
+
+// The spine mark, in the default accent: three ticks on a rail. Same figure the
+// header draws, and the same one the page is built around.
+const favicon =
+  "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23c08cf5' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='M6 2v20'/%3E%3Cpath d='M6 6h9M6 12h13M6 18h7'/%3E%3C/svg%3E";
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="description" content={description} />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content={canonical} />
+    <meta name="twitter:card" content="summary" />
+    <link rel="canonical" href={canonical} />
+    <link rel="icon" href={favicon} />
+    {
+      /* Preload only the two faces above the fold — the display bold and the
+         mono regular that every label uses. The rest arrive with swap. */
+    }
+    <link rel="preload" href="/fonts/space-grotesk-700.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href="/fonts/jetbrains-mono-400.woff2" as="font" type="font/woff2" crossorigin />
+    <title>{title}</title>
+
+    {
+      /* Resolve theme and accent before first paint so there is no flash.
+         The precedence is the report's own, so a reader who has used both
+         surfaces meets the same rule twice: an explicit choice wins, then the
+         system preference, and dark is what everything falls back to. */
+    }
+    <script is:inline>
+      (function () {
+        var root = document.documentElement;
+        var t = null;
+        try {
+          t = localStorage.getItem('sessions-site-theme');
+        } catch (e) {}
+        if (t !== 'light' && t !== 'dark') {
+          t =
+            window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches
+              ? 'light'
+              : 'dark';
+        }
+        root.dataset.theme = t;
+
+        var a = null;
+        try {
+          a = localStorage.getItem('sessions-site-accent');
+        } catch (e) {}
+        root.dataset.accent =
+          a === 'cyan' || a === 'magenta' || a === 'mono' || a === 'violet' ? a : 'violet';
+      })();
+    </script>
+  </head>
+
+  <body class="min-h-screen bg-bg font-display text-ink">
+    <a
+      href="#main"
+      class="sr-only rounded-ctl border border-line bg-surface px-4 py-2 focus:not-sr-only focus:absolute focus:top-3 focus:left-3 focus:z-50"
+      >Skip to content</a
+    >
+    <slot />
+
+    <script is:inline>
+      // Three delegated behaviours for the whole page, bound once: the theme
+      // toggle, the accent picker, and every copy-to-clipboard button.
+      (function () {
+        var root = document.documentElement;
+
+        // The picker's *visual* selected state is CSS driven off the root
+        // attribute, so it is already correct. aria-pressed is markup the
+        // server rendered before it knew about a stored accent, so sync it.
+        document.querySelectorAll('[data-accent-pick]').forEach(function (el) {
+          el.setAttribute('aria-pressed', String(el.dataset.accentPick === root.dataset.accent));
+        });
+
+        document.addEventListener('click', function (event) {
+          var toggle = event.target.closest('[data-theme-toggle]');
+          if (toggle) {
+            var next = root.dataset.theme === 'dark' ? 'light' : 'dark';
+            root.dataset.theme = next;
+            try {
+              localStorage.setItem('sessions-site-theme', next);
+            } catch (e) {}
+            return;
+          }
+
+          var swatch = event.target.closest('[data-accent-pick]');
+          if (swatch) {
+            var pick = swatch.dataset.accentPick;
+            root.dataset.accent = pick;
+            try {
+              localStorage.setItem('sessions-site-accent', pick);
+            } catch (e) {}
+            var group = swatch.closest('[data-accent-group]');
+            if (group) {
+              group.querySelectorAll('[data-accent-pick]').forEach(function (el) {
+                el.setAttribute('aria-pressed', String(el === swatch));
+              });
+            }
+            return;
+          }
+
+          var copy = event.target.closest('[data-copy]');
+          if (!copy) return;
+          var label = copy.querySelector('[data-copy-label]');
+          if (!label) return;
+          var restore = copy.dataset.copyLabel || label.textContent;
+          copy.dataset.copyLabel = restore;
+          var done = function () {
+            label.textContent = 'copied ✓';
+            clearTimeout(copy._t);
+            copy._t = setTimeout(function () {
+              label.textContent = restore;
+            }, 1400);
+          };
+          if (navigator.clipboard) navigator.clipboard.writeText(copy.dataset.copy).then(done, function () {});
+          else done();
+        });
+      })();
+    </script>
+  </body>
+</html>

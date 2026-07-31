@@ -7,6 +7,7 @@
 import { describe, expect, test } from 'bun:test';
 import { renderWrappedHtml } from './html.ts';
 import type { WrappedData } from './types.ts';
+import { SITE_HOST } from '../site.ts';
 
 const DAILY = Array.from({ length: 40 }, (_, i) => ({
   date: `2026-01-${String((i % 28) + 1).padStart(2, '0')}`,
@@ -386,6 +387,25 @@ describe('wrapped share card', () => {
     expect(painted.length).toBeGreaterThan(n);
     expect(slide.props['--a']).toBe('oklch(70% 0.17 262)');
     expect(swatches[3]!.classNames.has('on')).toBe(true);
+  });
+
+  // The card is the one artifact that travels with none of its context: a
+  // screenshot in a timeline, with no link attached. If the domain is not
+  // painted onto the image, nothing about the image says where it came from.
+  test('prints the project site on the image, in both aspects', () => {
+    const { seg, painted } = runPage(DATA);
+    expect(painted.map((p) => p.text).join(' | ')).toContain(SITE_HOST);
+
+    // The story aspect repaints from scratch at a different scale, so the
+    // domain has to survive the switch rather than only fit the banner.
+    const wide = painted.length;
+    seg[1]!.click();
+    expect(
+      painted
+        .slice(wide)
+        .map((p) => p.text)
+        .join(' | '),
+    ).toContain(SITE_HOST);
   });
 
   test('an empty year has no share slide at all', () => {

@@ -17,7 +17,11 @@
     "format": "oxfmt . '!plugin/**/plugin.json'",
     "format:check": "oxfmt --check . '!plugin/**/plugin.json'",
     "typecheck": "tsc --noEmit",
-    "test": "bun test"
+    "test": "bun test",
+    "site:dev": "cd site && bun run dev",
+    "site:build": "cd site && bun run build",
+    "site:check": "cd site && bun run check",
+    "site:deploy": "cd site && bun run deploy"
   },
   "devDependencies": {
     "@types/bun": "latest",

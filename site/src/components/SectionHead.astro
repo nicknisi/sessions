@@ -1,0 +1,29 @@
+---
+/**
+ * A spine section's opening: the mono accent rule-label the report uses for
+ * every `h2`, an optional operation glyph, then the section's real heading and
+ * lede in the display face.
+ */
+interface Props {
+  /** The mono uppercase label, e.g. "MCP" or "Wrapped". */
+  label: string;
+  /** What this pillar does to the spine — the one-line thesis. */
+  operation?: string;
+  title: string;
+  id?: string;
+  class?: string;
+}
+
+const { label, operation, title, id, class: className = '' } = Astro.props;
+---
+
+<header class:list={['max-w-[62ch]', className]} {...id ? { id } : {}}>
+  <p class="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+    <span class="rule-label">{label}</span>
+    {operation && <span class="meta-label">{operation}</span>}
+  </p>
+  <h2 class="mt-3 text-[clamp(26px,3.4vw,38px)]">{title}</h2>
+  <div class="mt-4 text-[15.5px] leading-[1.62] text-ink-2">
+    <slot />
+  </div>
+</header>

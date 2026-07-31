@@ -1,0 +1,103 @@
+---
+/**
+ * One point on the spine.
+ *
+ * `tick` is a past session — the row `sessions` prints when you browse, laid on
+ * a timeline. `mark` is a pillar's entry point, drawn as a ring so an operation
+ * on the history never looks like a piece of it. `now` is the live end of the
+ * rail.
+ *
+ * The date sits in the gutter on desktop and folds into the content column
+ * below 820px, where there is no gutter to sit in.
+ */
+interface Props {
+  kind?: 'tick' | 'mark' | 'now';
+  /** Gutter label — a date for a session, a period for a mark. */
+  date?: string;
+  /** Extra space above, for separating a pillar from the ticks before it. */
+  gap?: 'none' | 'sm' | 'lg';
+  class?: string;
+  id?: string;
+}
+
+const { kind = 'tick', date, gap = 'sm', class: className = '', id } = Astro.props;
+
+const spacing = gap === 'none' ? '' : gap === 'lg' ? 'mt-20 max-[820px]:mt-14' : 'mt-5';
+---
+
+<div class:list={['node relative', spacing, className]} data-kind={kind} {...id ? { id } : {}}>
+  <span class="dot" aria-hidden="true"></span>
+  {date && <span class="date meta-label">{date}</span>}
+  <div class="body">
+    <slot />
+  </div>
+</div>
+
+<style>
+  .body {
+    padding-left: var(--content);
+  }
+
+  .dot {
+    position: absolute;
+    left: var(--rail);
+    top: 7px;
+    translate: -50% 0;
+    border-radius: 50%;
+  }
+
+  /* A past session: a small solid dot in the rail's own colour, because a
+     session is not an event the product caused. */
+  [data-kind='tick'] .dot {
+    width: 7px;
+    height: 7px;
+    background: var(--ink-3);
+  }
+
+  /* A pillar: a ring in the accent, sitting on the rail rather than in it.
+     Shape carries the difference as well as colour — the accent is
+     user-switchable, so it can never be the only signal. */
+  [data-kind='mark'] .dot {
+    width: 13px;
+    height: 13px;
+    top: 4px;
+    background: var(--bg);
+    border: 2px solid var(--accent);
+    box-shadow: var(--glow);
+  }
+
+  [data-kind='now'] .dot {
+    width: 9px;
+    height: 9px;
+    top: 6px;
+    background: var(--accent);
+    animation: var(--animate-pulse-tick);
+  }
+
+  .date {
+    position: absolute;
+    left: 0;
+    top: 3px;
+    width: calc(var(--rail) - 20px);
+    text-align: right;
+    white-space: nowrap;
+  }
+
+  /* No gutter to write in below 820px: the date becomes a line above the row. */
+  @media (max-width: 820px) {
+    .date {
+      position: static;
+      display: block;
+      width: auto;
+      text-align: left;
+      padding-left: var(--content);
+      margin-bottom: 3px;
+    }
+    .dot {
+      top: 5px;
+    }
+    [data-kind='mark'] .dot {
+      top: 2px;
+    }
+  }
+</style>

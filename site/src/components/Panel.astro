@@ -1,0 +1,22 @@
+---
+/**
+ * The report's `.card`: surface ground, one hairline, 16px radius, no shadow.
+ * Depth comes from the ground stepping lighter, never from elevation.
+ */
+interface Props {
+  as?: 'div' | 'figure' | 'aside' | 'section' | 'li';
+  /** `tight` for dense specimens, `flush` when the child owns its own padding. */
+  pad?: 'default' | 'tight' | 'flush';
+  class?: string;
+  [key: string]: unknown;
+}
+
+const { as: Tag = 'div', pad = 'default', class: className = '', ...rest } = Astro.props as Props;
+
+const padding =
+  pad === 'flush' ? '' : pad === 'tight' ? 'p-4 max-[560px]:p-3.5' : 'px-7 py-6 max-[560px]:px-4 max-[560px]:py-5';
+---
+
+<Tag class:list={['rounded-card border border-line bg-surface', padding, className]} {...rest}>
+  <slot />
+</Tag>

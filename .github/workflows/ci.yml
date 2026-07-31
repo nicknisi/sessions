@@ -56,6 +56,26 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run build
 
+  # The site reads the MCP tool names from src/mcp.ts, the skills from
+  # plugin/skills/, and the help text from src/cli.ts, then throws when the copy
+  # in site/src/data/ stops matching. Both pages state counts in prose, so drift
+  # does not render as broken — it renders as confident and wrong. This job is
+  # the only thing that catches it, which makes it a correctness check on the
+  # repo rather than a build of the marketing page.
+  site:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      # site/ has its own lockfile and its own dependency tree; the root install
+      # does not reach it.
+      - run: bun install --frozen-lockfile
+        working-directory: site
+      - run: bun run build
+        working-directory: site
+
   # release-please drops any commit whose body has a line-initial nested-paren token,
   # then exits 0 — so a release silently goes missing while every check is green. This
   # has cost two releases here, most recently 89f15bd. See the script for the mechanism.

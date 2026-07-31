@@ -44,3 +44,7 @@ report.html
 
 # ideation planning artifacts (kept local)
 docs/ideation/
+
+# site build caches (site/dist and site/node_modules are already covered above)
+site/.astro/
+site/.wrangler/

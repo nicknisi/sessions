@@ -7,5 +7,5 @@
     "builtin": true
   },
   "globals": {},
-  "ignorePatterns": ["dist/**"]
+  "ignorePatterns": ["dist/**", "site/**"]
 }

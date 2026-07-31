@@ -1,0 +1,34 @@
+---
+import Deck from '../layouts/Deck.astro';
+import SiteHeader from '../components/SiteHeader.astro';
+import SiteFooter from '../components/SiteFooter.astro';
+
+const NAV = [
+  { href: '/', label: 'Overview' },
+  { href: '/reference', label: 'Reference', keep: 'optional' as const },
+  { href: 'https://github.com/nicknisi/sessions', label: 'GitHub', keep: 'always' as const },
+];
+
+const link =
+  'inline-flex items-center gap-2 rounded-ctl border border-line bg-surface px-4 py-2.5 font-mono text-[11px] font-bold tracking-[0.1em] uppercase no-underline transition-colors hover:border-accent hover:text-accent';
+---
+
+<Deck title="sessions — not found" description="That page does not exist.">
+  <SiteHeader homeHref="/" links={NAV} />
+
+  <div class="mx-auto flex min-h-[70vh] max-w-[1180px] flex-col justify-center px-7 py-20 max-[560px]:px-4">
+    <main id="main" class="max-w-[52ch]">
+      <p class="rule-label">404</p>
+      <h1 class="mt-4 text-[clamp(30px,5vw,50px)]">No session matched that path.</h1>
+      <p class="mt-5 text-[15.5px] leading-[1.62] text-ink-2">
+        Nothing is indexed here. The two pages that do exist are the overview and the reference.
+      </p>
+      <p class="mt-8 flex flex-wrap gap-3">
+        <a href="/" class:list={[link, 'text-ink-2']}>Overview</a>
+        <a href="/reference" class:list={[link, 'text-ink-2']}>Reference</a>
+      </p>
+    </main>
+
+    <SiteFooter class="mt-20" />
+  </div>
+</Deck>

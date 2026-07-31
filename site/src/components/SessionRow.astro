@@ -1,0 +1,31 @@
+---
+/**
+ * One session, in the shape `sessions` prints when you browse: project, the
+ * tool that ran it, and the first thing you typed.
+ *
+ * The tool is a text badge rather than a colour, deliberately — the accent on
+ * this page is user-switchable, so nothing may encode meaning in colour alone.
+ */
+interface Props {
+  project: string;
+  tool: 'claude' | 'codex' | 'pi' | 'opencode';
+  prompt: string;
+  /** Marked as the session a recall matched. */
+  hit?: boolean;
+  class?: string;
+}
+
+const { project, tool, prompt, hit = false, class: className = '' } = Astro.props;
+---
+
+<div
+  class:list={[
+    'flex items-baseline gap-x-3 gap-y-1 text-[13.5px] max-[560px]:flex-wrap',
+    hit ? 'text-ink' : 'text-ink-2',
+    className,
+  ]}
+>
+  <span class:list={['font-mono text-[12.5px]', hit ? 'text-accent' : 'text-ink-3']}>{project}</span>
+  <span class="rounded-chip border border-line px-1.5 font-mono text-[10px] text-ink-3">{tool}</span>
+  <span class="min-w-0 flex-1 truncate max-[560px]:basis-full">{prompt}</span>
+</div>

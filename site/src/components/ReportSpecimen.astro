@@ -1,0 +1,143 @@
+---
+/**
+ * A slice of `sessions report`, in the report's own grammar: stat tiles over a
+ * weekly bar series, a subagent bar list, and the hour-of-day heat strip.
+ *
+ * Every number here is invented, and the panel says so in view rather than in a
+ * footnote — the product is careful never to let a generated figure pass for a
+ * counted one, and a marketing page is the last place to get loose about it.
+ *
+ * The invented numbers are still internally consistent: the five weekly bars
+ * sum to the headline cost, and the three named subagents sum to the subagent
+ * total. A reader who checks should find it holds.
+ */
+const WEEKS = [
+  { label: 'apr 28', cost: 58.2 },
+  { label: 'may 5', cost: 94.4 },
+  { label: 'may 12', cost: 71.1 },
+  { label: 'may 19', cost: 132.8 },
+  { label: 'may 26', cost: 56.18 },
+];
+const TOTAL = WEEKS.reduce((sum, w) => sum + w.cost, 0); // 412.68
+const PEAK = Math.max(...WEEKS.map(w => w.cost));
+
+const SUBAGENTS = [
+  { name: 'general-purpose', cost: 148.2 },
+  { name: 'code-reviewer', cost: 86.4 },
+  { name: 'Explore', cost: 51.1 },
+];
+const SUB_TOTAL = SUBAGENTS.reduce((sum, a) => sum + a.cost, 0); // 285.70
+const SUB_PEAK = SUBAGENTS[0]!.cost;
+
+/** Relative activity per hour, 0–4, bucketed into the report's five heat steps. */
+const HOURS = [0, 0, 0, 0, 0, 0, 1, 1, 2, 3, 4, 4, 3, 2, 3, 4, 3, 2, 1, 1, 2, 1, 0, 0];
+
+const STATS = [
+  { figure: `$${TOTAL.toFixed(2)}`, label: 'estimated cost' },
+  { figure: '1.24B', label: 'tokens' },
+  { figure: '184', label: 'sessions' },
+  { figure: '11', label: 'day streak' },
+];
+
+const money = (n: number) => `$${n.toFixed(2)}`;
+---
+
+<figure class="m-0 overflow-hidden rounded-card border border-line bg-shell">
+  <div class="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 border-b border-line px-6 py-3.5 max-[560px]:px-4">
+    <span class="brandmark text-accent">sessions</span>
+    <span class="meta-label">may 1 – may 31 · all tools</span>
+  </div>
+
+  <div class="grid gap-6 px-6 py-6 max-[560px]:px-4 max-[560px]:py-5">
+    {/* Stat tiles */}
+    <div class="grid grid-cols-4 gap-4 max-[640px]:grid-cols-2">
+      {
+        STATS.map(stat => (
+          <div>
+            <div class="font-mono text-[clamp(17px,2.4vw,23px)] font-bold tracking-[-0.02em] text-accent tabular">
+              {stat.figure}
+            </div>
+            <div class="meta-label mt-1">{stat.label}</div>
+          </div>
+        ))
+      }
+    </div>
+
+    {/* Weekly cost. The peak bar carries the accent; the rest sit back. */}
+    <div>
+      <h3 class="rule-label mb-3">Cost per week</h3>
+      <div class="flex h-[86px] items-end gap-2">
+        {
+          WEEKS.map(week => {
+            const isPeak = week.cost === PEAK;
+            return (
+              <div class="flex h-full flex-1 flex-col justify-end gap-1.5">
+                <div
+                  class:list={['w-full rounded-[3px]', isPeak ? 'bg-accent' : 'bg-accent-mid']}
+                  style={`height:${Math.round((week.cost / PEAK) * 100)}%`}
+                  title={`${week.label}: ${money(week.cost)} estimated`}
+                />
+                <span class="meta-label text-center text-[9px] tracking-[0.04em]">{week.label}</span>
+              </div>
+            );
+          })
+        }
+      </div>
+    </div>
+
+    {/* Subagents — roughly half a heavy Task user's spend lands here. */}
+    <div>
+      <h3 class="rule-label mb-3 flex flex-wrap items-baseline justify-between gap-2">
+        <span>By subagent</span>
+        <span class="meta-label normal-case">{money(SUB_TOTAL)} of {money(TOTAL)}</span>
+      </h3>
+      <div class="grid gap-2">
+        {
+          SUBAGENTS.map(agent => (
+            <div class="grid grid-cols-[minmax(0,7.5rem)_minmax(0,1fr)_auto] items-center gap-3 max-[560px]:grid-cols-[minmax(0,1fr)_auto]">
+              <span class="truncate font-mono text-[11.5px] text-ink-2">{agent.name}</span>
+              <span class="h-[7px] overflow-hidden rounded-[999px] bg-track max-[560px]:hidden">
+                <span
+                  class="block h-full rounded-[999px] bg-accent-mid"
+                  style={`width:${Math.round((agent.cost / SUB_PEAK) * 100)}%`}
+                />
+              </span>
+              <span class="font-mono text-[11.5px] text-accent tabular">{money(agent.cost)}</span>
+            </div>
+          ))
+        }
+      </div>
+    </div>
+
+    {/* Hour-of-day profile, on the report's five-step heat ramp. */}
+    <div>
+      <h3 class="rule-label mb-3 flex flex-wrap items-baseline justify-between gap-2">
+        <span>Active hours</span>
+        <span class="meta-label normal-case">peak 10:00</span>
+      </h3>
+      <div class="flex gap-[3px]">
+        {
+          HOURS.map((level, hour) => (
+            <span
+              class="h-[22px] flex-1 rounded-[2px]"
+              style={`background:var(--heat-${level})`}
+              title={`${String(hour).padStart(2, '0')}:00`}
+            />
+          ))
+        }
+      </div>
+      <div class="meta-label mt-1.5 flex justify-between text-[9px]">
+        <span>00</span>
+        <span>06</span>
+        <span>12</span>
+        <span>18</span>
+        <span>23</span>
+      </div>
+    </div>
+  </div>
+
+  <figcaption class="border-t border-line px-6 py-3 font-mono text-[10.5px] leading-[1.6] text-ink-3 max-[560px]:px-4">
+    Sample figures, invented for this page. In a real report the cost is estimated from
+    LiteLLM pricing data — the product never claims it is a bill.
+  </figcaption>
+</figure>

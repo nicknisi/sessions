@@ -1,0 +1,49 @@
+---
+/**
+ * The page's one structural device: a vertical rail standing for your session
+ * history, accumulating downward.
+ *
+ * Every pillar is a different operation on this rail — MCP reaches back along
+ * it, the report brackets a span of it, wrapped collapses the whole thing —
+ * so the rail is layout, not decoration, and it runs the full height of the
+ * page rather than per-section.
+ *
+ * Two custom properties own the geometry and everything on the spine reads
+ * them, so the desktop-to-mobile collapse is one media query here rather than
+ * a responsive variant on every child:
+ *   --rail     x position of the hairline
+ *   --content  left padding of the content column
+ */
+interface Props {
+  class?: string;
+}
+const { class: className = '' } = Astro.props;
+---
+
+<div class:list={['spine relative', className]}>
+  <div class="spine-rail pointer-events-none absolute top-0 bottom-0 w-px" aria-hidden="true"></div>
+  <slot />
+</div>
+
+<style>
+  .spine {
+    /* Desktop: a 100px gutter holds the right-aligned date labels, the rail
+       sits at its edge, and content starts 44px past it. */
+    --rail: 100px;
+    --content: 144px;
+  }
+  .spine > .spine-rail {
+    left: var(--rail);
+  }
+
+  /* Below 820px the date gutter cannot hold a label, so the rail moves to the
+     edge and the dates fold into the content column. The rail stays — losing it
+     would cost the page its only structural idea at exactly the width where
+     structure matters most. */
+  @media (max-width: 820px) {
+    .spine {
+      --rail: 9px;
+      --content: 30px;
+    }
+  }
+</style>

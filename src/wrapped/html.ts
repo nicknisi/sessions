@@ -8,6 +8,7 @@
 import type { WrappedData, FunCard, WrappedExtra } from './types.ts';
 import { prettyModel } from './model-name.ts';
 import { equivalenceChoices, pickEquivalence } from '../equivalence.ts';
+import { SITE_HOST, SITE_URL } from '../site.ts';
 
 // Re-exported so existing importers (and tests) keep resolving prettyModel here.
 export { prettyModel } from './model-name.ts';
@@ -334,7 +335,9 @@ function shareCardData(d: WrappedData, accentStart: number): ShareCard {
   const eqSlot = 1;
   if (hasPersona) summary.push(`Apparently I'm ${d.persona!.name}: ${d.persona!.tagline}`);
   if (d.projects[0]) summary.push(`Most of it went to ${d.projects[0].name}.`);
-  summary.push('Generated locally with sessions wrapped.');
+  // Last line of the copied text, so it carries the domain — a pasted summary
+  // is otherwise unattributable.
+  summary.push(`Generated locally with sessions wrapped · ${SITE_HOST}`);
 
   return {
     brand: 'SESSIONS WRAPPED',
@@ -346,8 +349,12 @@ function shareCardData(d: WrappedData, accentStart: number): ShareCard {
     equivalents: eq.options.map((o) => `That’s ${o.phrase}.`),
     eqStart: eq.start,
     strip: stripLevels(d.daily),
+    // The canvas draws footer[0] flush left and footer[1] flush right on one
+    // baseline, so the domain gets the opposite corner from the stats rather
+    // than a second line. This image is the thing that actually travels.
     footer: [
       `${fmtInt(t.activeDays)} active days · ${fmtInt(d.projects.length)} ${plural(d.projects.length, 'project')}`,
+      SITE_HOST,
     ],
     summary,
     eqSlot,
@@ -701,7 +708,7 @@ ${foot('a description of how you worked this year, not who you are · the next s
       .map(([k, v], i) => `<div style="--i:${i}"><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`)
       .join(
         '',
-      )}</dl><p class="foot">sessions wrapped ${d.year} · generated ${esc(d.generatedAt.slice(0, 10))} · locally, with no telemetry</p></div>`,
+      )}</dl><p class="foot">sessions wrapped ${d.year} · generated ${esc(d.generatedAt.slice(0, 10))} · locally, with no telemetry<br /><a href="${SITE_URL}">${SITE_HOST}</a></p></div>`,
   });
 
   const sections = cards
@@ -753,6 +760,11 @@ h2{font-size:clamp(1.5rem,4vw,2.2rem);font-weight:800;letter-spacing:-.01em;line
 .lede em,.sl em{color:var(--muted);font-style:normal;}
 .lede b{color:var(--a);font-weight:800;}
 .foot{font-family:var(--mono);font-size:11px;color:var(--faint);margin:26px 0 0;line-height:1.6;}
+/* The deck had no link styles because it had no links. The credits card now
+   carries one, and a default blue underline on this ground would be the only
+   thing on the page that did not belong to it. */
+.foot a{color:var(--a);text-decoration:none;border-bottom:1px solid color-mix(in oklch,var(--a) 40%,transparent);}
+.foot a:hover{border-bottom-color:currentColor;}
 .brand{font-family:var(--mono);font-weight:700;font-size:14px;color:var(--a);margin:0;}
 .hint{font-family:var(--mono);font-size:12px;color:var(--muted);margin-top:34px;}
 .chev{display:inline-block;margin-left:6px;animation:bob 1.6s ease-in-out infinite;}

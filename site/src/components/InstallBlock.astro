@@ -1,0 +1,49 @@
+---
+interface Props {
+  /** The hero's call to action, or the quieter one further down. */
+  variant?: 'primary' | 'secondary';
+  /** Blinking terminal caret after the last line. Hero only. */
+  caret?: boolean;
+  class?: string;
+}
+
+const { variant = 'secondary', caret = false, class: className = '' } = Astro.props;
+
+// Two commands, one clipboard payload. Pasted together they install the binary
+// and wire the MCP server into every agent CLI already on the machine, which is
+// the whole setup — there is no third step.
+const LINES = ['brew install nicknisi/formulae/sessions', 'sessions setup'];
+const payload = LINES.join('\n');
+
+const button =
+  'flex-none rounded-ctl px-5 font-mono text-[11px] font-bold tracking-[0.1em] uppercase cursor-pointer transition-colors ' +
+  'max-[720px]:min-h-[44px] max-[720px]:w-full ' +
+  (variant === 'primary'
+    ? 'bg-accent text-accent-ink hover:brightness-[1.07]'
+    : 'border border-line bg-surface text-ink-2 hover:border-accent hover:text-accent');
+---
+
+<div class:list={['flex max-w-[620px] items-stretch gap-2.5 max-[720px]:flex-wrap', className]}>
+  <div
+    class="grid min-w-0 flex-1 gap-1.5 overflow-x-auto rounded-card border border-line bg-surface px-5 py-4 font-mono text-[13px] leading-[1.6] max-[560px]:px-4"
+  >
+    {
+      LINES.map((line, i) => (
+        <code class="whitespace-nowrap text-ink">
+          <span class="pr-2.5 text-accent select-none">$</span>
+          {line}
+          {caret && i === LINES.length - 1 && (
+            <span
+              aria-hidden="true"
+              class="ml-1 inline-block h-[14px] w-[7px] animate-blink bg-accent align-middle"
+            />
+          )}
+        </code>
+      ))
+    }
+  </div>
+
+  <button type="button" data-copy={payload} class={button}>
+    <span data-copy-label>copy</span>
+  </button>
+</div>
