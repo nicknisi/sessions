@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.19.1](https://github.com/nicknisi/sessions/compare/v1.19.0...v1.19.1) (2026-07-31)
+
+
+### Bug Fixes
+
+* restore changelog coverage for [#61](https://github.com/nicknisi/sessions/issues/61) and guard against unparseable commit messages ([#62](https://github.com/nicknisi/sessions/issues/62)) ([aaefcd8](https://github.com/nicknisi/sessions/commit/aaefcd8f9b1805e7761f04214f15e4d735e973ed))
+
 ## [1.19.0](https://github.com/nicknisi/sessions/compare/v1.18.0...v1.19.0) (2026-07-30)
 
 
