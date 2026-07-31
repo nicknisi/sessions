@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.21.0](https://github.com/nicknisi/sessions/compare/v1.20.0...v1.21.0) (2026-07-31)
+
+
+### Features
+
+* add a shareable image to wrapped, and retire the War & Peace analogy ([#66](https://github.com/nicknisi/sessions/issues/66)) ([bf4ed96](https://github.com/nicknisi/sessions/commit/bf4ed96ba6c9a28a218b9ad949c9baa25915d44c))
+
 ## [1.20.0](https://github.com/nicknisi/sessions/compare/v1.19.1...v1.20.0) (2026-07-31)
 
 
