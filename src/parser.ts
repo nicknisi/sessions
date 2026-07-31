@@ -90,6 +90,13 @@ export function extractSessionMetadata(lines: string[], tool: Tool): SessionMeta
     } else if (d.type === 'message') {
       const msg = d.message;
       if (typeof msg === 'object' && msg !== null && (msg as Record<string, unknown>).role === 'assistant') count++;
+    } else if (d.type === 'response_item') {
+      // The same envelope gap extractMessages had, in the counting loop. Left unfixed,
+      // every Codex row indexed with message_count 0 even once its messages parsed —
+      // `developer` is excluded here for the same reason it is there: injected framing.
+      const p = d.payload;
+      const role = p?.['type'] === 'message' ? p['role'] : undefined;
+      if (role === 'user' || role === 'assistant') count++;
     }
 
     if (tool === 'claude') {

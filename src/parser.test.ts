@@ -69,6 +69,53 @@ describe('extractSessionMetadata', () => {
     expect(extractSessionMetadata(lines, 'claude').startedAt).toBe('');
   });
 
+  test('counts Codex response_item messages, excluding developer framing', () => {
+    // The counting loop had the same envelope gap extractMessages did, so every Codex
+    // row indexed with message_count 0 even after its messages became extractable.
+    const lines = jsonl(
+      { type: 'session_meta', timestamp: '2026-04-01T09:00:00Z', payload: { cwd: '/repo' } },
+      {
+        type: 'response_item',
+        payload: { type: 'message', role: 'developer', content: [{ type: 'input_text', text: '# AGENTS.md' }] },
+      },
+      {
+        type: 'response_item',
+        payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'go' }] },
+      },
+      {
+        type: 'response_item',
+        payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'done' }] },
+      },
+      { type: 'response_item', payload: { type: 'function_call', name: 'shell', arguments: '{}' } },
+      { type: 'event_msg', payload: { type: 'agent_message', message: 'done' } },
+    );
+    // Two: the user turn and the assistant turn. Not the developer line, not the tool
+    // call, and not the event_msg echo of the assistant text.
+    expect(extractSessionMetadata(lines, 'codex').messageCount).toBe(2);
+  });
+
+  test('Codex message_count agrees with the number of extracted messages', () => {
+    // These are separate loops over the same lines and they drifted apart before. For
+    // Codex they should now report the same figure on the same input.
+    const lines = jsonl(
+      { type: 'session_meta', timestamp: '2026-04-01T09:00:00Z', payload: { cwd: '/repo' } },
+      { type: 'event_msg', payload: { type: 'user_message', message: 'first' } },
+      {
+        type: 'response_item',
+        payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'first' }] },
+      },
+      {
+        type: 'response_item',
+        payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'a' }] },
+      },
+      {
+        type: 'response_item',
+        payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'b' }] },
+      },
+    );
+    expect(extractSessionMetadata(lines, 'codex').messageCount).toBe(extractMessages(lines).length);
+  });
+
   test('extracts Codex cwd and starting branch from session_meta', () => {
     const lines = jsonl(
       {
