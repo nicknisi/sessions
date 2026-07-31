@@ -282,7 +282,10 @@ describe('wrapped share card', () => {
     expect(all).toContain('SESSIONS');
     expect(all).toContain('$4,313');
     expect(all).toContain('54');
-    expect(all).toContain('no telemetry');
+    expect(all).toContain('180 active days');
+    // The image is a poster, not a privacy notice — that claim belongs on the
+    // page, not on something the reader is about to post.
+    expect(all).not.toContain('telemetry');
   });
 
   test('opens at 1200 × 630 and switches to the story aspect', () => {

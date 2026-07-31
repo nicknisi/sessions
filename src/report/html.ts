@@ -1374,7 +1374,7 @@ function cardData(data: UsageReport, dv: Derived, cols: HeatColumn[]): CardData 
       [fmtPct(data.subagents.shareOfCost), 'SPENT BY SUBAGENTS', false],
     ],
     heat: cols.map((c) => c.levels),
-    footer: ['sessions report · computed locally', `${fmtInt(dv.activeDays)} active days · no telemetry`],
+    footer: ['sessions report · computed locally', `${fmtInt(dv.activeDays)} active days`],
     summary: summaryText(data, dv),
     // summaryText puts the token count in its second sentence.
     eqSlot: 2,

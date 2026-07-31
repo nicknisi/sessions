@@ -278,7 +278,8 @@ interface ShareCard {
   equivalents: string[];
   eqStart: number;
   strip: number[][];
-  footer: [string, string];
+  /** Bottom rule: [0] sits left, an optional [1] sits right. */
+  footer: string[];
   /** Sentences, plus where the comparison gets spliced in when copied. It has
    *  to land directly after the sentence carrying the token count — "That's
    *  5.7 years of ..." reads as a non-sequitur anywhere else. */
@@ -333,7 +334,7 @@ function shareCardData(d: WrappedData, accentStart: number): ShareCard {
   const eqSlot = 1;
   if (hasPersona) summary.push(`Apparently I'm ${d.persona!.name}: ${d.persona!.tagline}`);
   if (d.projects[0]) summary.push(`Most of it went to ${d.projects[0].name}.`);
-  summary.push('Generated locally with sessions wrapped. No telemetry.');
+  summary.push('Generated locally with sessions wrapped.');
 
   return {
     brand: 'SESSIONS WRAPPED',
@@ -345,7 +346,9 @@ function shareCardData(d: WrappedData, accentStart: number): ShareCard {
     equivalents: eq.options.map((o) => `That’s ${o.phrase}.`),
     eqStart: eq.start,
     strip: stripLevels(d.daily),
-    footer: [`${fmtInt(t.activeDays)} active days · ${fmtInt(d.projects.length)} projects`, 'no telemetry'],
+    footer: [
+      `${fmtInt(t.activeDays)} active days · ${fmtInt(d.projects.length)} ${plural(d.projects.length, 'project')}`,
+    ],
     summary,
     eqSlot,
     filename: `sessions-wrapped-${d.year}.png`,
@@ -1003,7 +1006,7 @@ if(c.roundRect){c.beginPath();c.roundRect(hx,hy,sb.cs,sb.cs,2*C);c.fill();}else 
 
 ls((2*C)+'px');c.font=mono(700,13*C);c.fillStyle=WCD.ink2;
 c.fillText(WCD.footer[0],x,H-P);
-c.fillText(WCD.footer[1],W-P-c.measureText(WCD.footer[1]).width,H-P);ls('0px');}
+if(WCD.footer[1])c.fillText(WCD.footer[1],W-P-c.measureText(WCD.footer[1]).width,H-P);ls('0px');}
 
 var fl=document.getElementById('wc-flash'),ft=null;
 function flash(m){if(!fl)return;fl.textContent=m;clearTimeout(ft);ft=setTimeout(function(){fl.textContent='';},2400);}
