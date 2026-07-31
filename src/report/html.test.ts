@@ -1,6 +1,6 @@
 import { describe, test, expect } from 'bun:test';
 import { aggregate } from './aggregate.ts';
-import { renderHtml } from './html.ts';
+import { renderHtml, palette } from './html.ts';
 import { toUsageReport } from './schema.ts';
 import { computeFacets } from './facets.ts';
 import type { UsageEvent } from './parsers/types.ts';
@@ -37,9 +37,11 @@ const data = aggregate({
   priorDaily: [],
 });
 
+const render = () => renderHtml(toUsageReport(data, computeFacets(events, 'UTC')));
+
 describe('renderHtml', () => {
-  test('produces a self-contained document with expected anchors', () => {
-    const html = renderHtml(toUsageReport(data, computeFacets(events, 'UTC')));
+  test('produces a document with expected anchors', () => {
+    const html = render();
     expect(html.startsWith('<!DOCTYPE html>')).toBe(true);
     expect(html).toContain('AI Usage Report');
     expect(html).toContain('<svg');
@@ -49,43 +51,70 @@ describe('renderHtml', () => {
     expect(html).toContain('class="period"');
     expect(html).toContain('Jun 1, 2026');
     expect(html).toContain('Jun 6, 2026');
-    // self-contained: no external resource references
-    expect(html).not.toContain('http://');
-    expect(html).not.toContain('https://');
-    // safe DOM: no innerHTML usage in the inline script
+    // safe DOM: no innerHTML usage in the inline scripts
     expect(html).not.toContain('innerHTML');
   });
 
+  // The report is one file with no build step behind it. The two font hosts are
+  // the only exception, and they are a progressive enhancement: with them
+  // unreachable the stack falls back to the system faces. Anything else — an
+  // image, a script, a stylesheet, an analytics beacon — would make the document
+  // depend on a network it promises not to touch.
+  test('references no external resource except the font stylesheet', () => {
+    const html = render();
+    const urls = html.match(/https?:\/\/[^"' )]+/g) ?? [];
+    expect(urls.length).toBeGreaterThan(0);
+    for (const u of urls) {
+      expect(u).toMatch(/^https:\/\/fonts\.(googleapis|gstatic)\.com/);
+    }
+  });
+
   test('renders the facet sections', () => {
-    const html = renderHtml(toUsageReport(data, computeFacets(events, 'UTC')));
+    const html = render();
     expect(html).toContain('cache hit rate');
-    expect(html).toContain('>Subagents</span>');
+    expect(html).toContain('>Subagent share</span>');
     expect(html).toContain('Explore');
-    expect(html).toContain('Most expensive sessions');
+    expect(html).toContain('Biggest sessions');
     expect(html).toContain('feat/thing');
   });
 
+  test('renders the narrative, rate card, and rhythm sections', () => {
+    const html = render();
+    expect(html).toContain('>The short version</span>');
+    expect(html).toContain('days of records');
+    expect(html).toContain('>The rate card</span>');
+    expect(html).toContain('per message');
+    expect(html).toContain('copies of war &amp; peace');
+    expect(html).toContain('>Rhythm</span>');
+    expect(html).toContain('class="heat"');
+  });
+
   test('every stat cell and section heading explains itself on hover', () => {
-    const html = renderHtml(toUsageReport(data, computeFacets(events, 'UTC')));
+    const html = render();
     // No stat cell ships without a definition.
     const cells = html.match(/<div class="cell"[^>]*>/g) ?? [];
     expect(cells.length).toBeGreaterThan(0);
     for (const c of cells) expect(c).toContain('data-tip=');
+    // Nor any rate tile.
+    const rates = html.match(/<div class="rate"[^>]*>/g) ?? [];
+    expect(rates.length).toBeGreaterThan(0);
+    for (const r of rates) expect(r).toContain('data-tip=');
     // Nor any section heading.
     const headings = html.match(/<h2>.*?<\/h2>/g) ?? [];
     expect(headings.length).toBeGreaterThan(0);
     for (const h of headings) expect(h).toContain('data-tip=');
     // Definitions are prose. A double quote inside one would close the attribute
-    // early, so they must arrive escaped.
-    expect(html).not.toMatch(/data-tip="[^"]*"[^\s>]/);
+    // early, so they must arrive escaped: what follows the closing quote can only
+    // be another attribute, the end of the tag, or a self-closing slash.
+    expect(html).not.toMatch(/data-tip="[^"]*"[^\s>/]/);
   });
 
   test('the total-cost figure says what it is an estimate of', () => {
-    const html = renderHtml(toUsageReport(data, computeFacets(events, 'UTC')));
+    const html = render();
     expect(html).toContain('not what you were billed');
   });
 
-  test('omits the subagent section when nothing was dispatched', () => {
+  test('omits the subagent sections when nothing was dispatched', () => {
     const solo = events.slice(0, 1);
     const html = renderHtml(
       toUsageReport(
@@ -100,10 +129,62 @@ describe('renderHtml', () => {
         computeFacets(solo, 'UTC'),
       ),
     );
-    // The section heading, not the word: the session table has a Subagents column
-    // header that renders either way.
-    expect(html).not.toContain('>Subagents</span>');
-    // the cache strip is unconditional — it describes volume, not an event class
+    // The section heading, not the word: the lede and the share card both name
+    // subagents in prose when there are any.
+    expect(html).not.toContain('>Subagent share</span>');
+    expect(html).not.toContain('>Agent types</span>');
+    // the cache card is unconditional — it describes volume, not an event class
     expect(html).toContain('cache hit rate');
+  });
+});
+
+// The accent is picked in the browser, so the colours cannot be baked into the
+// markup: every chart fill is a custom property, and the boot script rewrites
+// them from a table computed here. These two tests pin that contract.
+describe('accent palette', () => {
+  test('the boot script ships a palette for every accent and both themes', () => {
+    const html = render();
+    for (const name of ['violet', 'cyan', 'magenta', 'mono']) {
+      expect(html).toContain(`"${name}":{"dark":`);
+    }
+    expect(html).toContain('window.setAccentVars');
+    // Applied before first paint, from the <head> script.
+    expect(html.indexOf('window.setAccentVars(a,t)')).toBeLessThan(html.indexOf('<body>'));
+  });
+
+  test('chart fills are custom properties, never literal colours', () => {
+    const html = render();
+    const fills = html.match(/(?:fill|stroke)="(?!none|currentColor)[^"]+"/g) ?? [];
+    expect(fills.length).toBeGreaterThan(0);
+    for (const f of fills) expect(f).toMatch(/var\(--/);
+  });
+
+  test('the mix and heat ramps stay on one hue', () => {
+    // Rotating hues around the wheel would reintroduce the colours the accent was
+    // chosen to avoid, so both ramps vary lightness and hold hue. Each anchor may
+    // drift at most 18° from its accent. Entries below the chroma floor are the
+    // neutral ends of the ramps, where a hue angle carries no colour at all.
+    const CHROMA_FLOOR = 0.02;
+    const parse = (c: string): { chroma: number; hue: number } | null => {
+      const m = /^oklch\([\d.]+% ([\d.]+) (\d+)\)$/.exec(c);
+      return m ? { chroma: Number(m[1]), hue: Number(m[2]) } : null;
+    };
+    for (const [name, base] of [
+      ['violet', 288],
+      ['cyan', 212],
+      ['magenta', 348],
+      ['mono', 265],
+    ] as const) {
+      for (const light of [true, false]) {
+        const p = palette(name, light);
+        for (const c of [...p.mix, ...p.heat]) {
+          const parsed = parse(c);
+          expect(parsed).not.toBeNull();
+          if (parsed!.chroma < CHROMA_FLOOR) continue;
+          const raw = Math.abs(parsed!.hue - base);
+          expect(Math.min(raw, 360 - raw)).toBeLessThanOrEqual(18);
+        }
+      }
+    }
   });
 });
