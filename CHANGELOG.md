@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.20.0](https://github.com/nicknisi/sessions/compare/v1.19.1...v1.20.0) (2026-07-31)
+
+
+### Features
+
+* **report:** redesign the HTML usage report as a card deck ([#64](https://github.com/nicknisi/sessions/issues/64)) ([d2b7fa4](https://github.com/nicknisi/sessions/commit/d2b7fa49a64500f9b2c85e11f32ee9a30d56b769))
+
 ## [1.19.1](https://github.com/nicknisi/sessions/compare/v1.19.0...v1.19.1) (2026-07-31)
 
 
