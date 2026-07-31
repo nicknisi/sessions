@@ -12,6 +12,7 @@ import type {
   PricingWarning,
   DailyEntry,
 } from './schema.ts';
+import { equivalenceChoices, pickEquivalence } from '../equivalence.ts';
 
 const esc = (s: string): string =>
   s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -267,7 +268,7 @@ const GLOSSARY = {
   msgsPerDay: 'Assistant responses divided by the days with at least one message.',
   tokensPerDay: 'Billable tokens divided by the days with at least one message.',
   volume:
-    'A rough equivalence, not a precise count: roughly 0.75 words per token against the 587,287 words of War and Peace. An illustration of volume.',
+    'A rough equivalence, not a precise count: roughly 0.75 words per token against published word counts, or about 9 tokens per line for source trees. The unit is chosen from a pool of comparisons that land near your own magnitude, seeded on this period so it stays the same every time you open the report.',
   rhythm:
     'One square per day, darker for a more expensive day. The five levels are $0, under $10, under $50, under $150, and $150 or more.',
   dailyCost:
@@ -591,6 +592,9 @@ document.addEventListener('keydown',function(e){if(e.key==='Escape')dd.removeAtt
 
 var CARD=null;try{CARD=JSON.parse(document.getElementById('card-data').textContent);}catch(e){}
 var cv=document.getElementById('cardcanvas');
+// Which comparison is showing. Seeded server-side so the card is identical on
+// every repaint; the reroll button is the only thing that moves it.
+var eqIdx=CARD&&CARD.eqStart||0;
 function drawCard(){
 if(!cv||!CARD)return;
 var S=2,W=1200,H=630;cv.width=W*S;cv.height=H*S;
@@ -613,8 +617,13 @@ c.font=disp(700,132);c.fillStyle=p.hero;c.fillText(CARD.whole,dx,262);
 var fx=dx+c.measureText(CARD.whole).width+4;
 c.font=disp(700,46);c.fillStyle=p.cardInk2;c.fillText(CARD.frac,fx,262);
 c.font=mono(19);c.fillStyle=p.cardInk2;c.fillText(CARD.rate,X,306);
-c.font=disp(500,31);c.fillStyle=p.cardInk;
-for(var v=0;v<CARD.verdict.length;v++){c.fillText(CARD.verdict[v],X,386+v*38);}
+c.font=disp(500,31);c.fillStyle=p.cardInk;c.fillText(CARD.verdict,X,386);
+// The comparison line is user-swappable and its length is unbounded, so it
+// shrinks to the column instead of running off the card.
+var eq=CARD.equivalents[eqIdx];
+if(eq){var sz=29,maxW=W-2*X;c.font=disp(500,sz);
+while(sz>17&&c.measureText(eq).width>maxW){sz-=1;c.font=disp(500,sz);}
+c.fillStyle=p.cardInk2;c.fillText(eq,X,424);}
 for(var i=0;i<CARD.stats.length;i++){var sx=X+i*272;
 c.font=disp(700,38);c.fillStyle=CARD.stats[i][2]?p.accent:p.cardInk;c.fillText(CARD.stats[i][0],sx,492);
 ls('2.5px');c.font=mono(13);c.fillStyle=p.cardInk2;c.fillText(CARD.stats[i][1],sx,518);ls('0px');}
@@ -632,7 +641,14 @@ var flashEl=document.getElementById('flash'),flashTimer=null;
 function flash(msg){if(!flashEl)return;flashEl.textContent=msg;clearTimeout(flashTimer);
 flashTimer=setTimeout(function(){flashEl.textContent='';},2400);}
 var BLOCKED='Clipboard blocked here \\u2014 use Download PNG.';
-var dl=document.getElementById('card-png'),cp=document.getElementById('card-img'),tx=document.getElementById('card-txt');
+// The copied text carries whichever comparison is on screen, spliced in ahead
+// of the sign-off sentence so the two never disagree.
+function summaryNow(){var parts=CARD.summary.slice();
+if(CARD.equivalents.length)parts.splice(CARD.eqSlot,0,CARD.equivalents[eqIdx]);
+return parts.join(' ');}
+var dl=document.getElementById('card-png'),cp=document.getElementById('card-img'),tx=document.getElementById('card-txt'),eqb=document.getElementById('card-eq');
+if(eqb)eqb.addEventListener('click',function(){
+eqIdx=(eqIdx+1)%CARD.equivalents.length;drawCard();flash('Swapped the comparison.');});
 if(dl)dl.addEventListener('click',function(){var a=document.createElement('a');a.download=CARD.filename;
 a.href=cv.toDataURL('image/png');a.click();flash('PNG saved to your downloads.');});
 if(cp)cp.addEventListener('click',function(){
@@ -641,7 +657,7 @@ cv.toBlob(function(b){navigator.clipboard.write([new ClipboardItem({'image/png':
 .then(function(){flash('Card copied \\u2014 paste it anywhere.');}).catch(function(){flash(BLOCKED);});},'image/png');});
 if(tx)tx.addEventListener('click',function(){
 if(!navigator.clipboard){flash(BLOCKED);return;}
-navigator.clipboard.writeText(CARD.summary).then(function(){flash('Summary copied as text.');}).catch(function(){flash(BLOCKED);});});
+navigator.clipboard.writeText(summaryNow()).then(function(){flash('Summary copied as text.');}).catch(function(){flash(BLOCKED);});});
 
 drawCard();
 if(document.fonts&&document.fonts.ready)document.fonts.ready.then(drawCard);
@@ -1020,12 +1036,14 @@ ${callouts.length > 0 ? `<div class="callouts">${callouts.map((c) => `<div>${c}<
 </div>`;
 }
 
-// A rough equivalence, and labelled as one: ~0.75 words per token against the
-// word count of War and Peace. The point is the order of magnitude.
-const WAR_AND_PEACE_WORDS = 587_287;
-const WORDS_PER_TOKEN = 0.75;
-
-const booksRead = (tokens: number): number => Math.round((tokens * WORDS_PER_TOKEN) / WAR_AND_PEACE_WORDS);
+/** The volume tile picks its own unit — see `src/equivalence.ts`. Seeded on the
+ *  period so a given report always shows the same one, and on a slot name so it
+ *  never duplicates the share card's pick. A total too small for any unit drops
+ *  the tile rather than printing "0 copies" of something. */
+function volumeTile(data: UsageReport, seed: string): string {
+  const eq = pickEquivalence(data.summary.totalTokens, seed);
+  return eq ? rate(eq.value, eq.label, `${eq.phrase}. ${GLOSSARY.volume}`) : '';
+}
 
 function rateCardSection(data: UsageReport, dv: Derived): string {
   const s = data.summary;
@@ -1037,7 +1055,7 @@ ${rate(fmtUSD(safeDiv(dv.total, dv.distinctSessions)), 'per session', `${GLOSSAR
 ${rate(fmtUSD(safeDiv(dv.total, dv.activeDays)), 'per active day', `${GLOSSARY.perActiveDay} ${fmtInt(dv.activeDays)} of them.`)}
 ${rate(fmtInt(Math.round(safeDiv(s.messages, dv.activeDays))), 'msgs / active day', `${GLOSSARY.msgsPerDay} ${fmtInt(s.messages)} across ${fmtInt(dv.activeDays)} days.`)}
 ${rate(fmtTokens(Math.round(safeDiv(s.totalTokens, dv.activeDays))), 'tokens / active day', `${GLOSSARY.tokensPerDay} ${fmtTokens(s.totalTokens)} across ${fmtInt(dv.activeDays)} days.`)}
-${rate(fmtInt(booksRead(s.totalTokens)), 'copies of war & peace', GLOSSARY.volume)}
+${volumeTile(data, `${data.period.from}|${data.period.to}|ratecard`)}
 </div>
 </div>`;
 }
@@ -1293,17 +1311,27 @@ interface CardData {
   whole: string;
   frac: string;
   rate: string;
-  verdict: string[];
+  /** The fixed half of the verdict — always one line. */
+  verdict: string;
+  /** Every equivalence that fits this volume, already worded. The reroll button
+   *  walks the array; `eqStart` is where the seed landed. Empty on a total too
+   *  small for any comparison, and the card simply omits the line. */
+  equivalents: string[];
+  eqStart: number;
   /** [value, label, draw in the accent] */
   stats: [string, string, boolean][];
   /** One entry per heatmap column: seven levels, -1 outside the period. */
   heat: number[][];
   footer: string[];
-  summary: string;
+  /** Sentences, plus where the equivalence gets spliced in when copied. It has
+   *  to follow the sentence carrying the token count — "That's 5.7 years of ..."
+   *  is a non-sequitur anywhere else. */
+  summary: string[];
+  eqSlot: number;
   filename: string;
 }
 
-function summaryText(data: UsageReport, dv: Derived): string {
+function summaryText(data: UsageReport, dv: Derived): string[] {
   const s = data.summary;
   const parts = [
     `${fmtInt(dv.recordDays)} days of AI pairing, at API list prices: ${fmtUSD(dv.total)} — about ${fmtUSD0(dv.perMonth)} a month, or ${(safeDiv(dv.total, s.messages) * 100).toFixed(1)} cents per assistant message.`,
@@ -1318,13 +1346,16 @@ function summaryText(data: UsageReport, dv: Derived): string {
   }
   if (tail.length > 0) parts.push(tail.join(', ') + '.');
   parts.push('Computed locally with sessions report.');
-  return parts.join(' ');
+  return parts;
 }
 
 function cardData(data: UsageReport, dv: Derived, cols: HeatColumn[]): CardData {
   const s = data.summary;
   const money = fmtUSD(dv.total);
   const dot = money.lastIndexOf('.');
+  // A different slot name than the rate card's, so the two never land on the
+  // same comparison and the page repeats itself.
+  const eq = equivalenceChoices(s.totalTokens, `${data.period.from}|${data.period.to}|sharecard`);
   return {
     brand: 'SESSIONS',
     period: `${shortDate(dv.recordFrom).toUpperCase()} → ${formatDate(data.period.to).toUpperCase()}`,
@@ -1333,10 +1364,9 @@ function cardData(data: UsageReport, dv: Derived, cols: HeatColumn[]): CardData 
     whole: money.slice(1, dot),
     frac: money.slice(dot),
     rate: `≈ ${fmtUSD0(dv.perMonth)} a month  ·  $${safeDiv(dv.total, s.messages).toFixed(3)} per assistant message`,
-    verdict: [
-      `${fmtTokens(s.totalTokens)} tokens — about ${fmtInt(booksRead(s.totalTokens))} copies of War & Peace,`,
-      `written and re-read in ${fmtInt(dv.recordDays)} days.`,
-    ],
+    verdict: `${fmtTokens(s.totalTokens)} tokens, written and re-read in ${fmtInt(dv.recordDays)} days.`,
+    equivalents: eq.options.map((o) => `That’s ${o.phrase}.`),
+    eqStart: eq.start,
     stats: [
       [fmtInt(Math.round(safeDiv(s.messages, dv.activeDays))), 'MSGS / ACTIVE DAY', false],
       [fmtInt(s.longestStreakDays), 'DAY STREAK', false],
@@ -1346,6 +1376,8 @@ function cardData(data: UsageReport, dv: Derived, cols: HeatColumn[]): CardData 
     heat: cols.map((c) => c.levels),
     footer: ['sessions report · computed locally', `${fmtInt(dv.activeDays)} active days · no telemetry`],
     summary: summaryText(data, dv),
+    // summaryText puts the token count in its second sentence.
+    eqSlot: 2,
     filename: `ai-usage-${data.period.to}.png`,
   };
 }
@@ -1358,6 +1390,7 @@ ${h2('Shareable card', GLOSSARY.shareCard, '1200 × 630 · follows your theme an
 <button type="button" id="card-png" class="primary">Download PNG</button>
 <button type="button" id="card-img">Copy image</button>
 <button type="button" id="card-txt">Copy summary text</button>
+${card.equivalents.length > 1 ? `<button type="button" id="card-eq">↻ Another comparison</button>` : ''}
 <span id="flash" role="status" aria-live="polite"></span>
 </div>
 <script type="application/json" id="card-data">${jsonForScript(card)}</script>

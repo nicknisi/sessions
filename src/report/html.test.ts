@@ -84,9 +84,32 @@ describe('renderHtml', () => {
     expect(html).toContain('days of records');
     expect(html).toContain('>The rate card</span>');
     expect(html).toContain('per message');
-    expect(html).toContain('copies of war &amp; peace');
     expect(html).toContain('>Rhythm</span>');
     expect(html).toContain('class="heat"');
+  });
+
+  // The volume tile compares the token total to something human. These events
+  // total ~3k tokens, which is smaller than every unit in the pool, so the tile
+  // drops instead of claiming "0 copies" of anything.
+  test('omits the volume comparison when the total is too small to compare', () => {
+    expect(render()).not.toContain('roughly 0.75 words per token');
+  });
+
+  test('renders a volume comparison once there is real volume', () => {
+    const big = events.map((e) => ({
+      ...e,
+      tokens: { input: 40_000_000, output: 20_000_000, cacheRead: 0, cacheWrite: 0 },
+    }));
+    const html = renderHtml(
+      toUsageReport(
+        aggregate({ events: big, prs: [], now: '2026-06-06T00:00:00Z', tz: 'UTC', exclude: new Set(), priorDaily: [] }),
+        computeFacets(big, 'UTC'),
+      ),
+    );
+    expect(html).toContain('roughly 0.75 words per token');
+    // Whichever unit the seed lands on, the card offers the rest for rerolling.
+    expect(html).toContain('"equivalents"');
+    expect(html).toContain('Another comparison');
   });
 
   test('every stat cell and section heading explains itself on hover', () => {

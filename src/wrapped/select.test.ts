@@ -1,6 +1,6 @@
 import { describe, test, expect } from 'bun:test';
 import { buildCandidates, selectFunCards, selectPersona, selectWordOfYear } from './select.ts';
-import { tokenEquivalence, costEquivalence, heroClass, prettyModel } from './html.ts';
+import { costEquivalence, heroClass, prettyModel } from './html.ts';
 import { cleanTitle, commandFamily, mineWords } from './content.ts';
 import type { WrappedContentStats, WrappedRhythm } from './types.ts';
 import type { WrappedEventStats } from './compute.ts';
@@ -198,13 +198,6 @@ describe('selectPersona', () => {
 });
 
 describe('display helpers', () => {
-  test('tokenEquivalence picks a human scale', () => {
-    expect(tokenEquivalence(500)).toBeNull();
-    expect(tokenEquivalence(2_000_000)).toContain('War and Peace');
-    expect(tokenEquivalence(700_000_000)).toContain('Harry Potter');
-    expect(tokenEquivalence(20_000_000_000)).toContain('Wikipedia');
-  });
-
   test('costEquivalence scales the bill to street prices', () => {
     expect(costEquivalence(5)).toBeNull();
     expect(costEquivalence(60)).toContain('oat-milk lattes');

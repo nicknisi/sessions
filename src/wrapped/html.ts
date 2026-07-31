@@ -7,12 +7,17 @@
 
 import type { WrappedData, FunCard, WrappedExtra } from './types.ts';
 import { prettyModel } from './model-name.ts';
+import { equivalenceChoices, pickEquivalence } from '../equivalence.ts';
 
 // Re-exported so existing importers (and tests) keep resolving prettyModel here.
 export { prettyModel } from './model-name.ts';
 
 const esc = (s: string): string =>
   s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+/** JSON destined for a <script> block: `<` is the only character that can close
+ *  the block early, so it is the only one that has to go. */
+const jsonForScript = (v: unknown): string => JSON.stringify(v).replace(/</g, '\\u003c');
 
 const fmtInt = (n: number): string => n.toLocaleString('en-US');
 /** "1 day" / "2 days" — never "1 days". */
@@ -72,23 +77,13 @@ const ACCENTS = [
   { name: 'red', c: 'oklch(68% 0.21 25)' },
 ] as const;
 
-/** Reframe the raw token count as something human — the "minutes listened" move. */
-export function tokenEquivalence(tokens: number): string | null {
-  // Recognizable units beat precise ones, and big multipliers are the point —
-  // "469 Harry Potter series" lands harder than "11 Britannicas".
-  const scales: { unit: number; many: string }[] = [
-    { unit: 6_000_000_000, many: 'copies of the English Wikipedia' },
-    { unit: 1_400_000, many: 'read-throughs of the Harry Potter series' },
-    { unit: 780_000, many: 'copies of War and Peace' },
-  ];
-  for (const s of scales) {
-    const x = tokens / s.unit;
-    if (x >= 1.5) {
-      const n = x >= 10 ? fmtInt(Math.round(x)) : x.toFixed(1);
-      return `that’s ${n} ${s.many}`;
-    }
-  }
-  return tokens >= 400_000 ? 'that’s most of War and Peace' : null;
+/** Reframe the raw token count as something human — the "minutes listened"
+ *  move. The pool and the seeding live in `src/equivalence.ts`, shared with the
+ *  report so the two products never compare the same number to different
+ *  things on the same day. */
+function tokenEquivalence(tokens: number, seed: string): string | null {
+  const eq = pickEquivalence(tokens, seed);
+  return eq ? `that’s ${eq.phrase}` : null;
 }
 
 /** The receipt's version of tokenEquivalence — the bill, in things. */
@@ -229,6 +224,183 @@ function extraCard(x: WrappedExtra, i: number): Card {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Share card
+//
+// The deck is a dozen-plus slides and the count changes per user — no cost card
+// on a local-model year, no loop card on a quiet one. A share surface that
+// varied the same way would be a screenshot lottery, so there is exactly one
+// image, and it carries the payoff the deck has been building toward: the
+// persona, the four numbers behind it, and the year as a strip.
+//
+// Everything is drawn on canvas in the reader's browser, same as the report's
+// card, because the CLI is a compiled binary with no rasterizer. The layout is
+// a block list rather than the report's hand-placed coordinates: two aspects
+// and a user-swappable comparison line mean nothing can be pinned to a fixed y.
+// ---------------------------------------------------------------------------
+
+/** Five levels, matching the deck's calendar: 0 is a silent day, 4 is a peak. */
+function stripLevels(daily: { date: string; tokens: number }[]): number[][] {
+  if (daily.length === 0) return [];
+  const byDate = new Map(daily.map((x) => [x.date, x.tokens]));
+  const max = Math.max(...daily.map((x) => x.tokens), 1);
+  const last = daily[daily.length - 1]!.date;
+  const cur = new Date(`${daily[0]!.date}T00:00:00Z`);
+  cur.setUTCDate(cur.getUTCDate() - cur.getUTCDay());
+  const cols: number[][] = [];
+  let col: number[] = [];
+  while (cur.toISOString().slice(0, 10) <= last) {
+    const v = byDate.get(cur.toISOString().slice(0, 10)) ?? 0;
+    col.push(v === 0 ? 0 : Math.min(4, 1 + Math.floor(Math.sqrt(v / max) * 3.99)));
+    if (col.length === 7) {
+      cols.push(col);
+      col = [];
+    }
+    cur.setUTCDate(cur.getUTCDate() + 1);
+  }
+  // A partial final week still belongs on the strip; pad it out of range so the
+  // painter skips the empty cells rather than drawing phantom silent days.
+  if (col.length > 0) {
+    while (col.length < 7) col.push(-1);
+    cols.push(col);
+  }
+  return cols;
+}
+
+interface ShareCard {
+  brand: string;
+  year: string;
+  kicker: string;
+  hero: string;
+  lede: string;
+  /** [value, label] — four at most, drawn as a 2×2. */
+  stats: [string, string][];
+  equivalents: string[];
+  eqStart: number;
+  strip: number[][];
+  footer: [string, string];
+  /** Sentences, plus where the comparison gets spliced in when copied. It has
+   *  to land directly after the sentence carrying the token count — "That's
+   *  5.7 years of ..." reads as a non-sequitur anywhere else. */
+  summary: string[];
+  eqSlot: number;
+  filename: string;
+  /** Resolved colours — canvas cannot read CSS custom properties. */
+  bg: string;
+  ink: string;
+  ink2: string;
+  /** Every accent the picker offers, each with its derived gradient stops and
+   *  heat ramp. Canvas has no `color-mix()`, so all of it ships resolved rather
+   *  than having the page do string surgery on colours at paint time. */
+  palettes: { name: string; c: string; glow: string; glow0: string; edge: string; heat: string[] }[];
+  /** Where the deck's accent rotation put this slide. Only the picker's opening
+   *  position — the rotation is arbitrary, so it must not be the final word. */
+  accentStart: number;
+}
+
+function shareCardData(d: WrappedData, accentStart: number): ShareCard {
+  const t = d.totals;
+  const eq = equivalenceChoices(t.tokens, `${d.year}|sharecard`);
+
+  // The persona is the deck's climax and the thing worth posting. Without one
+  // (a year too thin to split three ways) the biggest honest number leads.
+  const hasPersona = d.persona !== null;
+  const kicker = hasPersona ? `${d.year} — this year you were` : `your ${d.year} in review`;
+  const hero = hasPersona ? d.persona!.name : t.tokens > 0 ? fmtTokens(t.tokens) : fmtInt(t.sessions);
+  const lede = hasPersona
+    ? d.persona!.tagline
+    : t.tokens > 0
+      ? 'tokens exchanged with your agents'
+      : 'conversations with your agents';
+
+  // Four stats, chosen so none of them can render as a meaningless zero. Cost
+  // drops out on local-model years; messages take the slot instead.
+  const stats: [string, string][] = [[fmtInt(t.sessions), 'SESSIONS']];
+  if (t.tokens > 0) stats.push([fmtTokens(t.tokens), 'TOKENS']);
+  if (t.costUSD > 0) stats.push([fmtUSD(t.costUSD), 'AT LIST PRICES']);
+  else stats.push([fmtInt(t.messages), 'REPLIES']);
+  stats.push([
+    t.longestStreak ? `${t.longestStreak.days}` : `${t.activeDays}`,
+    t.longestStreak ? 'DAY STREAK' : 'ACTIVE DAYS',
+  ]);
+
+  const summary: string[] = [
+    `My ${d.year} in AI coding: ${fmtInt(t.sessions)} sessions across ${fmtInt(t.activeDays)} active days${
+      t.tokens > 0 ? `, ${fmtTokens(t.tokens)} tokens` : ''
+    }${t.costUSD > 0 ? `, ${fmtUSD(t.costUSD)} at API list prices` : ''}.`,
+  ];
+  // The comparison belongs immediately after the totals sentence it explains.
+  const eqSlot = 1;
+  if (hasPersona) summary.push(`Apparently I'm ${d.persona!.name}: ${d.persona!.tagline}`);
+  if (d.projects[0]) summary.push(`Most of it went to ${d.projects[0].name}.`);
+  summary.push('Generated locally with sessions wrapped. No telemetry.');
+
+  return {
+    brand: 'SESSIONS WRAPPED',
+    year: String(d.year),
+    kicker,
+    hero,
+    lede,
+    stats: stats.slice(0, 4),
+    equivalents: eq.options.map((o) => `That’s ${o.phrase}.`),
+    eqStart: eq.start,
+    strip: stripLevels(d.daily),
+    footer: [`${fmtInt(t.activeDays)} active days · ${fmtInt(d.projects.length)} projects`, 'no telemetry'],
+    summary,
+    eqSlot,
+    filename: `sessions-wrapped-${d.year}.png`,
+    bg: 'oklch(13% 0.01 280)',
+    ink: 'oklch(97% 0 0)',
+    ink2: 'oklch(72% 0 0)',
+    accentStart,
+    palettes: ACCENTS.map((a) => ({
+      name: a.name,
+      c: a.c,
+      glow: a.c.replace(')', ' / 0.22)'),
+      glow0: a.c.replace(')', ' / 0)'),
+      // The decoration layer: outlined numerals, corner marks, sparkles. Faint
+      // enough to sit behind the payoff without ever competing with it.
+      edge: a.c.replace(')', ' / 0.16)'),
+      heat: [
+        'oklch(24% 0.01 280)',
+        a.c.replace(')', ' / 0.32)'),
+        a.c.replace(')', ' / 0.55)'),
+        a.c.replace(')', ' / 0.78)'),
+        a.c,
+      ],
+    })),
+  };
+}
+
+function shareCardSlide(card: ShareCard): Card {
+  return {
+    id: 'share',
+    cls: 'sharecard',
+    body: `<div class="panel center">${kicker('take it with you')}<h2>One image, for wherever you post things.</h2>
+<canvas id="wcard" role="img" aria-label="Your wrapped, as a shareable image"></canvas>
+<div class="actions">
+<button type="button" id="wc-png" class="primary">Download PNG</button>
+<button type="button" id="wc-img">Copy image</button>
+<button type="button" id="wc-txt">Copy caption</button>
+${card.equivalents.length > 1 ? `<button type="button" id="wc-eq">↻ Another comparison</button>` : ''}
+<span class="seg" role="group" aria-label="Image shape">
+<button type="button" class="on" data-aspect="wide">1200 × 630</button>
+<button type="button" data-aspect="story">1080 × 1920</button>
+</span>
+</div>
+<div class="actions">
+<span class="swatches" role="group" aria-label="Card colour">${card.palettes
+      .map(
+        (p, i) =>
+          `<button type="button" class="sw${i === card.accentStart ? ' on' : ''}" data-acc="${i}" style="--c:${p.c}" aria-label="${esc(p.name)}"></button>`,
+      )
+      .join('')}</span>
+<span id="wc-flash" role="status" aria-live="polite"></span>
+</div>
+<script type="application/json" id="wcard-data">${jsonForScript(card)}</script></div>`,
+  };
+}
+
 export function renderWrappedHtml(d: WrappedData): string {
   const cards: Card[] = [];
   const empty = d.totals.sessions === 0;
@@ -256,7 +428,7 @@ ${empty ? `<p class="lede">A quiet year — no sessions found. The mystery of yo
     // appear when there's a meter to report — the deck leans on the non-zero
     // signals (sessions, replies, rhythm, models, persona) instead.
     if (d.totals.tokens > 0) {
-      const equiv = tokenEquivalence(d.totals.tokens);
+      const equiv = tokenEquivalence(d.totals.tokens, `${d.year}|tokencard`);
       cards.push({
         id: 'tokens',
         body: `${echo(fmtTokens(d.totals.tokens))}<div class="panel center">${kicker('the year in tokens')}<h2>You and your agents had a lot to say.</h2>${bigNum(d.totals.tokens, 'tok')}<p class="lede">tokens exchanged${equiv ? ` — ${esc(equiv)}` : ''}</p>${foot('input + output + cache writes · same math as sessions report')}</div>`,
@@ -468,7 +640,7 @@ ${heatmap(d.rhythm.heat, d.rhythm.peakHour, d.rhythm.peakWeekday)}
           )
           .join('')}</div>
 ${pa.flavor ? `<p class="lede"><em>${esc(pa.flavor)}</em></p>` : ''}
-${foot('a description of how you worked this year, not who you are · this card wants to be a screenshot')}</div>`,
+${foot('a description of how you worked this year, not who you are · the next slide turns it into an image')}</div>`,
       });
     }
   }
@@ -476,6 +648,12 @@ ${foot('a description of how you worked this year, not who you are · this card 
   // Extras render even on an empty year — an agent-authored roast of a quiet
   // year is still a slide, and --stdout already includes them unconditionally.
   if (empty) for (const [i, x] of d.extras.entries()) cards.push(extraCard(x, i));
+
+  // The share slide sits after the payoff and before the credits, and adopts
+  // the accent its position in the rotation would have given it, so the image
+  // matches the slide the reader is looking at while they save it.
+  const shareCard = empty ? null : shareCardData(d, cards.length % ACCENTS.length);
+  if (shareCard) cards.push(shareCardSlide(shareCard));
 
   const creditRows: [string, string][] = [];
   if (d.models[0]) creditRows.push(['starring', prettyModel(d.models[0].label)]);
@@ -616,6 +794,24 @@ h2{font-size:clamp(1.5rem,4vw,2.2rem);font-weight:800;letter-spacing:-.01em;line
 .creditlist div{display:flex;flex-direction:column;gap:2px;}
 .creditlist dt{font-family:var(--mono);font-size:11px;text-transform:uppercase;letter-spacing:.14em;color:var(--muted);}
 .creditlist dd{margin:0;font-size:clamp(1.2rem,3vw,1.7rem);font-weight:800;letter-spacing:-.01em;}
+/* --- share card ---------------------------------------------------------- */
+.card.sharecard .panel{max-width:820px;}
+#wcard{display:block;margin:18px auto 0;max-width:100%;max-height:44svh;width:auto;height:auto;border-radius:12px;border:1px solid var(--track);}
+.actions{display:flex;align-items:center;justify-content:center;gap:9px;margin-top:18px;flex-wrap:wrap;}
+.actions button{font-family:var(--mono);font-size:10.5px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;padding:9px 14px;border-radius:8px;cursor:pointer;background:transparent;color:var(--muted);border:1px solid var(--track);}
+.actions button:hover{color:var(--a);border-color:var(--a);}
+.actions button.primary{background:var(--a);color:var(--bg);border-color:var(--a);}
+.actions button.primary:hover{filter:brightness(1.08);color:var(--bg);}
+.actions button:focus-visible{outline:2px solid var(--a);outline-offset:2px;}
+.seg{display:inline-flex;border:1px solid var(--track);border-radius:8px;overflow:hidden;}
+.seg button{border:0;border-radius:0;padding:9px 12px;}
+.seg button+button{border-left:1px solid var(--track);}
+.seg button.on{background:var(--track);color:var(--ink);}
+.swatches{display:inline-flex;gap:7px;align-items:center;}
+.actions .swatches .sw{width:22px;height:22px;padding:0;border-radius:50%;background:var(--c);border:2px solid transparent;box-shadow:inset 0 0 0 1px oklch(100% 0 0 / .12);transition:transform .15s;}
+.actions .swatches .sw:hover{transform:scale(1.16);border-color:transparent;}
+.actions .swatches .sw.on{border-color:var(--ink);transform:scale(1.16);}
+#wc-flash{font-family:var(--mono);font-size:11px;color:var(--muted);}
 .dots{position:fixed;right:14px;top:50%;transform:translateY(-50%);display:flex;flex-direction:column;gap:8px;z-index:5;}
 .dots button{width:8px;height:8px;border-radius:50%;border:0;padding:0;background:var(--track);cursor:pointer;transition:background .2s,transform .2s;}
 .dots button.on{background:var(--ink);transform:scale(1.3);}
@@ -649,5 +845,193 @@ function dotFor(id){dots.forEach(function(b){b.classList.toggle('on',b.getAttrib
 dots.forEach(function(b){b.addEventListener('click',function(){var el=document.getElementById(b.getAttribute('data-for'));if(el)el.scrollIntoView({behavior:reduce?'auto':'smooth'});});});
 var tip=document.getElementById('tip');
 document.addEventListener('mousemove',function(e){var el=e.target&&e.target.closest?e.target.closest('[data-tip]'):null;if(!el){tip.style.opacity='0';return;}tip.textContent=el.getAttribute('data-tip');tip.style.opacity='1';tip.style.left=e.clientX+'px';tip.style.top=e.clientY+'px';});
+
+// --- share card ----------------------------------------------------------
+// A block list painted twice: once dry to measure the stack, once for real to
+// paint it centred. Nothing is pinned to a fixed y, because the comparison line
+// is swappable and the whole thing redraws at two aspect ratios.
+var WCD=null,wcEl=document.getElementById('wcard');
+try{var wj=document.getElementById('wcard-data');if(wj)WCD=JSON.parse(wj.textContent);}catch(e){}
+if(WCD&&wcEl){(function(){
+var eqIdx=WCD.eqStart||0,accIdx=WCD.accentStart||0,aspect='wide';
+function PAL(){return WCD.palettes[accIdx];}
+// cols: the stat grid. A 1200-wide card has room for four across, which buys
+// back the vertical space the strip needs; the narrower story format stacks 2x2
+// and has height to spare.
+var SPEC={wide:{w:1200,h:630,pad:64,g:1,cols:4,scale:1,ml:1,chrome:1},story:{w:1080,h:1920,pad:80,g:3,cols:2,scale:2.1,ml:2,chrome:1.7}};
+function sans(wt,sz){return wt+' '+sz+'px -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-serif';}
+function mono(wt,sz){return wt+' '+sz+'px ui-monospace,SFMono-Regular,Menlo,monospace';}
+function wrap(c,s,maxW){var w=s.split(' '),out=[],cur='';
+for(var i=0;i<w.length;i++){var t=cur?cur+' '+w[i]:w[i];
+if(cur&&c.measureText(t).width>maxW){out.push(cur);cur=w[i];}else cur=t;}
+if(cur)out.push(cur);return out;}
+// The largest size at which the text still fits in the given line count.
+// Shrinking to
+// a single line is right for a 630-tall banner and wrong for a poster: it caps
+// a long persona name at banner size on a canvas with three times the room.
+function fit(c,s,maxW,size,wt,min,lines){c.font=sans(wt,size);
+while(size>min&&wrap(c,s,maxW).length>lines){size-=2;c.font=sans(wt,size);}return size;}
+
+// The cursor is the TOP of the next block, never a baseline. Advancing between
+// baselines by a fixed gap was the first version's bug: the gap knew nothing
+// about the next block's type size, so an 84px hero drew straight through the
+// kicker sitting 30px above it. Each block now converts its own top to a
+// baseline with its own ascent, and the gaps mean what they say.
+function stack(c,x,w,y,dry,S,G,cols,ml){
+var y0=y,ASC=0.78;
+function ls(v){try{c.letterSpacing=v;}catch(e){}}
+function mid(t){return x+(w-c.measureText(t).width)/2;}
+// Paints the given lines from the cursor and advances past them. The caller
+// sets the font first — measureText centres against it.
+function put(lines,size,lh,color){
+if(!dry)c.fillStyle=color;
+for(var i=0;i<lines.length;i++){if(!dry)c.fillText(lines[i],mid(lines[i]),y+size*ASC+i*lh);}
+y+=(lines.length-1)*lh+size*1.02;}
+
+var ks=15*S;
+ls((3*S)+'px');c.font=mono(700,ks);
+put([WCD.kicker.toUpperCase()],ks,ks*1.3,PAL().c);ls('0px');
+y+=20*S*G;
+
+var hs=fit(c,WCD.hero,w,80*S,900,30*S,ml);
+put(wrap(c,WCD.hero,w),hs,hs*1.08,PAL().c);
+y+=16*S*G;
+
+var ds=27*S;c.font=sans(500,ds);
+put(wrap(c,WCD.lede,w),ds,ds*1.3,WCD.ink);
+
+var eq=WCD.equivalents[eqIdx];
+if(eq){y+=14*S*G;var es=19*S;c.font=sans(500,es);
+put(wrap(c,eq,w),es,es*1.35,WCD.ink2);}
+
+y+=30*S*G;
+var cw=w/cols,vs=42*S,rowH=vs*1.62;
+for(var i2=0;i2<WCD.stats.length;i2++){
+var cx=x+(i2%cols)*cw,by=y+Math.floor(i2/cols)*rowH;
+if(!dry){c.font=sans(900,vs);c.fillStyle=PAL().c;
+var v=WCD.stats[i2][0];c.fillText(v,cx+(cw-c.measureText(v).width)/2,by+vs*ASC);
+ls((2*S)+'px');c.font=mono(700,13*S);c.fillStyle=WCD.ink2;
+var lb=WCD.stats[i2][1];c.fillText(lb,cx+(cw-c.measureText(lb).width)/2,by+vs*ASC+21*S);ls('0px');}}
+y+=Math.ceil(WCD.stats.length/cols)*rowH;
+return y-y0;}
+
+// The decoration layer. The deck's signature is the oversized outlined numeral
+// bleeding off the corner of a card, so the image borrows it rather than
+// inventing a second visual language. Everything here is stroke-only and low
+// alpha: it must read as texture behind the payoff, never as content. Positions
+// are derived from the canvas, never random — the card has to redraw identically
+// on every repaint, aspect switch, and accent change.
+function decorate(c,W,H,P,K,E){
+c.save();
+// The year, enormous, rotated, stroked, bleeding off the bottom-right.
+var ys=Math.min(W,H)*0.62;
+c.save();c.translate(W*0.995,H*0.99);c.rotate(-8*Math.PI/180);
+c.font=sans(900,ys);c.strokeStyle=E;c.lineWidth=Math.max(1.5,ys*0.012);
+c.strokeText(WCD.year,-c.measureText(WCD.year).width,0);c.restore();
+
+// A sparse dot field in the top-left, fading as it goes.
+var d=6*K,gap=26*K;
+for(var r=0;r<4;r++){for(var q=0;q<7;q++){
+var dx=P+q*gap,dy=P+46*K+r*gap;
+c.globalAlpha=0.5-(r*0.09+q*0.05);
+if(c.globalAlpha<=0.02)continue;
+c.fillStyle=E;c.beginPath();c.arc(dx,dy,d/2,0,Math.PI*2);c.fill();}}
+c.globalAlpha=1;
+
+// Corner crop marks — the poster-framing gesture.
+var m=P*0.46,len=20*K;
+c.strokeStyle=E;c.lineWidth=2*K;c.beginPath();
+c.moveTo(m,m+len);c.lineTo(m,m);c.lineTo(m+len,m);
+c.moveTo(W-m-len,m);c.lineTo(W-m,m);c.lineTo(W-m,m+len);
+c.moveTo(m,H-m-len);c.lineTo(m,H-m);c.lineTo(m+len,H-m);
+c.moveTo(W-m-len,H-m);c.lineTo(W-m,H-m);c.lineTo(W-m,H-m-len);
+c.stroke();
+
+// Four-pointed sparkles at fixed fractions of the canvas.
+var spots=[[0.11,0.74,15],[0.9,0.3,11],[0.82,0.82,9],[0.28,0.2,8],[0.62,0.12,7]];
+c.fillStyle=E;
+for(var i=0;i<spots.length;i++){
+var sx=W*spots[i][0],sy=H*spots[i][1],r2=spots[i][2]*K;
+c.beginPath();c.moveTo(sx,sy-r2);
+c.quadraticCurveTo(sx+r2*0.16,sy-r2*0.16,sx+r2,sy);
+c.quadraticCurveTo(sx+r2*0.16,sy+r2*0.16,sx,sy+r2);
+c.quadraticCurveTo(sx-r2*0.16,sy+r2*0.16,sx-r2,sy);
+c.quadraticCurveTo(sx-r2*0.16,sy-r2*0.16,sx,sy-r2);
+c.fill();}
+c.restore();}
+
+/** The year strip is chrome, not flow: pinned above the footer so the card has
+ *  a defined base at any aspect, and so a long year cannot push the payoff off
+ *  the bottom edge. Returns the y it occupies. */
+function stripBox(w,C,H,P){
+if(!WCD.strip.length)return {h:0,top:H-P};
+var cg=2.4*C,cs=Math.min(11*C,w/WCD.strip.length-cg),h=7*(cs+cg)-cg;
+return {h:h,cs:cs,cg:cg,top:H-P-26*C-h};}
+
+function draw(){
+var sp=SPEC[aspect],DPR=2,W=sp.w,H=sp.h,P=sp.pad,K=W/1200,G=sp.g;
+wcEl.width=W*DPR;wcEl.height=H*DPR;
+var c=wcEl.getContext('2d');if(!c)return;
+c.setTransform(DPR,0,0,DPR,0,0);c.textBaseline='alphabetic';
+c.fillStyle=WCD.bg;c.fillRect(0,0,W,H);
+var g=c.createRadialGradient(W/2,H*1.02,0,W/2,H*1.02,W*0.95);
+g.addColorStop(0,PAL().glow);g.addColorStop(1,PAL().glow0);
+c.fillStyle=g;c.fillRect(0,0,W,H);
+function ls(v){try{c.letterSpacing=v;}catch(e){}}
+var x=P,w=W-P*2,C=K*sp.chrome;
+decorate(c,W,H,P,K,PAL().edge);
+
+ls((4*C)+'px');c.font=mono(700,15*C);c.fillStyle=PAL().c;c.fillText(WCD.brand,x,P+15*C);
+c.font=mono(700,15*C);c.fillStyle=WCD.ink2;
+c.fillText(WCD.year,W-P-c.measureText(WCD.year).width,P+15*C);ls('0px');
+
+var sb=stripBox(w,C,H,P);
+var top=P+52*C,bottom=sb.top-30*C,band=bottom-top;
+// Type is scaled to the aspect, not to the width — a 1080x1920 poster wants
+// bigger type than a 1200x630 banner, and scaling on width alone made the
+// taller card the smaller one. Then shrink-to-fit if the stack still overruns.
+var S=sp.scale*K,total=stack(c,x,w,0,true,S,G,sp.cols,sp.ml);
+if(total>band){S*=Math.max(0.55,band/total);total=stack(c,x,w,0,true,S,G,sp.cols,sp.ml);}
+stack(c,x,w,top+Math.max(0,(band-total)/2),false,S,G,sp.cols,sp.ml);
+
+if(sb.h){var sw=WCD.strip.length*(sb.cs+sb.cg)-sb.cg,sx=x+(w-sw)/2;
+for(var col=0;col<WCD.strip.length;col++){for(var r=0;r<7;r++){
+var L=WCD.strip[col][r];if(L<0)continue;
+c.fillStyle=PAL().heat[L];
+var hx=sx+col*(sb.cs+sb.cg),hy=sb.top+r*(sb.cs+sb.cg);
+if(c.roundRect){c.beginPath();c.roundRect(hx,hy,sb.cs,sb.cs,2*C);c.fill();}else c.fillRect(hx,hy,sb.cs,sb.cs);}}}
+
+ls((2*C)+'px');c.font=mono(700,13*C);c.fillStyle=WCD.ink2;
+c.fillText(WCD.footer[0],x,H-P);
+c.fillText(WCD.footer[1],W-P-c.measureText(WCD.footer[1]).width,H-P);ls('0px');}
+
+var fl=document.getElementById('wc-flash'),ft=null;
+function flash(m){if(!fl)return;fl.textContent=m;clearTimeout(ft);ft=setTimeout(function(){fl.textContent='';},2400);}
+var BLOCKED='Clipboard blocked here \\u2014 use Download PNG.';
+function caption(){var p=WCD.summary.slice();
+if(WCD.equivalents.length)p.splice(WCD.eqSlot,0,WCD.equivalents[eqIdx]);return p.join(' ');}
+function on(id,fn){var el=document.getElementById(id);if(el)el.addEventListener('click',fn);}
+on('wc-png',function(){var a=document.createElement('a');a.download=WCD.filename;
+a.href=wcEl.toDataURL('image/png');a.click();flash('PNG saved to your downloads.');});
+on('wc-img',function(){if(!navigator.clipboard||!window.ClipboardItem){flash(BLOCKED);return;}
+wcEl.toBlob(function(b){navigator.clipboard.write([new ClipboardItem({'image/png':b})])
+.then(function(){flash('Copied \\u2014 paste it anywhere.');}).catch(function(){flash(BLOCKED);});},'image/png');});
+on('wc-txt',function(){if(!navigator.clipboard){flash(BLOCKED);return;}
+navigator.clipboard.writeText(caption()).then(function(){flash('Caption copied.');}).catch(function(){flash(BLOCKED);});});
+on('wc-eq',function(){eqIdx=(eqIdx+1)%WCD.equivalents.length;draw();flash('Swapped the comparison.');});
+document.querySelectorAll('.seg button').forEach(function(b){b.addEventListener('click',function(){
+document.querySelectorAll('.seg button').forEach(function(o){o.classList.remove('on');});
+b.classList.add('on');aspect=b.getAttribute('data-aspect');draw();});});
+// Picking an accent recolours the slide around the canvas too, so the page and
+// the image you are about to save never disagree.
+var slide=document.getElementById('share');
+document.querySelectorAll('.swatches .sw').forEach(function(b){b.addEventListener('click',function(){
+document.querySelectorAll('.swatches .sw').forEach(function(o){o.classList.remove('on');});
+b.classList.add('on');accIdx=Number(b.getAttribute('data-acc'))||0;
+if(slide)slide.style.setProperty('--a',PAL().c);
+draw();flash(PAL().name+'.');});});
+draw();
+if(document.fonts&&document.fonts.ready)document.fonts.ready.then(draw);})();}
+
 console.log('sessions wrapped \\u2014 generated locally from your own session logs. No telemetry.');
 })();`;
