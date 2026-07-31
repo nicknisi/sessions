@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.22.0](https://github.com/nicknisi/sessions/compare/v1.21.0...v1.22.0) (2026-07-31)
+
+
+### Features
+
+* add sessions.engineering, and print it on the report and wrapped ([#68](https://github.com/nicknisi/sessions/issues/68)) ([5f6f3c9](https://github.com/nicknisi/sessions/commit/5f6f3c9449faa1a3bbf1c73d84245ee29f8076d1))
+
 ## [1.21.0](https://github.com/nicknisi/sessions/compare/v1.20.0...v1.21.0) (2026-07-31)
 
 
