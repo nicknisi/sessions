@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.22.1](https://github.com/nicknisi/sessions/compare/v1.22.0...v1.22.1) (2026-08-01)
+
+
+### Bug Fixes
+
+* correct Pi usage tracking (dedup forks, compactions, subagents, pricing fallbacks) ([#70](https://github.com/nicknisi/sessions/issues/70)) ([deeef97](https://github.com/nicknisi/sessions/commit/deeef975c5fd6528ba278749eb1c481966aaf29d))
+
 ## [1.22.0](https://github.com/nicknisi/sessions/compare/v1.21.0...v1.22.0) (2026-07-31)
 
 

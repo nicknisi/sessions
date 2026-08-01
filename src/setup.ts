@@ -37,7 +37,7 @@ function pluginDest(): string {
 function ownedInstallPaths(): string[] {
   return [pluginDest(), join(sessionsDir(), '.claude-plugin')];
 }
-const PLUGIN_VERSION = '1.22.0'; // x-release-please-version
+const PLUGIN_VERSION = '1.22.1'; // x-release-please-version
 const MARKETPLACE_NAME = 'sessions';
 const PLUGIN_NAME = 'sessions';
 
