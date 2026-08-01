@@ -310,9 +310,27 @@ interface FamilyMatch {
 
 const FAMILY_STEMS = ['claude-fable', 'claude-opus', 'claude-sonnet', 'claude-haiku', 'gpt-5'];
 
+// Families Pi reaches through OpenRouter (`moonshotai/kimi-k3`, `z-ai/glm-5.2`).
+// Their released versions live in the LiteLLM snapshot under provider-prefixed
+// keys (`openrouter/moonshotai/kimi-k2.5`), not in BUILTIN_OVERRIDES, so these
+// stems draw candidates from the full map instead. The stem must sit at a
+// path-segment boundary (start or right after `/`) so a stem like `glm-` can
+// never match inside an unrelated id.
+const PREFIXED_FAMILY_STEMS = ['kimi-k', 'glm-'];
+
+// Index of `stem` in `normalizedKey` where it begins a path segment, or -1.
+function stemIndexAtBoundary(normalizedKey: string, stem: string): number {
+  let from = 0;
+  for (;;) {
+    const idx = normalizedKey.indexOf(stem, from);
+    if (idx < 0) return -1;
+    if (idx === 0 || normalizedKey[idx - 1] === '/') return idx;
+    from = idx + 1;
+  }
+}
+
 // Trailing numeric segments after the stem, as numbers: `claude-opus-4-8` → [4,8].
-function versionSegments(normalizedKey: string, stem: string): number[] {
-  const rest = normalizedKey.slice(stem.length);
+function versionSegments(rest: string): number[] {
   const out: number[] = [];
   for (const part of rest.split('-')) {
     if (part.length === 0) continue;
@@ -334,13 +352,28 @@ function compareVersions(a: number[], b: number[]): number {
 function findFamilyUncached(modelId: string): FamilyMatch | undefined {
   const normalized = normalizedPricingKey(modelId);
   const stem = FAMILY_STEMS.find((s) => normalized.includes(s));
-  if (!stem) return undefined;
+  if (stem) return newestInFamily(stem, Object.keys(BUILTIN_OVERRIDES));
+  const prefixed = PREFIXED_FAMILY_STEMS.find((s) => stemIndexAtBoundary(normalized, s) >= 0);
+  if (prefixed) return newestInFamily(prefixed, Object.keys(PRICING_MAP));
+  return undefined;
+}
+
+function newestInFamily(stem: string, candidates: string[]): FamilyMatch | undefined {
   let best: { key: string; version: number[] } | undefined;
-  for (const key of Object.keys(BUILTIN_OVERRIDES)) {
+  for (const key of candidates) {
     const nk = normalizedPricingKey(key);
-    if (!nk.startsWith(stem)) continue;
-    const version = versionSegments(nk, stem);
-    if (!best || compareVersions(version, best.version) > 0) best = { key, version };
+    const idx = stemIndexAtBoundary(nk, stem);
+    if (idx < 0) continue;
+    const version = versionSegments(nk.slice(idx + stem.length));
+    // Later version wins; on a version tie the lexicographically smaller key does,
+    // so the winner is deterministic rather than map-order (mirrors findUncached).
+    if (
+      !best ||
+      compareVersions(version, best.version) > 0 ||
+      (compareVersions(version, best.version) === 0 && key < best.key)
+    ) {
+      best = { key, version };
+    }
   }
   // Resolve through the live map so a runtime price for the winning key is used
   // rather than the frozen override it was selected by.

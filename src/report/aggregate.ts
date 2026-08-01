@@ -34,6 +34,10 @@ const PROVIDER_LABEL: Record<string, string> = {
   anthropic: 'Anthropic',
   openai: 'OpenAI',
   baseten: 'Baseten',
+  // sessions-local extensions — providers Pi emits that upstream does not label
+  // (see the opencode note in the header). Preserve when re-syncing.
+  'openai-codex': 'OpenAI (Codex)',
+  openrouter: 'OpenRouter',
 };
 
 export interface AggregateInput {

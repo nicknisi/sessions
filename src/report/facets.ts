@@ -15,7 +15,7 @@
 //   - burn:        pace against the period, and against the period before it.
 import type { UsageEvent } from './parsers/types.ts';
 import type { ToolId } from './types.ts';
-import { computeCost, find } from './pricing.ts';
+import { computeCost, find, findFamily } from './pricing.ts';
 import { localDate, weekEnding } from './parsers/util.ts';
 import { resolveProject } from './project.ts';
 
@@ -152,8 +152,10 @@ function cacheStats(events: UsageEvent[]): CacheStats {
     write += e.tokens.cacheWrite;
     read += e.tokens.cacheRead;
     // Gated on a pricing hit so an unpriced model doesn't push two more warnings
-    // per event into the collector for a number we'd end up reporting as 0.
-    if (e.tokens.cacheRead > 0 && find(e.model)) {
+    // per event into the collector for a number we'd end up reporting as 0. A
+    // family estimate counts as a hit: computeCost prices it (at the family rate),
+    // so gating it out would understate savings for models like Pi's kimi-k3.
+    if (e.tokens.cacheRead > 0 && (find(e.model) || findFamily(e.model))) {
       // Price the same tokens twice — once as cache reads, once as fresh input —
       // through the real pricing path, so tiering and per-model rates apply.
       const zero = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };

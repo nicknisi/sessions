@@ -273,4 +273,27 @@ describe('family fallback', () => {
     computeCost('claude-opus-4-8', counts({ input: 1_000_000 }));
     expect(drainPricingWarnings()).toEqual([]);
   });
+
+  // Pi records bare OpenRouter model ids ('moonshotai/kimi-k3'); the snapshot
+  // keys those families with a provider prefix, so the fallback must draw
+  // candidates from the full map, not just BUILTIN_OVERRIDES.
+  test('an unreleased kimi is billed at the newest kimi rate, and flagged', () => {
+    expect(find('moonshotai/kimi-k3')).toBeUndefined();
+    const cost = computeCost('moonshotai/kimi-k3', counts({ input: 1_000_000 }));
+    expect(cost).toBeGreaterThan(0);
+    const [w] = drainPricingWarnings();
+    expect(w!.model).toBe('moonshotai/kimi-k3');
+    expect(w!.pricedAs).toMatch(/kimi-k2\.5/i);
+  });
+
+  test('an unreleased glm is billed at the newest glm rate', () => {
+    expect(find('z-ai/glm-5.2')).toBeUndefined();
+    expect(findFamily('z-ai/glm-5.2')?.key).toBe('openrouter/z-ai/glm-5.1');
+    expect(computeCost('z-ai/glm-5.2', counts({ input: 1_000_000 }))).toBeGreaterThan(0);
+  });
+
+  test('a prefixed stem only matches at a path-segment boundary', () => {
+    // 'kimi-k' must not match inside an unrelated id like 'fookimi-k3'.
+    expect(findFamily('fookimi-k3')).toBeUndefined();
+  });
 });
