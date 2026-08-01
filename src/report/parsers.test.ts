@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseClaudeCode } from './parsers/claude-code.ts';
 import { parseCodex } from './parsers/codex.ts';
+import { parsePi } from './parsers/pi.ts';
 
 const tmp = mkdtempSync(join(tmpdir(), 'sessions-parsers-'));
 afterAll(() => rmSync(tmp, { recursive: true, force: true }));
@@ -238,5 +239,244 @@ describe('parseCodex accounting', () => {
     );
     const events = await parseCodex(root);
     expect(events[0]!.tokens.output).toBe(100); // not 130
+  });
+});
+
+// A Pi session file: `{type:'session'}` header plus entries. Assistant messages
+// nest provider/model/usage (and responseId) inside `message`, current format.
+function piSession(id: string, entries: string[], cwd = '/Users/x/Developer/sessions'): string {
+  const header = JSON.stringify({ type: 'session', version: 3, id, timestamp: '2026-06-01T10:00:00Z', cwd });
+  return [header, ...entries].join('\n') + '\n';
+}
+
+function piAssistant(opts: {
+  responseId?: string;
+  input?: number;
+  output?: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+  cacheWrite1h?: number;
+  cost?: number;
+  stopReason?: string;
+  model?: string;
+  provider?: string;
+  timestamp?: string;
+}): string {
+  const usage: Record<string, unknown> = {
+    input: opts.input ?? 100,
+    output: opts.output ?? 50,
+    cacheRead: opts.cacheRead ?? 0,
+    cacheWrite: opts.cacheWrite ?? 0,
+  };
+  if (opts.cacheWrite1h !== undefined) usage.cacheWrite1h = opts.cacheWrite1h;
+  if (opts.cost !== undefined) usage.cost = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: opts.cost };
+  const message: Record<string, unknown> = {
+    role: 'assistant',
+    provider: opts.provider ?? 'anthropic',
+    model: opts.model ?? 'claude-opus-4-8',
+    usage,
+    stopReason: opts.stopReason ?? 'stop',
+  };
+  if (opts.responseId !== undefined) message.responseId = opts.responseId;
+  return JSON.stringify({
+    type: 'message',
+    id: Math.random().toString(36).slice(2, 10),
+    timestamp: opts.timestamp ?? '2026-06-01T10:00:05Z',
+    message,
+  });
+}
+
+describe('parsePi dedup', () => {
+  test('dedupes the same responseId across files (fork/clone copies)', async () => {
+    const root = join(tmp, 'pi-dup');
+    mkdirSync(join(root, '--proj--'), { recursive: true });
+    const turn = piAssistant({ responseId: 'resp_1', cost: 0.5 });
+    // fork/clone rewrites the same response into a new file with a NEW session id.
+    writeFileSync(join(root, '--proj--', 'a.jsonl'), piSession('s-parent', [turn]));
+    writeFileSync(join(root, '--proj--', 'b.jsonl'), piSession('s-fork', [turn]));
+    const events = await parsePi(root);
+    expect(events.length).toBe(1);
+  });
+
+  test('keeps distinct responseIds', async () => {
+    const root = join(tmp, 'pi-distinct');
+    mkdirSync(root, { recursive: true });
+    writeFileSync(
+      join(root, 'a.jsonl'),
+      piSession('s1', [
+        piAssistant({ responseId: 'resp_1', cost: 0.1 }),
+        piAssistant({ responseId: 'resp_2', cost: 0.2 }),
+      ]),
+    );
+    const events = await parsePi(root);
+    expect(events.length).toBe(2);
+  });
+
+  test('counts messages missing responseId (cannot dedupe)', async () => {
+    const root = join(tmp, 'pi-norid');
+    mkdirSync(root, { recursive: true });
+    writeFileSync(join(root, 'a.jsonl'), piSession('s1', [piAssistant({ cost: 0.1 }), piAssistant({ cost: 0.1 })]));
+    const events = await parsePi(root);
+    expect(events.length).toBe(2);
+    expect(events[0]!.dedupKey).toBeUndefined();
+  });
+
+  test('pi dedup keys are tool-prefixed so they can never collide with claude-code keys', async () => {
+    const root = join(tmp, 'pi-prefix');
+    mkdirSync(root, { recursive: true });
+    writeFileSync(join(root, 'a.jsonl'), piSession('s1', [piAssistant({ responseId: 'resp_9', cost: 0.1 })]));
+    const events = await parsePi(root);
+    expect(events[0]!.dedupKey).toBe('pi|resp_9');
+  });
+});
+
+describe('parsePi cost handling', () => {
+  test('trusts a positive recorded cost', async () => {
+    const root = join(tmp, 'pi-cost-pos');
+    mkdirSync(root, { recursive: true });
+    writeFileSync(join(root, 'a.jsonl'), piSession('s1', [piAssistant({ responseId: 'r1', cost: 0.42 })]));
+    const events = await parsePi(root);
+    expect(events[0]!.costUSD).toBe(0.42);
+  });
+
+  test('a recorded $0 cost with real tokens falls through to the pricing engine', async () => {
+    // Pi logs cost.total = 0 when it has no rate for a model; trusting it would
+    // silently bill the tokens at $0 and mute the unpriced-model warning.
+    const root = join(tmp, 'pi-cost-zero');
+    mkdirSync(root, { recursive: true });
+    writeFileSync(join(root, 'a.jsonl'), piSession('s1', [piAssistant({ responseId: 'r1', cost: 0, input: 500 })]));
+    const events = await parsePi(root);
+    expect(events.length).toBe(1);
+    expect(events[0]!.costUSD).toBeUndefined();
+  });
+
+  test('a missing cost leaves costUSD unset for downstream pricing', async () => {
+    const root = join(tmp, 'pi-cost-missing');
+    mkdirSync(root, { recursive: true });
+    writeFileSync(join(root, 'a.jsonl'), piSession('s1', [piAssistant({ responseId: 'r1' })]));
+    const events = await parsePi(root);
+    expect(events[0]!.costUSD).toBeUndefined();
+  });
+
+  test('carries cacheWrite1h so the 1h premium can be priced downstream', async () => {
+    const root = join(tmp, 'pi-1h');
+    mkdirSync(root, { recursive: true });
+    writeFileSync(
+      join(root, 'a.jsonl'),
+      piSession('s1', [piAssistant({ responseId: 'r1', cacheWrite: 1000, cacheWrite1h: 700, cost: 0.2 })]),
+    );
+    const events = await parsePi(root);
+    expect(events[0]!.tokens.cacheWrite).toBe(1000);
+    expect(events[0]!.tokens.cacheWrite1h).toBe(700);
+  });
+});
+
+describe('parsePi zero-usage turns', () => {
+  test('skips aborted/error turns with all-zero usage and $0 cost', async () => {
+    const root = join(tmp, 'pi-zero');
+    mkdirSync(root, { recursive: true });
+    writeFileSync(
+      join(root, 'a.jsonl'),
+      piSession('s1', [
+        piAssistant({ responseId: 'r1', input: 0, output: 0, cost: 0, stopReason: 'aborted' }),
+        piAssistant({ responseId: 'r2', cost: 0.1 }),
+      ]),
+    );
+    const events = await parsePi(root);
+    expect(events.length).toBe(1);
+    expect(events[0]!.dedupKey).toBe('pi|r2');
+  });
+});
+
+describe('parsePi compaction and branch_summary usage', () => {
+  const compaction = (usage?: Record<string, unknown>): string =>
+    JSON.stringify({
+      type: 'compaction',
+      id: 'c1',
+      parentId: 'p1',
+      timestamp: '2026-06-01T10:10:00Z',
+      summary: 'earlier work…',
+      tokensBefore: 50000,
+      ...(usage ? { usage } : {}),
+    });
+
+  test('counts summary usage, attributed to the current provider/model', async () => {
+    const root = join(tmp, 'pi-compaction');
+    mkdirSync(root, { recursive: true });
+    writeFileSync(
+      join(root, 'a.jsonl'),
+      piSession('s1', [
+        piAssistant({ responseId: 'r1', cost: 0.1, model: 'claude-opus-4-8' }),
+        compaction({ input: 120000, output: 900, cacheRead: 0, cacheWrite: 0, cost: { total: 0.75 } }),
+      ]),
+    );
+    const events = await parsePi(root);
+    expect(events.length).toBe(2);
+    const summary = events[1]!;
+    expect(summary.model).toBe('claude-opus-4-8');
+    expect(summary.provider).toBe('anthropic');
+    expect(summary.tokens.input).toBe(120000);
+    expect(summary.costUSD).toBe(0.75);
+  });
+
+  test('a model_change entry retargets summary attribution', async () => {
+    const root = join(tmp, 'pi-compaction-model-change');
+    mkdirSync(root, { recursive: true });
+    const modelChange = JSON.stringify({
+      type: 'model_change',
+      id: 'mc1',
+      parentId: null,
+      timestamp: '2026-06-01T10:09:00Z',
+      provider: 'openrouter',
+      modelId: 'moonshotai/kimi-k3',
+    });
+    writeFileSync(
+      join(root, 'a.jsonl'),
+      piSession('s1', [
+        modelChange,
+        compaction({ input: 1000, output: 10, cacheRead: 0, cacheWrite: 0, cost: { total: 0.02 } }),
+      ]),
+    );
+    const events = await parsePi(root);
+    expect(events.length).toBe(1);
+    expect(events[0]!.provider).toBe('openrouter');
+    expect(events[0]!.model).toBe('moonshotai/kimi-k3');
+  });
+
+  test('legacy compactions without usage still emit nothing', async () => {
+    const root = join(tmp, 'pi-compaction-legacy');
+    mkdirSync(root, { recursive: true });
+    writeFileSync(join(root, 'a.jsonl'), piSession('s1', [compaction()]));
+    expect(await parsePi(root)).toEqual([]);
+  });
+});
+
+describe('parsePi subagent runs', () => {
+  const PARENT = '019fbd40-44c8-7e38-8dab-28f8f12801ee';
+
+  test('attributes a nested run-N transcript to the parent session and tags it', async () => {
+    const root = join(tmp, 'pi-subagent');
+    const runDir = join(root, '--proj--', `2026-06-01T10-00-00-000Z_${PARENT}`, '5c46dd16', 'run-0');
+    mkdirSync(runDir, { recursive: true });
+    writeFileSync(
+      join(runDir, 'session.jsonl'),
+      piSession('inner-session-id', [piAssistant({ responseId: 'r1', cost: 0.3 })]),
+    );
+    const events = await parsePi(root);
+    expect(events.length).toBe(1);
+    expect(events[0]!.sessionId).toBe(PARENT);
+    expect(events[0]!.agent).toEqual({ id: '5c46dd16/run-0', type: 'subagent' });
+  });
+
+  test('a top-level session is not tagged', async () => {
+    const root = join(tmp, 'pi-toplevel');
+    mkdirSync(join(root, '--proj--'), { recursive: true });
+    writeFileSync(
+      join(root, '--proj--', `2026-06-01T10-00-00-000Z_${PARENT}.jsonl`),
+      piSession(PARENT, [piAssistant({ responseId: 'r1', cost: 0.3 })]),
+    );
+    const events = await parsePi(root);
+    expect(events[0]!.sessionId).toBe(PARENT);
+    expect(events[0]!.agent).toBeUndefined();
   });
 });
