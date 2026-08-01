@@ -7,10 +7,10 @@ import { extractSessionMetadata, getCwdFromSession, firstPrompt, contentMatches,
 import { cwdUnder } from './repo';
 import { discoverOpencodeSessions } from './opencode';
 import { readSessionLines } from './session-io';
+import { getPiSessionsDir } from './paths';
 
 const home = homedir();
 const CLAUDE_DIR = join(home, '.claude/projects');
-const PI_DIR = join(home, '.pi/agent/sessions');
 const CODEX_DIR = join(home, '.codex/sessions');
 
 async function processSession(
@@ -136,7 +136,10 @@ export async function scanSessions(
   }
   if (toolFilter === '' || toolFilter === 'pi') {
     const piPrefix = repoRoot ? `-${claudePrefix}-` : '--';
-    scans.push(scanDir(PI_DIR, piPrefix, 'pi', repoRoot, searchAll, normalizedQuery));
+    // Resolved per call (not frozen at import) via the shared resolver so the
+    // scanner honors the same SESSIONS_PI_DIR / PI_CODING_AGENT_* overrides as
+    // the index and the report.
+    scans.push(scanDir(getPiSessionsDir(), piPrefix, 'pi', repoRoot, searchAll, normalizedQuery));
   }
   if (toolFilter === '' || toolFilter === 'codex') {
     scans.push(scanDir(CODEX_DIR, '', 'codex', repoRoot, searchAll, normalizedQuery));

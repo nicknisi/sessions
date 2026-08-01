@@ -33,3 +33,23 @@ export function getDataDir(): string {
 export function getMemoryDbPath(): string {
   return join(getDataDir(), 'memory.db');
 }
+
+/**
+ * Where Pi keeps its session transcripts. One resolver shared by the index
+ * (src/cache.ts), the no-index scanner (src/scanner.ts), and the usage report
+ * (src/report/extract.ts) so all three always look at the same tree.
+ *
+ * Order:
+ *   1. SESSIONS_PI_DIR — this project's own override (tests, unusual setups);
+ *   2. PI_CODING_AGENT_SESSION_DIR — Pi's documented session-storage override;
+ *   3. PI_CODING_AGENT_DIR — Pi's config-dir override (sessions live under it);
+ *   4. ~/.pi/agent/sessions — Pi's default.
+ * Resolved lazily (never frozen at import) for the same test-hermeticity reason
+ * as getDataDir above.
+ */
+export function getPiSessionsDir(): string {
+  if (process.env.SESSIONS_PI_DIR) return process.env.SESSIONS_PI_DIR;
+  if (process.env.PI_CODING_AGENT_SESSION_DIR) return process.env.PI_CODING_AGENT_SESSION_DIR;
+  if (process.env.PI_CODING_AGENT_DIR) return join(process.env.PI_CODING_AGENT_DIR, 'sessions');
+  return join(homedir(), '.pi', 'agent', 'sessions');
+}

@@ -18,6 +18,7 @@ import {
   type PrimerMemory,
 } from './types';
 import { activeMemoryFor } from './memory/retrieve';
+import { getPiSessionsDir } from './paths';
 import type { MemoryRecord } from './memory/types';
 import { extractMessages, getSessionMessages, extractSessionMetadata, summarizeMessages } from './parser';
 import { extractFiles, extractFilesRead } from './extract-files';
@@ -57,7 +58,10 @@ function getClaudeDir(): string {
   return process.env.SESSIONS_CLAUDE_DIR || join(home, '.claude/projects');
 }
 function getPiDir(): string {
-  return process.env.SESSIONS_PI_DIR || join(home, '.pi/agent/sessions');
+  // Shared resolver (src/paths.ts): honors SESSIONS_PI_DIR and Pi's own
+  // PI_CODING_AGENT_SESSION_DIR / PI_CODING_AGENT_DIR overrides, and keeps the
+  // index, scanner, and report pointed at the same tree.
+  return getPiSessionsDir();
 }
 function getCodexDir(): string {
   return process.env.SESSIONS_CODEX_DIR || join(home, '.codex/sessions');
