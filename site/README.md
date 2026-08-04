@@ -16,7 +16,7 @@ bun run fonts     # vendor the 5 woff2 faces out of @fontsource (already committ
 bun run dev       # http://localhost:4321
 bun run build     # → dist/
 bun run check     # astro check
-bun run deploy:check      # validate wrangler.jsonc, no credentials needed
+bun run deploy:check      # validate the root wrangler.jsonc, no credentials needed
 bunx wrangler dev         # serve dist/ through the Workers runtime, with _headers
 ```
 
@@ -36,8 +36,10 @@ Two environment notes that cost time once:
 
 ## Deploying
 
-Config is in `wrangler.jsonc` rather than dashboard state, so it is reviewable and
-can be validated locally. There is no `main` worker script — this is a static
+Config is in the repo-root `wrangler.jsonc` rather than dashboard state, so it is reviewable and
+can be validated locally. It lives at the root, not here, because Cloudflare Workers Builds
+runs its deploy command from the repository root — a config in `site/` is invisible to it.
+There is no `main` worker script — this is a static
 assets deploy, and Astro needs no Cloudflare adapter for it.
 
 ```sh

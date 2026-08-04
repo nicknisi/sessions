@@ -1,16 +1,20 @@
 {
   // Deploy config as code, so it is reviewable in a PR rather than living in
   // dashboard state nobody can see. Validate without credentials:
-  //   bun run build && bun run deploy:check
+  //   bun run site:build && bun run site:deploy:check
+  //
+  // This lives at the repo ROOT, not in site/, because Cloudflare Workers Builds
+  // runs the deploy command (`npx wrangler versions upload`) from the repository
+  // root — a config inside site/ is invisible to it, which failed every
+  // git-integrated deploy since the site launched.
   //
   // This is a static site: there is no `main` worker script, only an assets
   // directory. Astro needs no Cloudflare adapter for that.
-  "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "sessions-site",
   "compatibility_date": "2026-07-31",
   "assets": {
-    "directory": "./dist",
+    "directory": "./site/dist",
     // Serves dist/404.html for unknown paths instead of a bare Cloudflare error.
-    "not_found_handling": "404-page"
-  }
+    "not_found_handling": "404-page",
+  },
 }
