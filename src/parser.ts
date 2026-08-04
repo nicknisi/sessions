@@ -1,4 +1,6 @@
 import { type Tool } from './types';
+import { extractUserText, isGenuineUserTurn, isUserMessage, stripInjected } from './extract-util';
+import { buildPiTree, type PiEntry } from './pi-tree';
 
 interface JsonLine {
   type?: string;
@@ -175,88 +177,6 @@ function clean(text: string): string {
     .slice(0, 100);
 }
 
-function stripInjected(text: string): string {
-  const patterns = [
-    /<system-reminder>[\s\S]*?<\/system-reminder>/g,
-    /<local-command-caveat>[\s\S]*?<\/local-command-caveat>/g,
-    /<local-command-stdout>[\s\S]*?<\/local-command-stdout>/g,
-    /<command-name>[\s\S]*?<\/command-name>/g,
-    /<command-message>[\s\S]*?<\/command-message>/g,
-    /<command-args>[\s\S]*?<\/command-args>/g,
-    // Agent/harness injections that ride in on a user-role line but are not the
-    // human talking: task-completion pings, `!`-mode shell echoes, teammate relays.
-    // `\b[^>]*` tolerates attributes on the opening tag (e.g. <teammate-message
-    // teammate_id="..." color="...">), which these tags carry in multi-agent logs.
-    /<task-notification\b[^>]*>[\s\S]*?<\/task-notification>/g,
-    /<bash-input\b[^>]*>[\s\S]*?<\/bash-input>/g,
-    /<bash-stdout\b[^>]*>[\s\S]*?<\/bash-stdout>/g,
-    /<bash-stderr\b[^>]*>[\s\S]*?<\/bash-stderr>/g,
-    /<teammate-message\b[^>]*>[\s\S]*?<\/teammate-message>/g,
-  ];
-  for (const p of patterns) {
-    text = text.replace(p, '');
-  }
-  return text;
-}
-
-function extractUserText(d: JsonLine): string {
-  const msg = d.message;
-  if (!msg || typeof msg !== 'object') return '';
-  const content = (msg as Record<string, unknown>).content;
-  const texts: string[] = [];
-
-  if (Array.isArray(content)) {
-    for (const c of content) {
-      if (
-        typeof c === 'object' &&
-        c !== null &&
-        ((c as Record<string, unknown>).type === 'text' || (c as Record<string, unknown>).type === 'input_text')
-      ) {
-        texts.push((c as Record<string, string>).text ?? '');
-      }
-    }
-  } else if (typeof content === 'string') {
-    texts.push(content);
-  }
-  return stripInjected(texts.join(' '));
-}
-
-function isUserMessage(d: JsonLine): boolean {
-  if (d.type === 'user') return true;
-  if (d.type === 'message') {
-    const msg = d.message;
-    return typeof msg === 'object' && msg !== null && (msg as Record<string, unknown>).role === 'user';
-  }
-  return false;
-}
-
-/** Claude prepends this exact line to every skill body it injects as a user turn. */
-const SKILL_INJECTION_PREAMBLE = /^Base directory for this skill:/;
-
-/**
- * Whether a user-role line is a genuine human turn — not a tool result, a
- * system-injected turn, a compaction summary, or a skill body injected as a
- * user message. The disqualifiers below fire regardless of `promptSource`
- * because agent/harness injections (compaction carryover, task-completion
- * pings echoed as `!`-mode shell lines) can arrive with any source.
- * Claude lines then carry `promptSource`: when the field is present, only
- * `typed` and `queued` count (a present-but-null value, as tool results and
- * skill loads have, is rejected). Older logs and pi/codex have no
- * `promptSource`, so fall back to a heuristic: non-empty text that isn't a
- * skill-injection preamble. (Tag-wrapped injections — <task-notification>,
- * <bash-input>, <bash-stdout>, <teammate-message> — are already emptied by
- * stripInjected upstream, so they never reach here with text.)
- */
-function isGenuineUserTurn(d: JsonLine, strippedText: string): boolean {
-  if (d.isCompactSummary === true) return false;
-  if (!strippedText) return false;
-  if (SKILL_INJECTION_PREAMBLE.test(strippedText)) return false;
-  if ('promptSource' in d) {
-    return d.promptSource === 'typed' || d.promptSource === 'queued';
-  }
-  return true;
-}
-
 export interface GenuineUserTurn {
   sessionId: string;
   timestamp: string;
@@ -378,6 +298,10 @@ export interface SessionMessage {
   index: number;
   /** Tool calls belonging to this turn (empty for most user turns). See extractMessages. */
   tools: ToolUse[];
+  /** Pi branch label, carried through from ExtractedMessage. See PiForkMarker. */
+  branch?: 'active' | 'abandoned';
+  /** Fork marker, present on the first message of an abandoned pi branch. */
+  fork?: PiForkMarker;
 }
 
 /** Input fields, most-informative first, used to summarize a tool call for display. */
@@ -471,6 +395,26 @@ function extractAssistantText(d: JsonLine): string {
   return '';
 }
 
+/** Fork marker attached to the first message of an abandoned pi branch. */
+export interface PiForkMarker {
+  /**
+   * msg_index of the active-path message nearest the fork point. The fork parent is
+   * often a non-message entry (model_change, custom), so this maps to the closest
+   * extracted message on the active path at or before the parent's line (the first
+   * active message after it when none precedes).
+   */
+  fromIndex: number;
+  /**
+   * Extracted MESSAGES in the abandoned branch — not the branch's entry count
+   * (PiFork.abandonedCount): toolResult/custom entries and pure-toolCall assistant
+   * lines produce no message.
+   */
+  abandonedCount: number;
+  /** First genuine user text in the branch, truncated; '' when the branch has none. */
+  firstUserText: string;
+  timestamp: string;
+}
+
 export interface ExtractedMessage {
   role: 'user' | 'assistant';
   text: string;
@@ -485,6 +429,15 @@ export interface ExtractedMessage {
    * get_session_messages pagination and search-hit offsets both depend on.
    */
   tools: ToolUse[];
+  /**
+   * Pi branch label. Present only on pi transcripts with topology breaks, and only
+   * ever 'abandoned' — active-path messages are unmarked, and unbranched pi files
+   * get no field at all (the annotation pass returns early when there are no forks,
+   * keeping unbranched output byte-identical).
+   */
+  branch?: 'active' | 'abandoned';
+  /** Fork marker, present on the first message of each abandoned branch. */
+  fork?: PiForkMarker;
 }
 
 export interface MessageSummary {
@@ -657,14 +610,17 @@ export function extractMessages(lines: string[]): ExtractedMessage[] {
   if (isCodexTranscript(lines)) return extractCodexMessages(lines);
 
   const messages: ExtractedMessage[] = [];
+  // Source line of each emitted message — the pi annotation pass maps messages back
+  // to tree entries through these.
+  const messageLines: number[] = [];
   let idx = 0;
   // The turn's head message — where a following pure-tool-use line's calls attach.
   let current: ExtractedMessage | null = null;
   // Tool calls seen before any message was emitted (rare: a session opening on a tool
   // call). Buffered here and flushed onto the first emitted message.
   let pending: ToolUse[] = [];
-  for (const line of lines) {
-    const d = tryParseJson(line);
+  for (let li = 0; li < lines.length; li++) {
+    const d = tryParseJson(lines[li]!);
     if (!d) continue;
     if (isUserMessage(d)) {
       const text = extractUserText(d);
@@ -672,6 +628,7 @@ export function extractMessages(lines: string[]): ExtractedMessage[] {
         current = { role: 'user', text, index: idx++, genuine: isGenuineUserTurn(d, text.trim()), tools: pending };
         pending = [];
         messages.push(current);
+        messageLines.push(li);
       }
       // A user line with no text is a tool_result/empty turn — it carries no tool_use
       // and must not reset `current` (assistant calls after it still belong to the turn).
@@ -682,6 +639,7 @@ export function extractMessages(lines: string[]): ExtractedMessage[] {
         current = { role: 'assistant', text, index: idx++, genuine: true, tools: pending.concat(tools) };
         pending = [];
         messages.push(current);
+        messageLines.push(li);
       } else if (tools.length) {
         // Pure tool-use turn: no text row (so no index), fold its calls into the head.
         if (current) current.tools.push(...tools);
@@ -689,12 +647,91 @@ export function extractMessages(lines: string[]): ExtractedMessage[] {
       }
     }
   }
+  annotatePiBranches(messages, messageLines, lines);
   return messages;
+}
+
+/**
+ * Pi branch annotation. Pi session files are trees: /tree navigation leaves abandoned
+ * branches in the same append-only JSONL, and the linear pass above renders those dead
+ * exchanges inline as if they happened in the live conversation. The fix is
+ * chronological ANNOTATION, not path filtering or reordering — pi appends entries in
+ * the order things happened, so raw file order is already truthful, and reordering
+ * would falsify the timeline and break the msg_index ↔ get_session_messages(offset)
+ * contract. Every message keeps its natural position and gains a label:
+ * abandoned-branch messages get branch:'abandoned', and the first message of each
+ * abandoned branch carries a fork marker. Numbering is untouched — abandoned messages
+ * keep their indices in the single numbering space.
+ *
+ * No-op purity: buildPiTree returns null on non-pi transcripts, and unbranched pi
+ * sessions (~98% of the corpus) return before any field is set, keeping their output
+ * byte-identical.
+ */
+function annotatePiBranches(messages: ExtractedMessage[], messageLines: number[], lines: string[]): void {
+  const tree = buildPiTree(lines);
+  if (!tree || tree.forks.length === 0) return;
+  const entryByLine = new Map<number, PiEntry>();
+  const entryById = new Map<string, PiEntry>();
+  for (const e of tree.entries) {
+    entryByLine.set(e.lineIndex, e);
+    if (!entryById.has(e.id)) entryById.set(e.id, e);
+  }
+  const entryOf = messageLines.map((li) => entryByLine.get(li));
+  let any = false;
+  for (let i = 0; i < messages.length; i++) {
+    const e = entryOf[i];
+    // A message line with no tree entry can't happen on real pi files (every line
+    // carries an id); treat it as active rather than mislabeling it.
+    if (e && !tree.activeIds.has(e.id)) {
+      messages[i]!.branch = 'abandoned';
+      any = true;
+    }
+  }
+  if (!any) return; // forked, but the abandoned branches hold no messages
+  for (const fork of tree.forks) {
+    const inFork: number[] = [];
+    const lineSet = new Set(fork.lineIndexes);
+    for (let i = 0; i < messages.length; i++) {
+      if (lineSet.has(messageLines[i]!)) inFork.push(i);
+    }
+    // A fork whose branch produces no messages (e.g. a custom-only subtree) gets no
+    // marker — there is no message to hang it on.
+    if (!inFork.length) continue;
+    const fromLine = entryById.get(fork.fromEntryId)?.lineIndex ?? 0;
+    let before = -1;
+    let after = -1;
+    for (let i = 0; i < messages.length; i++) {
+      const e = entryOf[i];
+      if (!e || !tree.activeIds.has(e.id)) continue;
+      if (messageLines[i]! <= fromLine) before = i;
+      else {
+        after = i;
+        break;
+      }
+    }
+    messages[inFork[0]!]!.fork = {
+      // No active messages at all can't occur on the real corpus (the fork parent is
+      // itself an active entry); the marker's own index is the defensive fallback.
+      fromIndex: before >= 0 ? before : after >= 0 ? after : inFork[0]!,
+      abandonedCount: inFork.length,
+      firstUserText: fork.firstUserText,
+      timestamp: fork.timestamp,
+    };
+  }
 }
 
 /** Thin projection of extractMessages — same messages, same numbering, no genuine flag. */
 export function getSessionMessages(lines: string[]): SessionMessage[] {
-  return extractMessages(lines).map(({ role, text, index, tools }) => ({ role, text, index, tools }));
+  return extractMessages(lines).map(({ role, text, index, tools, branch, fork }) => ({
+    role,
+    text,
+    index,
+    tools,
+    // Conditional spreads keep unbranched output free of the keys entirely (the same
+    // no-op purity annotatePiBranches guarantees on ExtractedMessage).
+    ...(branch ? { branch } : {}),
+    ...(fork ? { fork } : {}),
+  }));
 }
 
 /** Max length of each stored closing message (bounds the indexed columns). */

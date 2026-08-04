@@ -15,6 +15,7 @@ import {
   extractSessionMetadata,
   summarizeMessages,
 } from './parser';
+import { buildPiTree } from './pi-tree';
 
 function jsonl(...objs: Record<string, unknown>[]): string[] {
   return objs.map((o) => JSON.stringify(o));
@@ -866,5 +867,305 @@ describe('extractMessages: Codex', () => {
       { type: 'assistant', message: { content: [{ type: 'text', text: 'session_meta is the tell.' }] } },
     );
     expect(extractMessages(lines).map((m) => m.role)).toEqual(['user', 'assistant']);
+  });
+});
+
+// ——— Pi branch topology ———
+// Fixture shapes mirror real ~/.pi/agent/sessions files: every line carries
+// id/parentId, the session header is the root, the header-adjacent model_change has
+// parentId: null, and message text lives in content arrays of {type:'text'} blocks.
+const piSession = { type: 'session', id: 's1', timestamp: '2026-08-04T17:00:00.000Z', cwd: '/repo' };
+const piModelChange = (id: string, parentId: string | null) => ({
+  type: 'model_change',
+  id,
+  parentId,
+  timestamp: '2026-08-04T17:00:01.000Z',
+});
+const piUser = (id: string, parentId: string, text: string) => ({
+  type: 'message',
+  id,
+  parentId,
+  timestamp: '2026-08-04T17:01:00.000Z',
+  message: { role: 'user', content: [{ type: 'text', text }] },
+});
+const piAssistant = (id: string, parentId: string, text: string) => ({
+  type: 'message',
+  id,
+  parentId,
+  timestamp: '2026-08-04T17:02:00.000Z',
+  message: { role: 'assistant', content: [{ type: 'text', text }] },
+});
+
+// The canonical one-fork shape, modeled on corpus file 2026-08-04T17-05-44-093Z: a
+// /tree hop back to u1 produces an abandoned exchange, then a hop back to a1 resumes
+// what becomes the live conversation (two topology breaks: fork-out AND fork-back).
+function oneForkLines(): string[] {
+  return jsonl(
+    piSession,
+    piModelChange('m1', null),
+    piUser('u1', 'm1', 'first question'),
+    piAssistant('a1', 'u1', 'first answer'),
+    piUser('u2', 'u1', 'hello world'),
+    piAssistant('a2', 'u2', 'abandoned answer'),
+    piUser('u3', 'a1', 'the real follow-up'),
+    piAssistant('a3', 'u3', 'the live answer'),
+  );
+}
+
+describe('buildPiTree', () => {
+  test('returns null for Claude and Codex transcripts (no id/parentId shape)', () => {
+    expect(buildPiTree(jsonl({ type: 'user', message: { content: [{ type: 'text', text: 'hi' }] } }))).toBeNull();
+    expect(
+      buildPiTree(
+        jsonl(
+          { type: 'session_meta', payload: { cwd: '/repo' } },
+          {
+            type: 'response_item',
+            payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'go' }] },
+          },
+        ),
+      ),
+    ).toBeNull();
+  });
+
+  test('unbranched pi session: every entry active, no forks', () => {
+    const tree = buildPiTree(
+      jsonl(piSession, piModelChange('m1', null), piUser('u1', 'm1', 'first question'), piAssistant('a1', 'u1', 'a')),
+    )!;
+    expect(tree).not.toBeNull();
+    expect(tree.forks).toEqual([]);
+    expect(tree.activeIds.size).toBe(tree.entries.length);
+  });
+
+  test('parentId: null chains to the preceding entry instead of forking', () => {
+    // Every real pi file has exactly one parentId:null non-header entry — the first
+    // model_change — so this convention fires on every file and must never fork.
+    const tree = buildPiTree(jsonl(piSession, piModelChange('m1', null), piUser('u1', 'm1', 'hi')))!;
+    expect(tree.forks).toEqual([]);
+    expect(tree.activeIds.has('m1')).toBe(true);
+  });
+
+  test('one fork: the abandoned branch is excluded from the active path', () => {
+    const tree = buildPiTree(oneForkLines())!;
+    expect(tree.forks).toHaveLength(1);
+    expect(tree.forks[0]).toMatchObject({
+      fromEntryId: 'u1',
+      abandonedCount: 2, // entries u2 + a2
+      firstUserText: 'hello world',
+      timestamp: '2026-08-04T17:01:00.000Z',
+    });
+    expect(tree.activeIds.has('u2')).toBe(false);
+    expect(tree.activeIds.has('a2')).toBe(false);
+    expect(tree.activeIds.has('a3')).toBe(true);
+  });
+
+  test('three forks rooted at different active entries', () => {
+    const tree = buildPiTree(
+      jsonl(
+        piSession,
+        piModelChange('m1', null),
+        piUser('u1', 'm1', 'q1'),
+        piAssistant('a1', 'u1', 'a1'),
+        piUser('x1', 'u1', 'branch one'),
+        piAssistant('x2', 'x1', 'branch one reply'),
+        piUser('u2', 'a1', 'q2'),
+        piAssistant('a2', 'u2', 'a2'),
+        piUser('y1', 'a1', 'branch two'),
+        piUser('z1', 'u2', 'branch three'),
+        piUser('u3', 'a2', 'q3'),
+        piAssistant('a3', 'u3', 'a3'),
+      ),
+    )!;
+    expect(tree.forks).toHaveLength(3);
+    expect(tree.forks.map((f) => [f.fromEntryId, f.abandonedCount, f.firstUserText])).toEqual([
+      ['u1', 2, 'branch one'],
+      ['a1', 1, 'branch two'],
+      ['u2', 1, 'branch three'],
+    ]);
+    expect(tree.activeIds.has('a3')).toBe(true);
+  });
+
+  test('an abandoned branch re-entered and extended is still ONE fork', () => {
+    // The 24-break corpus session's actual shape: one fork whose subtree appears as
+    // disjoint runs, because /tree navigated back INTO the abandoned branch. The
+    // continuation's head has an abandoned parent, so it is not a new fork.
+    const tree = buildPiTree(
+      jsonl(
+        piSession,
+        piModelChange('m1', null),
+        piUser('u1', 'm1', 'q1'),
+        piAssistant('a1', 'u1', 'a1'),
+        piAssistant('x1', 'a1', 'abandoned 1'),
+        piAssistant('x2', 'x1', 'abandoned 2'),
+        piUser('u2', 'a1', 'q2'),
+        piAssistant('a2', 'u2', 'a2'),
+        piAssistant('x3', 'x2', 'abandoned 3'), // parent x2 is abandoned — same fork
+        piUser('u3', 'a2', 'q3'),
+        piAssistant('a3', 'u3', 'a3'),
+      ),
+    )!;
+    expect(tree.forks).toHaveLength(1);
+    expect(tree.forks[0]!.abandonedCount).toBe(3); // x1, x2, x3 across two disjoint runs
+    expect(tree.forks[0]!.firstUserText).toBe(''); // an assistant-only branch, like the real file
+  });
+
+  test('a backlink cycle is treated as fully active, never an infinite loop', () => {
+    const tree = buildPiTree(
+      jsonl(
+        piSession,
+        piModelChange('m1', null),
+        piUser('u1', 'a1', 'x'), // forward reference…
+        piAssistant('a1', 'u1', 'y'), // …that closes a corrupt A↔B cycle
+      ),
+    )!;
+    expect(tree.forks).toEqual([]);
+    expect(tree.activeIds.size).toBe(tree.entries.length);
+  });
+
+  test('an unknown parentId chains to the preceding entry (defensive, not seen in corpus)', () => {
+    const tree = buildPiTree(
+      jsonl(piSession, piModelChange('m1', null), piUser('u1', 'm1', 'hi'), piAssistant('a1', 'gone', 'yo')),
+    )!;
+    expect(tree.forks).toEqual([]);
+    expect(tree.activeIds.has('a1')).toBe(true);
+  });
+});
+
+describe('extractMessages: pi branches', () => {
+  test('unbranched pi session: no branch/fork fields at all (no-op purity)', () => {
+    const lines = jsonl(
+      piSession,
+      piModelChange('m1', null),
+      piUser('u1', 'm1', 'hi'),
+      piAssistant('a1', 'u1', 'hello'),
+    );
+    const msgs = extractMessages(lines);
+    expect(msgs.map((m) => [m.role, m.text])).toEqual([
+      ['user', 'hi'],
+      ['assistant', 'hello'],
+    ]);
+    for (const m of msgs) {
+      expect('branch' in m).toBe(false);
+      expect('fork' in m).toBe(false);
+    }
+  });
+
+  test('one fork: abandoned run labeled, first message carries the fork marker', () => {
+    const msgs = extractMessages(oneForkLines());
+    expect(msgs.map((m) => [m.role, m.text, m.branch ?? ''])).toEqual([
+      ['user', 'first question', ''],
+      ['assistant', 'first answer', ''],
+      ['user', 'hello world', 'abandoned'],
+      ['assistant', 'abandoned answer', 'abandoned'],
+      ['user', 'the real follow-up', ''],
+      ['assistant', 'the live answer', ''],
+    ]);
+    // Dense, single numbering space — abandoned messages keep their indices.
+    expect(msgs.map((m) => m.index)).toEqual([0, 1, 2, 3, 4, 5]);
+    const markers = msgs.filter((m) => m.fork);
+    expect(markers).toHaveLength(1);
+    expect(markers[0]!.index).toBe(2);
+    expect(markers[0]!.fork).toEqual({
+      fromIndex: 0, // the fork parent u1 produced message 0
+      abandonedCount: 2, // message-level: u2 + a2
+      firstUserText: 'hello world',
+      timestamp: '2026-08-04T17:01:00.000Z',
+    });
+  });
+
+  test('fork parent is a non-message entry: fromIndex maps to the nearest preceding message', () => {
+    const lines = jsonl(
+      piSession,
+      piModelChange('m1', null),
+      piUser('u1', 'm1', 'q1'),
+      piAssistant('a1', 'u1', 'a1'),
+      piModelChange('m2', 'a1'), // active, but produces no message
+      piUser('u2', 'm2', 'abandoned q'),
+      piAssistant('a2', 'u2', 'abandoned a'),
+      piUser('u3', 'm2', 'live q'),
+      piAssistant('a3', 'u3', 'live a'),
+    );
+    const msgs = extractMessages(lines);
+    const marker = msgs.find((m) => m.fork)!;
+    expect(marker.index).toBe(2);
+    expect(marker.fork!.fromIndex).toBe(1); // a1 — nearest active message at/before m2's line
+    expect(msgs.map((m) => m.branch ?? '')).toEqual(['', '', 'abandoned', 'abandoned', '', '']);
+  });
+
+  test('one fork spanning disjoint runs gets one marker and labels every run', () => {
+    // Same topology as the buildPiTree re-entry fixture: the marker lands on the
+    // branch's FIRST message and abandonedCount counts messages across both runs.
+    const lines = jsonl(
+      piSession,
+      piModelChange('m1', null),
+      piUser('u1', 'm1', 'q1'),
+      piAssistant('a1', 'u1', 'a1'),
+      piAssistant('x1', 'a1', 'abandoned 1'),
+      piAssistant('x2', 'x1', 'abandoned 2'),
+      piUser('u2', 'a1', 'q2'),
+      piAssistant('a2', 'u2', 'a2'),
+      piAssistant('x3', 'x2', 'abandoned 3'),
+      piUser('u3', 'a2', 'q3'),
+      piAssistant('a3', 'u3', 'a3'),
+    );
+    const msgs = extractMessages(lines);
+    expect(msgs.map((m) => m.branch ?? '')).toEqual(['', '', 'abandoned', 'abandoned', '', '', 'abandoned', '', '']);
+    expect(msgs.filter((m) => m.fork)).toHaveLength(1);
+    expect(msgs[2]!.fork!.abandonedCount).toBe(3); // x1 + x2 + x3, across the interleave
+    expect(msgs[2]!.fork!.firstUserText).toBe('');
+    expect(msgs.map((m) => m.index)).toEqual(msgs.map((_, i) => i)); // dense under interleaving
+  });
+
+  test('firstUserText skips injected turns and takes the first genuine one', () => {
+    // Regression guard for the sessionId gap: genuineUserTurnFromLine returns null on
+    // pi lines (they carry no sessionId), so the fork text must come from the shared
+    // isGenuineUserTurn/extractUserText logic — or every fork would report ''.
+    const lines = jsonl(
+      piSession,
+      piModelChange('m1', null),
+      piUser('u1', 'm1', 'q1'),
+      piAssistant('a1', 'u1', 'a1'),
+      piUser('x1', 'a1', 'Base directory for this skill: /x\n\nskill body'),
+      piUser('x2', 'x1', 'the genuine question'),
+      piAssistant('x3', 'x2', 'abandoned answer'),
+      piUser('u2', 'a1', 'q2'),
+      piAssistant('a2', 'u2', 'a2'),
+    );
+    const marker = extractMessages(lines).find((m) => m.fork)!;
+    expect(marker.fork!.firstUserText).toBe('the genuine question');
+  });
+
+  test('a fork whose branch holds no messages gets no marker', () => {
+    // The real 2026-08-04T17-05-44 file has this: a two-entry `custom` subtree hangs
+    // off the active path next to the message-bearing fork. There is no message to
+    // hang a marker on, and nothing to label.
+    const custom = (id: string, parentId: string) => ({
+      type: 'custom',
+      id,
+      parentId,
+      timestamp: '2026-08-04T17:03:00.000Z',
+    });
+    const lines = jsonl(
+      piSession,
+      piModelChange('m1', null),
+      piUser('u1', 'm1', 'q1'),
+      piAssistant('a1', 'u1', 'a1'),
+      custom('c1', 'a1'), // fork head, messageless subtree
+      piUser('u2', 'a1', 'q2'),
+      piAssistant('a2', 'u2', 'a2'),
+    );
+    const msgs = extractMessages(lines);
+    expect(buildPiTree(lines)!.forks).toHaveLength(1);
+    expect(msgs.filter((m) => m.fork)).toHaveLength(0);
+    expect(msgs.every((m) => !('branch' in m))).toBe(true);
+  });
+
+  test('getSessionMessages carries branch and fork through the projection', () => {
+    const msgs = getSessionMessages(oneForkLines());
+    expect(msgs[2]!.branch).toBe('abandoned');
+    expect(msgs[2]!.fork).toMatchObject({ fromIndex: 0, abandonedCount: 2, firstUserText: 'hello world' });
+    expect(msgs[3]!.branch).toBe('abandoned');
+    expect(msgs[3]!.fork).toBeUndefined();
+    expect('branch' in msgs[0]!).toBe(false);
   });
 });
