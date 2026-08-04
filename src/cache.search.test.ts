@@ -569,7 +569,10 @@ test('custom content findable at session level: recap, web-search fetch, and cus
       parentId: 'c1',
       timestamp: '2026-08-04T17:03:00.000Z',
       customType: 'web-search-results',
-      data: { type: 'fetch', urls: [{ url: 'https://example.com/zibble', title: 'zibblefetch guide', content: 'fetch body' }] },
+      data: {
+        type: 'fetch',
+        urls: [{ url: 'https://example.com/zibble', title: 'zibblefetch guide', content: 'fetch body' }],
+      },
     },
     // custom_message (any customType) → content
     {

@@ -75,9 +75,7 @@ function lineageRow(filePath: string): LineageRow | null {
   try {
     return (
       db
-        .query<LineageRow, [string]>(
-          'SELECT branches, fork_points, forked_from FROM sessions WHERE file_path = ?',
-        )
+        .query<LineageRow, [string]>('SELECT branches, fork_points, forked_from FROM sessions WHERE file_path = ?')
         .get(filePath) ?? null
     );
   } finally {

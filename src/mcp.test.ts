@@ -452,13 +452,15 @@ test('search_sessions: pi results carry branches and a basename-only forkedFrom'
   await cache.refreshIndex();
   const res = await mcp.runSearchSessions({ tool: 'pi' });
   const parsed = JSON.parse(res.content[0]!.text);
-  const byId = new Map<string, Record<string, unknown>>(parsed.results.map((r: Record<string, unknown>) => [r.sessionId as string, r]));
+  const byId = new Map<string, Record<string, unknown>>(
+    parsed.results.map((r: Record<string, unknown>) => [r.sessionId as string, r]),
+  );
   expect(byId.get('pibranch')).toMatchObject({ branches: 1, forkedFrom: '' });
   // Basename only — agents don't need (and shouldn't act on) the absolute parent path.
   expect(byId.get('pifork')).toMatchObject({ branches: 0, forkedFrom: 'parent-file.jsonl' });
 });
 
-test('get_session_messages: the fork marker is a field on the branch\'s first message; total unchanged', async () => {
+test("get_session_messages: the fork marker is a field on the branch's first message; total unchanged", async () => {
   const file = writePiFixture('pimarkers', branchedPiRecords());
   const res = await mcp.runGetSessionMessages({ filePath: file, offset: 0, limit: 20 });
   const parsed = JSON.parse(res.content[0]!.text);
@@ -466,14 +468,7 @@ test('get_session_messages: the fork marker is a field on the branch\'s first me
   // must equal the unbranched message count, or every search-hit offset drifts.
   expect(parsed.total).toBe(6);
   const msgs = parsed.messages;
-  expect(msgs.map((m: Record<string, unknown>) => m.branch ?? '')).toEqual([
-    '',
-    '',
-    'abandoned',
-    'abandoned',
-    '',
-    '',
-  ]);
+  expect(msgs.map((m: Record<string, unknown>) => m.branch ?? '')).toEqual(['', '', 'abandoned', 'abandoned', '', '']);
   expect(msgs.filter((m: Record<string, unknown>) => m.fork)).toHaveLength(1);
   // The marker hangs on the branch's first message (index 2) and names the active
   // message it forked from (index 0, from u1).
