@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.23.0](https://github.com/nicknisi/sessions/compare/v1.22.1...v1.23.0) (2026-08-04)
+
+
+### Features
+
+* first-class pi session tree/fork support ([#73](https://github.com/nicknisi/sessions/issues/73)) ([fa2e5c8](https://github.com/nicknisi/sessions/commit/fa2e5c841bfb38d428b7784a0e4dcfa3fca8a695))
+
 ## [1.22.1](https://github.com/nicknisi/sessions/compare/v1.22.0...v1.22.1) (2026-08-01)
 
 
