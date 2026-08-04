@@ -19,7 +19,7 @@
     "typecheck": "tsc --noEmit",
     "test": "bun test",
     "site:dev": "cd site && bun run dev",
-    "site:build": "cd site && bun run build",
+    "site:build": "cd site && bun install --frozen-lockfile && bun run build",
     "site:check": "cd site && bun run check",
     "site:deploy": "cd site && bun run deploy"
   },
