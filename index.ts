@@ -3,7 +3,7 @@ import { version } from './package.json';
 import { parseArgs, getRepoRoot, toSearchOptions } from './src/cli';
 import { C } from './src/colors';
 import { scanSessions } from './src/scanner';
-import { formatLine } from './src/display';
+import { formatLine, formatLineage } from './src/display';
 import { selectSession } from './src/select';
 import { copyToClipboard } from './src/clipboard';
 import { buildResumeCommand } from './src/search-format';
@@ -138,6 +138,14 @@ process.stderr.write('\n');
 process.stderr.write(`  ${C.bold}${dirName}${C.reset} ${C.dim}(${tool})${C.reset}\n`);
 if (prompt) {
   process.stderr.write(`  ${C.dim}${prompt}${C.reset}\n`);
+}
+// Lineage (pi /tree forks + /fork parent) comes from the SessionResult, not the TSV
+// fields — match the selection back to its result by sessionId+tool. Display-only:
+// formatLineage basenames the raw parent path and never joins it back to the index.
+const selected = results.find((r) => r.sessionId === sessionId && r.tool === tool);
+const lineage = selected ? formatLineage(selected) : '';
+if (lineage) {
+  process.stderr.write(`  ${C.dim}${lineage}${C.reset}\n`);
 }
 process.stderr.write('\n');
 

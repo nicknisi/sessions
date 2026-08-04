@@ -13,7 +13,7 @@ import {
   resolveSessionFile,
 } from './cache';
 import { formatResult, buildResumeCommand } from './search-format';
-import { getSessionMessages } from './parser';
+import { getSessionMessages, type PiForkMarker } from './parser';
 import { buildSessionDigest, clip, renderDigestMarkdown } from './digest';
 import { resolveRepo } from './repo';
 import { readSessionLines } from './session-io';
@@ -245,20 +245,30 @@ export async function runGetSessionMessages(args: {
     total: allMessages.length,
     offset,
     returned: page.length,
-    messages: page.map((m) =>
-      includeTools
-        ? {
-            role: m.role,
-            text: m.text,
-            // Rendered as `Name(summary)` one-liners; a turn's tool calls fold in here
-            // (pure-tool-use turns have no index of their own).
-            tools: m.tools.map((t) => (t.summary ? `${t.name}(${t.summary})` : t.name)),
-          }
-        : { role: m.role, text: m.text },
-    ),
+    messages: page.map((m) => ({
+      role: m.role,
+      text: m.text,
+      // Rendered as `Name(summary)` one-liners; a turn's tool calls fold in here
+      // (pure-tool-use turns have no index of their own).
+      ...(includeTools ? { tools: m.tools.map((t) => (t.summary ? `${t.name}(${t.summary})` : t.name)) } : {}),
+      // Pi branch labels and fork markers are FIELDS, orthogonal to include_tools and
+      // present in both modes. A marker is never a synthetic message row — that would
+      // change `total` and drift every messageHits offset this tool's contract pins.
+      // Conditional spreads keep unbranched sessions key-free (zero token cost).
+      ...(m.branch ? { branch: m.branch } : {}),
+      ...(m.fork ? { fork: { ...m.fork, marker: renderForkMarker(m.fork) } } : {}),
+    })),
   };
 
   return toolResult(result);
+}
+
+/** The human-readable rendering inside a fork marker — chat display reads `marker`,
+ *  programmatic consumers read the structured fields beside it. */
+function renderForkMarker(fork: PiForkMarker): string {
+  const count = `${fork.abandonedCount} message${fork.abandonedCount === 1 ? '' : 's'}`;
+  const text = fork.firstUserText ? `: "${fork.firstUserText}"` : '';
+  return `⑂ forked from msg #${fork.fromIndex} — abandoned branch, ${count}${text}`;
 }
 
 // Exported, testable seam like runGetSessionMessages: the get_session_digest tool
@@ -306,7 +316,7 @@ function registerTools(server: McpServer): void {
     {
       title: 'Search past AI coding sessions',
       description:
-        'Search across all past AI coding sessions from Claude Code, Codex, Pi, and OpenCode. Use proactively when the user references prior work ("didn\'t we already", "last time", "that thing we tried"), when a why-question isn\'t answered by code or git history, or before re-solving a problem that may have been solved in an earlier session. Results are ranked by relevance and capped (top-k) — NOT exhaustive; for every-occurrence, counts, or an exact string/regex, use grep_sessions instead. Returns matching sessions with snippets, the files/commands involved, an errored flag, and a ready-to-run resume command. Each result includes messageHits — the specific matching messages (index, role, snippet); pass a hit\'s index as the offset to get_session_messages to jump straight to the matched exchange. To answer "which sessions touched this file?", pass files (with no query) — results come back newest-first.',
+        'Search across all past AI coding sessions from Claude Code, Codex, Pi, and OpenCode. Use proactively when the user references prior work ("didn\'t we already", "last time", "that thing we tried"), when a why-question isn\'t answered by code or git history, or before re-solving a problem that may have been solved in an earlier session. Results are ranked by relevance and capped (top-k) — NOT exhaustive; for every-occurrence, counts, or an exact string/regex, use grep_sessions instead. Returns matching sessions with snippets, the files/commands involved, an errored flag, and a ready-to-run resume command. Each result includes messageHits — the specific matching messages (index, role, snippet); pass a hit\'s index as the offset to get_session_messages to jump straight to the matched exchange. Pi session results also carry `branches` (in-file /tree fork count) and `forkedFrom` (basename of the parent session file for /fork copies, empty when none). To answer "which sessions touched this file?", pass files (with no query) — results come back newest-first.',
       inputSchema: {
         query: z
           .string()
@@ -365,7 +375,7 @@ function registerTools(server: McpServer): void {
     {
       title: 'Read messages from one session',
       description:
-        'Retrieve messages from a specific session. Returns user and assistant messages in order, paginated. Pass a messageHits[].index from search_sessions (or a grep_sessions hit\'s msgIndex) as the offset to start at the matched message. Set include_tools=true to also see the tool calls the assistant made in each turn (Edit, Bash, Read, …) rendered as one-liners — use it to answer "what did the AI actually do here", which the prose alone often omits.',
+        'Retrieve messages from a specific session. Returns user and assistant messages in order, paginated. Pass a messageHits[].index from search_sessions (or a grep_sessions hit\'s msgIndex) as the offset to start at the matched message. Set include_tools=true to also see the tool calls the assistant made in each turn (Edit, Bash, Read, …) rendered as one-liners — use it to answer "what did the AI actually do here", which the prose alone often omits. For Pi sessions with /tree branches, abandoned-branch messages carry branch:abandoned and the first message of each abandoned branch carries a `fork` marker (structured fields plus a human-readable `marker` string).',
       inputSchema: {
         filePath: z.string().describe('The session filePath from search_sessions results'),
         offset: z

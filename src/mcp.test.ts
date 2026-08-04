@@ -394,6 +394,137 @@ test('get_session_messages omits tools by default (back-compat shape)', async ()
   expect(parsed.messages[0].tools).toBeUndefined();
 });
 
+// ——— pi fork surfaces (pi first-class phase 2) — additive ———
+
+function writePiFixture(id: string, records: Record<string, unknown>[]): string {
+  const dir = join(tmp, 'pi', 'proj');
+  mkdirSync(dir, { recursive: true });
+  const file = join(dir, `${id}.jsonl`);
+  writeFileSync(file, records.map((r) => j(r)).join('\n'));
+  return file;
+}
+
+// Pi fixture shapes mirror src/parser.test.ts: id/parentId on every line, the header
+// is the root, the header-adjacent model_change has parentId: null.
+const piHeader = (extra: Record<string, unknown> = {}) => ({
+  type: 'session',
+  id: 's1',
+  timestamp: '2026-08-04T17:00:00.000Z',
+  cwd: '/repoPi',
+  ...extra,
+});
+const piModelChange = { type: 'model_change', id: 'm1', parentId: null, timestamp: '2026-08-04T17:00:01.000Z' };
+const piUser = (id: string, parentId: string, text: string) => ({
+  type: 'message',
+  id,
+  parentId,
+  timestamp: '2026-08-04T17:01:00.000Z',
+  message: { role: 'user', content: [{ type: 'text', text }] },
+});
+const piAssistant = (id: string, parentId: string, text: string) => ({
+  type: 'message',
+  id,
+  parentId,
+  timestamp: '2026-08-04T17:02:00.000Z',
+  message: { role: 'assistant', content: [{ type: 'text', text }] },
+});
+
+// The canonical one-fork shape: /tree hops back to u1 (abandoning u2/a2), then back
+// to a1 to resume the live conversation. 6 extracted messages, 1 fork marker.
+function branchedPiRecords(): Record<string, unknown>[] {
+  return [
+    piHeader(),
+    piModelChange,
+    piUser('u1', 'm1', 'first question'),
+    piAssistant('a1', 'u1', 'first answer'),
+    piUser('u2', 'u1', 'hello world'),
+    piAssistant('a2', 'u2', 'abandoned answer'),
+    piUser('u3', 'a1', 'the real follow-up'),
+    piAssistant('a3', 'u3', 'the live answer'),
+  ];
+}
+
+const PI_PARENT = '/Users/dev/.pi/agent/sessions/--repoPi--/parent-file.jsonl';
+
+test('search_sessions: pi results carry branches and a basename-only forkedFrom', async () => {
+  writePiFixture('pibranch', branchedPiRecords());
+  writePiFixture('pifork', [piHeader({ parentSession: PI_PARENT }), piModelChange, piUser('u1', 'm1', 'continued')]);
+  await cache.refreshIndex();
+  const res = await mcp.runSearchSessions({ tool: 'pi' });
+  const parsed = JSON.parse(res.content[0]!.text);
+  const byId = new Map<string, Record<string, unknown>>(parsed.results.map((r: Record<string, unknown>) => [r.sessionId as string, r]));
+  expect(byId.get('pibranch')).toMatchObject({ branches: 1, forkedFrom: '' });
+  // Basename only — agents don't need (and shouldn't act on) the absolute parent path.
+  expect(byId.get('pifork')).toMatchObject({ branches: 0, forkedFrom: 'parent-file.jsonl' });
+});
+
+test('get_session_messages: the fork marker is a field on the branch\'s first message; total unchanged', async () => {
+  const file = writePiFixture('pimarkers', branchedPiRecords());
+  const res = await mcp.runGetSessionMessages({ filePath: file, offset: 0, limit: 20 });
+  const parsed = JSON.parse(res.content[0]!.text);
+  // The core invariant: a marker is a FIELD, never a synthetic message row — `total`
+  // must equal the unbranched message count, or every search-hit offset drifts.
+  expect(parsed.total).toBe(6);
+  const msgs = parsed.messages;
+  expect(msgs.map((m: Record<string, unknown>) => m.branch ?? '')).toEqual([
+    '',
+    '',
+    'abandoned',
+    'abandoned',
+    '',
+    '',
+  ]);
+  expect(msgs.filter((m: Record<string, unknown>) => m.fork)).toHaveLength(1);
+  // The marker hangs on the branch's first message (index 2) and names the active
+  // message it forked from (index 0, from u1).
+  expect(msgs[2].fork).toMatchObject({ fromIndex: 0, abandonedCount: 2, firstUserText: 'hello world' });
+  expect(msgs[2].fork.marker).toBe('⑂ forked from msg #0 — abandoned branch, 2 messages: "hello world"');
+  // Active messages carry no branch/fork keys at all (zero token cost).
+  expect('branch' in msgs[0]).toBe(false);
+  expect('fork' in msgs[0]).toBe(false);
+});
+
+test('get_session_messages: markers and branch fields appear with includeTools on too', async () => {
+  const file = writePiFixture('pimarkers2', branchedPiRecords());
+  const res = await mcp.runGetSessionMessages({ filePath: file, offset: 0, limit: 20, includeTools: true });
+  const parsed = JSON.parse(res.content[0]!.text);
+  expect(parsed.total).toBe(6);
+  expect(parsed.messages[2].branch).toBe('abandoned');
+  expect(parsed.messages[2].fork.marker).toContain('⑂ forked from msg #0');
+});
+
+test('get_session_messages: an offset landing exactly on a fork marker returns the marked message first', async () => {
+  const file = writePiFixture('pimarkers3', branchedPiRecords());
+  const res = await mcp.runGetSessionMessages({ filePath: file, offset: 2, limit: 1 });
+  const parsed = JSON.parse(res.content[0]!.text);
+  expect(parsed.returned).toBe(1);
+  expect(parsed.messages[0].text).toBe('hello world');
+  expect(parsed.messages[0].fork.marker).toContain('abandoned branch');
+});
+
+test('schema conformance: fork fields survive tools/call output validation (not zod-stripped)', async () => {
+  const file = writePiFixture('pimarkers4', branchedPiRecords());
+  writePiFixture('pifork2', [piHeader({ parentSession: PI_PARENT }), piModelChange, piUser('u1', 'm1', 'continued')]);
+  await cache.refreshIndex();
+  const client = await connect();
+
+  const msgRes = await client.callTool({ name: 'get_session_messages', arguments: { filePath: file } });
+  expect(msgRes.isError).toBeFalsy();
+  expect(conforms('get_session_messages', GetSessionMessagesOutput, msgRes.structuredContent)).toBe('ok');
+  const msgs = GetSessionMessagesOutput.parse(msgRes.structuredContent);
+  expect(msgs.messages[2]!.branch).toBe('abandoned');
+  expect(msgs.messages[2]!.fork?.marker).toContain('abandoned branch');
+
+  const searchRes = await client.callTool({ name: 'search_sessions', arguments: { tool: 'pi' } });
+  expect(searchRes.isError).toBeFalsy();
+  expect(conforms('search_sessions', SearchSessionsOutput, searchRes.structuredContent)).toBe('ok');
+  const search = SearchSessionsOutput.parse(searchRes.structuredContent);
+  const forked = search.results.find((r) => r.sessionId === 'pifork2');
+  expect(forked?.forkedFrom).toBe('parent-file.jsonl');
+  expect(search.results.find((r) => r.sessionId === 'pimarkers4')?.branches).toBe(1);
+  await client.close();
+});
+
 // ——— stdio lifecycle ———
 
 test('server exits when the client closes stdin instead of lingering as an orphan', async () => {

@@ -22,6 +22,14 @@ export interface SessionResult {
   files: string[];
   commands: string[];
   errored: boolean;
+  /** In-file fork count: pi /tree abandoned branches (from buildPiTree). 0 for
+   *  other tools and unbranched sessions — including the no-index scanner
+   *  fallback, which does not parse topology. */
+  branches: number;
+  /** Absolute path of the parent session on pi /fork /clone copies; '' otherwise.
+   *  Stored unresolved by design (the parent file may not exist on disk) — display
+   *  surfaces basename it, nothing joins it back to the sessions table. */
+  forkedFrom: string;
   /** Top message-level matches (≤3, best first). Empty for metadata-only matches;
    *  absent from the no-index scanner fallback, which cannot localize hits. */
   messageHits?: MessageHit[];

@@ -529,3 +529,94 @@ test('grep: case-insensitive by default, exact when ignoreCase=false', async () 
 test('grep: an invalid regex throws a friendly error', async () => {
   await expect(cache.grepSessions('(unclosed', { regex: true })).rejects.toThrow(/Invalid regex/);
 });
+
+// ——— pi custom-type session-level indexing (schema v10) tests — additive ———
+
+function writePi(id: string, records: unknown[]): void {
+  const dir = join(process.env.SESSIONS_PI_DIR!, 'proj');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, `${id}.jsonl`), records.map((r) => j(r)).join('\n'));
+}
+
+const piHeader = { type: 'session', id: 's1', timestamp: '2026-08-04T17:00:00.000Z', cwd: '/repoPiCustom' };
+const piModelChange = { type: 'model_change', id: 'm1', parentId: null, timestamp: '2026-08-04T17:00:01.000Z' };
+const piTurn = {
+  type: 'message',
+  id: 'u1',
+  parentId: 'm1',
+  timestamp: '2026-08-04T17:01:00.000Z',
+  message: { role: 'user', content: [{ type: 'text', text: 'ordinary pi turn' }] },
+};
+
+test('custom content findable at session level: recap, web-search fetch, and custom_message', async () => {
+  writePi('customctx', [
+    piHeader,
+    piModelChange,
+    piTurn,
+    // recap → data.summary
+    {
+      type: 'custom',
+      id: 'c1',
+      parentId: 'u1',
+      timestamp: '2026-08-04T17:02:00.000Z',
+      customType: 'recap',
+      data: { summary: '## Goal\nship the quixoticrecap pipeline' },
+    },
+    // web-search-results (fetch sub-shape) → urls[] title + content
+    {
+      type: 'custom',
+      id: 'c2',
+      parentId: 'c1',
+      timestamp: '2026-08-04T17:03:00.000Z',
+      customType: 'web-search-results',
+      data: { type: 'fetch', urls: [{ url: 'https://example.com/zibble', title: 'zibblefetch guide', content: 'fetch body' }] },
+    },
+    // custom_message (any customType) → content
+    {
+      type: 'custom_message',
+      id: 'c3',
+      parentId: 'c2',
+      timestamp: '2026-08-04T17:04:00.000Z',
+      customType: 'btw-answer',
+      content: 'the intercomwobble answer is 42',
+    },
+  ]);
+  await cache.refreshIndex();
+  for (const term of ['quixoticrecap', 'zibblefetch', 'intercomwobble']) {
+    const r = await cache.searchSessions(term, {});
+    expect(r.map((x) => x.sessionId)).toContain('customctx');
+    // Session-level only: these are extension injections, not turns — the message
+    // view never sees them, so the hit must not localize to a message.
+    expect(r.find((x) => x.sessionId === 'customctx')!.messageHits).toEqual([]);
+  }
+});
+
+test('turn-duration excluded from index (and unknown customTypes are opt-in excluded)', async () => {
+  writePi('customnoise', [
+    piHeader,
+    piModelChange,
+    piTurn,
+    {
+      type: 'custom',
+      id: 'c1',
+      parentId: 'u1',
+      timestamp: '2026-08-04T17:02:00.000Z',
+      customType: 'turn-duration',
+      data: { durationMs: 1234, label: 'chronofizzle segment' },
+    },
+    {
+      type: 'custom',
+      id: 'c2',
+      parentId: 'c1',
+      timestamp: '2026-08-04T17:03:00.000Z',
+      customType: 'some-future-type',
+      data: { blob: 'novelnoise payload' },
+    },
+  ]);
+  await cache.refreshIndex();
+  // The session IS indexed (its ordinary turn is findable)…
+  expect((await cache.searchSessions('ordinary pi turn', {})).map((x) => x.sessionId)).toContain('customnoise');
+  // …but neither the excluded timing-noise type nor the unknown type is.
+  expect((await cache.searchSessions('chronofizzle', {})).map((x) => x.sessionId)).not.toContain('customnoise');
+  expect((await cache.searchSessions('novelnoise', {})).map((x) => x.sessionId)).not.toContain('customnoise');
+});

@@ -14,6 +14,7 @@ import {
   closingMessages,
   extractSessionMetadata,
   summarizeMessages,
+  sessionParentSession,
 } from './parser';
 import { buildPiTree } from './pi-tree';
 
@@ -1167,5 +1168,33 @@ describe('extractMessages: pi branches', () => {
     expect(msgs[3]!.branch).toBe('abandoned');
     expect(msgs[3]!.fork).toBeUndefined();
     expect('branch' in msgs[0]!).toBe(false);
+  });
+});
+
+describe('sessionParentSession', () => {
+  const parent = '/Users/dev/.pi/agent/sessions/--repo--/parent-file.jsonl';
+
+  test('pi /fork header: returns the raw parentSession path', () => {
+    const lines = jsonl({ ...piSession, parentSession: parent }, piModelChange('m1', null));
+    expect(sessionParentSession(lines, 'pi')).toBe(parent);
+  });
+
+  test('pi normal header (no parentSession key): returns empty', () => {
+    const lines = jsonl(piSession, piModelChange('m1', null), piUser('u1', 'm1', 'hi'));
+    expect(sessionParentSession(lines, 'pi')).toBe('');
+  });
+
+  test('non-pi tools return empty without parsing (tool guard first)', () => {
+    // Claude's line 1 is a user message, Codex's is session_meta — neither has a
+    // type:'session' header, and the guard means even a pi-shaped line 1 under a
+    // non-pi tool is never inspected.
+    expect(sessionParentSession(jsonl({ ...piSession, parentSession: parent }), 'claude')).toBe('');
+    expect(sessionParentSession(jsonl({ type: 'user', cwd: '/repo' }), 'claude')).toBe('');
+    expect(sessionParentSession(jsonl({ type: 'session_meta', payload: { cwd: '/repo' } }), 'codex')).toBe('');
+  });
+
+  test('empty lines and a corrupt line 1 return empty (never throws)', () => {
+    expect(sessionParentSession([], 'pi')).toBe('');
+    expect(sessionParentSession(['{not json'], 'pi')).toBe('');
   });
 });

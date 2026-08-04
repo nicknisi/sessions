@@ -50,6 +50,9 @@ const formattedResult = z.object({
   exists: z.boolean(),
   filePath: z.string(),
   resumeCommand: z.string(),
+  // Pi lineage: /tree in-file fork count and the /fork parent basename ('' when none).
+  branches: z.number(),
+  forkedFrom: z.string(),
   // Absent on the no-index scanner fallback, empty on a metadata-only match.
   messageHits: z.array(messageHit).optional(),
 });
@@ -106,6 +109,22 @@ export const GetSessionMessagesOutput = z.object({
       text: z.string(),
       // Only present when include_tools was set.
       tools: z.array(z.string()).optional(),
+      // Pi branch labels — only ever 'abandoned' in practice, and absent on
+      // unbranched sessions (conditional-spread purity in runGetSessionMessages).
+      branch: z.enum(['active', 'abandoned']).optional(),
+      // A FIELD on the branch's first message, never a synthetic row: inserting a
+      // marker message would shift `total` and drift every search-hit offset.
+      fork: z
+        .object({
+          fromIndex: z.number(),
+          abandonedCount: z.number(),
+          firstUserText: z.string(),
+          timestamp: z.string(),
+          // Human-readable rendering for chat display; the structured fields above
+          // serve programmatic consumers.
+          marker: z.string(),
+        })
+        .optional(),
     }),
   ),
 });

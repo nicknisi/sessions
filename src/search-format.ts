@@ -1,4 +1,5 @@
 // src/search-format.ts
+import { basename } from 'node:path';
 import type { MessageHit, SessionResult, Tool } from './types';
 
 /** The exact resume affordance both the CLI (clipboard) and the MCP (returned field) use. */
@@ -40,6 +41,11 @@ export interface FormattedResult {
   exists: boolean;
   filePath: string;
   resumeCommand: string;
+  /** Pi /tree in-file fork count; 0 for other tools and unbranched sessions. */
+  branches: number;
+  /** BASENAME of the /fork parent session file ('' when none) — agents don't need
+   *  the absolute path, and the stored path is deliberately unresolved. */
+  forkedFrom: string;
   /** Message-level matches (≤3, best first); each index feeds get_session_messages(offset).
    *  Present whenever the source result carries hits (indexed search always does — it may
    *  be empty for metadata-only matches); absent for the no-index scanner fallback. */
@@ -65,6 +71,8 @@ export function formatResult(r: SessionResult): FormattedResult {
     exists: r.exists,
     filePath: r.filePath,
     resumeCommand: buildResumeCommand(r.tool, r.cwd, r.sessionId),
+    branches: r.branches,
+    forkedFrom: r.forkedFrom ? basename(r.forkedFrom) : '',
   };
   if (r.messageHits) out.messageHits = r.messageHits;
   return out;

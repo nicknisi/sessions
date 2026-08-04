@@ -20,11 +20,19 @@ import {
 import { activeMemoryFor } from './memory/retrieve';
 import { getPiSessionsDir } from './paths';
 import type { MemoryRecord } from './memory/types';
-import { extractMessages, getSessionMessages, extractSessionMetadata, summarizeMessages } from './parser';
+import {
+  extractMessages,
+  getSessionMessages,
+  extractSessionMetadata,
+  summarizeMessages,
+  sessionParentSession,
+} from './parser';
+import { buildPiTree } from './pi-tree';
 import { extractFiles, extractFilesRead } from './extract-files';
 import { extractCommands } from './extract-commands';
 import { extractErrors } from './extract-errors';
 import { extractThinking } from './extract-thinking';
+import { extractCustomContext } from './extract-custom';
 import { discoverOpencodeSessions, collectOpencodeSubagentText, closeOpencodeDb } from './opencode';
 import { readSessionLines, statSession } from './session-io';
 // The same cap the search projection uses. Aliased at the import so the name reads as the
@@ -79,7 +87,11 @@ function getCodexDir(): string {
 // histogram), and Codex transcripts index their messages for the first time —
 // every Codex row held metadata only until parser.ts learned the response_item
 // envelope, so a rebuild is what actually populates them.
-const SCHEMA_VERSION = 9;
+// v10: pi lineage columns — sessions.branches / fork_points / forked_from (in-file
+// /tree fork count, the PiFork[] JSON, and the /fork parent path) — and pi
+// custom/custom_message content joins session_fts.context_text. Both need a
+// re-parse of every transcript, which the user_version drop+rebuild below provides.
+const SCHEMA_VERSION = 10;
 let _db: Database | null = null;
 let _refreshPromise: Promise<RefreshResult> | null = null;
 let _lastRefreshAt = 0;
@@ -163,7 +175,14 @@ function openDb(): Database {
       error_count INTEGER NOT NULL DEFAULT 0,
       closing_user TEXT NOT NULL DEFAULT '',
       closing_assistant TEXT NOT NULL DEFAULT '',
-      branch TEXT NOT NULL DEFAULT ''
+      branch TEXT NOT NULL DEFAULT '',
+      -- Pi lineage (v10): in-file /tree fork count, the PiFork[] JSON verbatim
+      -- (queryable later without re-parsing), and the /fork parent path stored
+      -- raw — the parent file may not exist on disk, so nothing resolves it here.
+      -- Zero/empty defaults for non-pi tools.
+      branches INTEGER NOT NULL DEFAULT 0,
+      fork_points TEXT NOT NULL DEFAULT '[]',
+      forked_from TEXT NOT NULL DEFAULT ''
     )
   `);
   // Session-level searchable text only — message text lives in message_fts (one row
@@ -387,18 +406,30 @@ function indexFile(db: Database, filePath: string, tool: Tool): boolean {
   const commands = JSON.stringify(commandsArr);
   const errors = extractErrors(lines, tool);
   const thinking = extractThinking(lines, tool);
+  // Pi lineage. buildPiTree already ran inside extractMessages above (phase 1); this
+  // is a deliberate second linear pass per changed pi file rather than threading the
+  // tree out of extractMessages and coupling two stable interfaces. mtime-gated, so
+  // the cost lands only on files that actually changed.
+  const forkedFrom = sessionParentSession(lines, tool);
+  const piTree = tool === 'pi' ? buildPiTree(lines) : null;
+  const branches = piTree?.forks.length ?? 0;
+  const forkPoints = JSON.stringify(piTree?.forks ?? []);
   const headline = `${summary.firstPrompt}\n${metadata.customTitle}`;
   const pathsText = [...filesTouchedArr, ...filesReadArr].join('\n');
   const commandsText = commandsArr.join('\n');
-  const contextText = errors.messages.join('\n');
+  // context_text carries conversational context that is not a message: error text
+  // (all tools) plus pi custom/custom_message injections (recaps, web-search
+  // fetches, intercom) — extension output, never turns, so it stays out of
+  // message_fts and ranks at the middle bm25 weight.
+  const contextText = [errors.messages.join('\n'), extractCustomContext(lines, tool)].filter(Boolean).join('\n');
   if (existing) {
     db.run('DELETE FROM session_fts WHERE file_path = ?', [filePath]);
     db.run('DELETE FROM message_fts WHERE file_path = ?', [filePath]);
   }
   db.run('DELETE FROM ignored_files WHERE file_path = ?', [filePath]);
   db.run(
-    `INSERT OR REPLACE INTO sessions (file_path, mtime, size, cwd, tool, session_id, date, created_at, started_at, first_prompt, custom_title, message_count, files_touched, files_read, commands, errored, error_count, closing_user, closing_assistant, branch)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT OR REPLACE INTO sessions (file_path, mtime, size, cwd, tool, session_id, date, created_at, started_at, first_prompt, custom_title, message_count, files_touched, files_read, commands, errored, error_count, closing_user, closing_assistant, branch, branches, fork_points, forked_from)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       filePath,
       stat.mtimeMs,
@@ -420,6 +451,9 @@ function indexFile(db: Database, filePath: string, tool: Tool): boolean {
       summary.closingUser,
       summary.closingAssistant,
       metadata.branch,
+      branches,
+      forkPoints,
+      forkedFrom,
     ],
   );
   db.run(
@@ -612,6 +646,8 @@ export async function searchSessions(query: string, opts: SearchOptions = {}): P
     files_read: string;
     commands: string;
     errored: number;
+    branches: number;
+    forked_from: string;
     snippet: string | null;
   }
 
@@ -733,7 +769,7 @@ export async function searchSessions(query: string, opts: SearchOptions = {}): P
         .query<SessionRow, any[]>(`
         SELECT file_path, cwd, tool, session_id, date, created_at, first_prompt,
                custom_title, message_count, files_touched, files_read, commands, errored,
-               NULL as snippet
+               branches, forked_from, NULL as snippet
         FROM sessions WHERE file_path IN (${placeholders}) ${extra}
       `)
         .all(...chunk, ...condParams);
@@ -772,7 +808,8 @@ export async function searchSessions(query: string, opts: SearchOptions = {}): P
     rows = db
       .query<SessionRow, any[]>(`
       SELECT file_path, cwd, tool, session_id, date, created_at, first_prompt,
-             custom_title, message_count, files_touched, files_read, commands, errored, NULL as snippet
+             custom_title, message_count, files_touched, files_read, commands, errored,
+             branches, forked_from, NULL as snippet
       FROM sessions ${where}
       ORDER BY ${orderBy} LIMIT ?
     `)
@@ -795,6 +832,8 @@ export async function searchSessions(query: string, opts: SearchOptions = {}): P
     files: [...new Set([...parseFiles(r.files_touched), ...parseFiles(r.files_read)])],
     commands: parseFiles(r.commands),
     errored: r.errored === 1,
+    branches: r.branches,
+    forkedFrom: r.forked_from,
     messageHits: hitsByPath.get(r.file_path) ?? [],
   }));
 }

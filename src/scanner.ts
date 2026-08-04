@@ -56,6 +56,10 @@ async function processSession(
       files: [],
       commands: [],
       errored: false,
+      // The no-index fallback does not parse pi topology or headers for lineage;
+      // fork visibility is an indexed-search feature (zero-value defaults).
+      branches: 0,
+      forkedFrom: '',
     };
   }
 
@@ -74,6 +78,8 @@ async function processSession(
     files: [],
     commands: [],
     errored: false,
+    branches: 0,
+    forkedFrom: '',
   };
 }
 

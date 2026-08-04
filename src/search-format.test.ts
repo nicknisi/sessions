@@ -25,6 +25,8 @@ test('formatResult: shapes a SessionResult for callers, including resumeCommand'
     files: ['/r/a.ts'],
     commands: ['bun test'],
     errored: true,
+    branches: 0,
+    forkedFrom: '',
   };
   expect(formatResult(r)).toEqual({
     sessionId: 'abc',
@@ -43,6 +45,8 @@ test('formatResult: shapes a SessionResult for callers, including resumeCommand'
     exists: true,
     filePath: '/f.jsonl',
     resumeCommand: 'cd "/r" && claude --resume abc',
+    branches: 0,
+    forkedFrom: '',
   });
 });
 
@@ -62,6 +66,8 @@ const baseResult: SessionResult = {
   files: [],
   commands: [],
   errored: false,
+  branches: 0,
+  forkedFrom: '',
 };
 
 test('formatResult: passes messageHits through when present (indexed search path)', () => {
@@ -119,6 +125,8 @@ function worstCaseSession(i: number): SessionResult {
     files,
     commands,
     errored: false,
+    branches: 0,
+    forkedFrom: '',
     messageHits: Array.from({ length: 3 }, (_, n) => ({
       index: n * 7,
       role: n % 2 === 0 ? ('assistant' as const) : ('user' as const),

@@ -17,6 +17,9 @@ interface JsonLine {
    *  PARENT sessionId, so its injected "user" prompt would otherwise pass for
    *  the human speaking mid-session. */
   isSidechain?: boolean;
+  /** Pi /fork and /clone copies record the absolute path of the session they
+   *  were copied from in their line-1 session header. */
+  parentSession?: string;
   message?: Record<string, unknown> | string;
   payload?: Record<string, unknown>;
 }
@@ -118,6 +121,22 @@ export function extractSessionMetadata(lines: string[], tool: Tool): SessionMeta
     messageCount: count,
     branch,
   };
+}
+
+/**
+ * The parentSession path from a pi session header ('' for other tools and for pi
+ * sessions that are not /fork or /clone copies). Stored raw — the parent file may
+ * not exist on disk, and nothing resolves the path back to a session row; display
+ * surfaces derive a basename at render time.
+ */
+export function sessionParentSession(lines: string[], tool: Tool): string {
+  // Guard the tool FIRST: Claude transcripts open on a user message and Codex on
+  // session_meta — neither has a type:'session' line 1, but only pi's header can
+  // carry parentSession at all, so non-pi returns without a parse.
+  if (tool !== 'pi' || lines.length === 0) return '';
+  const d = tryParseJson(lines[0]!);
+  const ps = d?.type === 'session' ? d.parentSession : undefined;
+  return typeof ps === 'string' ? ps : '';
 }
 
 export function getCwdFromSession(lines: string[], tool: Tool): string {
