@@ -63,9 +63,10 @@ describe('formatLine fork badge', () => {
       { ...piResult, branches: 3, displayText: 'a prompt long enough to be truncated at sixty columns for sure' },
       60,
     );
-    // Field 6 of the TSV is the display string (field 5 is the untruncated prompt,
-    // consumed positionally by index.ts — its rawness is load-bearing).
-    const display = line.split('\t')[5]!;
+    // Field 7 of the TSV is the display string (field 6 is the untruncated prompt,
+    // consumed positionally by index.ts — its rawness is load-bearing). filePath
+    // now leads as field 1 so fzf --preview can reference {1}.
+    const display = line.split('\t')[6]!;
     expect(display).toContain('⑂3');
     expect(display).toContain('…'); // the prompt absorbed the truncation, not the badge
     expect(display).not.toContain('sixty columns for sure');
