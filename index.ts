@@ -20,6 +20,14 @@ if (Bun.argv.includes('--clear-cache')) {
   process.exit(0);
 }
 
+// Hidden: invoked by the selector's fzf --preview / builtin preview key. Reads one
+// session file and prints a compact conversation rendering. Not for users directly.
+if (Bun.argv[2] === '--preview' && Bun.argv[3]) {
+  const { renderPreview } = await import('./src/preview');
+  process.stdout.write(renderPreview(Bun.argv[3]) + '\n');
+  process.exit(0);
+}
+
 // Commands dispatch on the positional word only. Matching anywhere in argv
 // (the old behavior) let a flag VALUE fire a command — `sessions wrapped
 // --out cleanup` would have uninstalled the plugin and wiped the index.
@@ -126,12 +134,15 @@ if (args.searchQuery) process.stderr.write('\r\x1b[K');
 const selection = await selectSession(lines);
 if (!selection) process.exit(0);
 
+// TSV layout: filePath, cwd, tool, sessionId, exists, prompt, display
+// (filePath leads so fzf --preview can reference {1}; the display column is what
+// fzf shows and the builtin slices — both skip the leading metadata fields).
 const parts = selection.split('\t');
-const fullPath = parts[0]!;
-const tool = parts[1]!;
-const sessionId = parts[2]!;
-const exists = parts[3]!;
-const prompt = parts[4]!;
+const fullPath = parts[1]!;
+const tool = parts[2]!;
+const sessionId = parts[3]!;
+const exists = parts[4]!;
+const prompt = parts[5]!;;
 const dirName = basename(fullPath);
 
 process.stderr.write('\n');

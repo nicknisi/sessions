@@ -47,8 +47,10 @@ export function formatLine(r: SessionResult, cols: number): string {
 
   const display = `${dot} ${C.bold}${dirName}${C.reset}  ${toolBadge}  ${C.dim}${rel}${C.reset}  ${msgs ? msgs + '  ' : ''}${warn}${hitBadge}${forkBadge}${truncated}`;
 
-  // tab-separated: cwd, tool, sessionId, exists, prompt, display
-  return `${r.cwd}\t${r.tool}\t${r.sessionId}\t${r.exists ? 'exists' : 'deleted'}\t${prompt}\t${display}`;
+  // tab-separated: filePath, cwd, tool, sessionId, exists, prompt, display
+  // filePath leads so the selector's fzf --preview can reference {1} directly;
+  // --with-nth skips it (and the other metadata fields) to show only `display`.
+  return `${r.filePath}\t${r.cwd}\t${r.tool}\t${r.sessionId}\t${r.exists ? 'exists' : 'deleted'}\t${prompt}\t${display}`;
 }
 
 /**
