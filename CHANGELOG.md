@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.24.0](https://github.com/nicknisi/sessions/compare/v1.23.0...v1.24.0) (2026-08-05)
+
+
+### Features
+
+* preview session content in the CLI selector ([#75](https://github.com/nicknisi/sessions/issues/75)) ([190126e](https://github.com/nicknisi/sessions/commit/190126ec55f3278afc79c05e6756fab58cca7291))
+
 ## [1.23.0](https://github.com/nicknisi/sessions/compare/v1.22.1...v1.23.0) (2026-08-04)
 
 
