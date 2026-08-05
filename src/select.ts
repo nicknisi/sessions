@@ -78,7 +78,9 @@ async function selectBuiltin(lines: string[]): Promise<string | null> {
     );
   }
 
-  process.stderr.write(`\n${C.bold}Enter number (1-${maxDisplay})${C.reset}, or ${C.cyan}<num>p${C.reset} to preview: `);
+  process.stderr.write(
+    `\n${C.bold}Enter number (1-${maxDisplay})${C.reset}, or ${C.cyan}<num>p${C.reset} to preview: `,
+  );
 
   const reader = Bun.stdin.stream().getReader();
   const { value } = await reader.read();

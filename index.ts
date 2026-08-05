@@ -142,7 +142,7 @@ const fullPath = parts[1]!;
 const tool = parts[2]!;
 const sessionId = parts[3]!;
 const exists = parts[4]!;
-const prompt = parts[5]!;;
+const prompt = parts[5]!;
 const dirName = basename(fullPath);
 
 process.stderr.write('\n');
