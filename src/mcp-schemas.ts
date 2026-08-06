@@ -88,6 +88,59 @@ export const GetMemoryOutput = z.object({
   alwaysOnBudget: z.string().optional(),
 });
 
+// ——— get_memory_sources ———
+
+const sourceAgent = z.enum(['pi', 'claude', 'codex']);
+
+/** Mirrors AgentStore (src/memory/sources.ts). */
+export const GetMemorySourcesOutput = z.object({
+  sources: z.array(
+    z.object({
+      id: z.string(),
+      agent: sourceAgent,
+      path: z.string(),
+      entries: z.number(),
+      durable: z.number(),
+      lastUpdated: z.string().nullable(),
+      description: z.string(),
+    }),
+  ),
+  count: z.number(),
+});
+
+// ——— review_agent_memories ———
+
+/** Mirrors the review projection of AgentMemoryEntry (src/mcp.ts runReviewAgentMemories). */
+export const ReviewAgentMemoriesOutput = z.object({
+  memories: z.array(
+    z.object({
+      id: z.string(),
+      agent: sourceAgent,
+      store: z.string(),
+      scope: z.object({ type: z.enum(['repo', 'group', 'workflow']), key: z.string() }),
+      kind: z.enum(['instruction', 'information']),
+      durable: z.boolean(),
+      text: z.string(),
+      // Present only when a stored sessions memory substantially overlaps — redundancy
+      // the user may want to resolve. Absent rather than empty so the common case
+      // spends no tokens on it.
+      similarTo: z.array(z.string()).optional(),
+    }),
+  ),
+  count: z.number(),
+  // The true number of clean entries after filtering, so a capped list can say what
+  // it left out. Same contract as the primer's memoryTotal.
+  total: z.number(),
+  truncated: z.boolean(),
+  // Entries the content gate refused to serve — ids and a note, never the text.
+  withheld: z
+    .object({
+      count: z.number(),
+      note: z.string(),
+    })
+    .optional(),
+});
+
 // ——— grep_sessions ———
 
 export const GrepSessionsOutput = z.object({

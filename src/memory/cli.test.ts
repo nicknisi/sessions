@@ -400,4 +400,29 @@ describe('parseImportArgs', () => {
     expect(parseImportArgs(['-h', 'a.json']).help).toBe(true);
     expect(parseImportArgs([])).toEqual({ help: false });
   });
+
+  test('--from takes a source, optionally with --repo for the repo context', () => {
+    expect(parseImportArgs(['--from', 'pi-hermes'])).toEqual({ help: false, from: 'pi-hermes' });
+    expect(parseImportArgs(['--from', 'claude', '--repo', '/repos/app'])).toEqual({
+      help: false,
+      from: 'claude',
+      repo: '/repos/app',
+    });
+    expect(parseImportArgs(['--from', 'all'])).toEqual({ help: false, from: 'all' });
+  });
+
+  test('--from rejects an unknown source by name', () => {
+    expect(() => parseImportArgs(['--from', 'cursor'])).toThrow('--from only accepts');
+    expect(() => parseImportArgs(['--from'])).toThrow('--from requires a source');
+    expect(() => parseImportArgs(['--from', 'claude', '--from', 'pi-hermes'])).toThrow('--from was given twice');
+  });
+
+  test('a bundle path and --from are mutually exclusive', () => {
+    expect(() => parseImportArgs(['bundle.json', '--from', 'pi-hermes'])).toThrow('not both');
+    expect(() => parseImportArgs(['--from', 'pi-hermes', 'bundle.json'])).toThrow('not both');
+  });
+
+  test('--repo is rejected on the bundle form — a bundle carries its own scoping', () => {
+    expect(() => parseImportArgs(['bundle.json', '--repo', '/repos/app'])).toThrow('--repo only applies to --from');
+  });
 });
