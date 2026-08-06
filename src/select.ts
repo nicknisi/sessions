@@ -48,11 +48,14 @@ async function selectWithFzf(lines: string[]): Promise<string | null> {
 }
 
 /** The argv prefix that re-enters this binary: `bun index.ts` when run from source,
- *  the compiled binary itself otherwise. fzf --preview runs it via `sh -c`. */
-function previewArgv(): string[] {
-  const script = process.argv[1] ?? '';
-  if (/\.(ts|js|mjs|cjs)$/.test(script)) return [process.argv[0]!, script, '--preview'];
-  return [process.argv[0]!, '--preview'];
+ *  the compiled binary itself otherwise. fzf --preview runs it via `sh -c`.
+ *  In a compiled binary argv[0] is literally "bun" and argv[1] is the virtual
+ *  /$bunfs/root/... entry path — process.execPath is the real binary. Using argv[0]
+ *  made the preview command `bun --preview <file>`, and bun then tried to run the
+ *  session's JSONL as a script, flooding the pane with parse errors. */
+export function previewArgv(script = process.argv[1] ?? '', exe = process.execPath): string[] {
+  const fromSource = !script.includes('$bunfs') && /\.(ts|js|mjs|cjs)$/.test(script);
+  return fromSource ? [exe, script, '--preview'] : [exe, '--preview'];
 }
 
 /** Preview command string for fzf `--preview`. {1} is fzf's field-1 placeholder —
