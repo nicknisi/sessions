@@ -40,7 +40,7 @@ Turn mined candidate turns into a small set of durable facts worth remembering.
 
 6. **Walk triage.** One `AskUserQuestion` per cluster, batching up to 4 independent clusters per call. For each, show the text, the derived scope (`repo` with its container, or `workflow`), `distinctPhrasings`, and the `firstSeen`–`lastSeen` range. Options: **Approve**, **Approve as always-on**, **Reject**, **Snooze** (hide without a verdict).
 
-   Offer **Approve as always-on** only when the fact is a standing constraint an agent must see no matter what it is working on — "canary is the mainline branch", "API keys go in the keychain". Retrieval is topic-conditional by default, so a normal approval means the memory comes back only when the task looks related. Always-on is the exception, and proposing it for everything defeats the filter.
+   Offer **Approve as always-on** only when the fact is a standing constraint an agent must see no matter what it is working on — "canary is the mainline branch", "API keys go in the keychain". Retrieval is topic-conditional by default, so a normal approval means the memory comes back only when the task looks related. Always-on is the exception, and proposing it for everything defeats the filter — mechanically as well as in spirit: the set is hard-capped (20 entries / 2,000 chars), and a grant past the cap is refused.
 
 7. **Persist.** One command per decision, using the cluster's `id`:
    - `sessions memory merge <id> <other-id>...` — **run this first for any cluster with more than one record**
@@ -49,6 +49,8 @@ Turn mined candidate turns into a small set of durable facts worth remembering.
    - `sessions memory snooze <id>`
 
    Each exits non-zero on an unknown id, so a failure means the decision was not recorded — surface it rather than reporting success.
+
+   **An approve can also be refused outright, with the reason on stderr.** Two cases. A _content refusal_ means the text matches secret material or prompt-injection patterns: reject the record, or — if the underlying fact is real — approve a clean rephrasing with `--as` that states the fact without the flagged content. An _always-on budget refusal_ means the standing set is full: either approve without the flag (the memory still serves topic-conditionally), or ask the user which existing constraint to demote and free its slot with `sessions memory approve <id> --no-always-on`. Never silently drop the decision — report what was refused and what you did instead.
 
    **Merge is not optional bookkeeping.** Your clustering in step 2 exists only in this conversation until you write it back. An id is a hash of that record's own text, so every phrasing is a separate row and nothing else can ever tell them apart. `merge` folds the members' evidence onto the canonical record — distinct phrasings counted, sessions unioned, date range widened — which is what makes `distinctPhrasings` mean "how many ways the user has said this" instead of a permanent 1. It is also what lets a snoozed memory come back, and what gives the cross-author quorum something real to count. Pick the clearest phrasing as the canonical, pass the rest as members, then approve/reject/snooze the canonical.
 

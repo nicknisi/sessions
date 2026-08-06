@@ -13,9 +13,12 @@ import { resolveRepo } from '../repo';
 import { writeStdoutFully } from '../stdout';
 import { containerFor, createContainerResolver, indexedSessions, mine } from './mine';
 import { documentedFacts, documentedSources } from './documented';
-import { fromPortable, merge, toPortable, toRecord } from './portable';
+import { fromPortable, merge, toPortable, toRecord, type MergedMemory } from './portable';
+import { ContentScanError, describeFindings, scanMemoryText, type ScanFinding } from './scan';
 import { getPersistedStates, listMemories, upsertCandidates, type PersistedState } from './store';
 import {
+  ALWAYS_ON_MAX_ENTRIES,
+  AlwaysOnBudgetError,
   approve,
   dropSuppressed,
   isKnownMemory,
@@ -80,7 +83,10 @@ Options:
                         is often a question rather than the fact it implies; this
                         is where the triage skill writes the fact itself. The
                         original is kept as evidence, not discarded
-  --always-on           (approve) Return this memory for every topic, and first
+  --always-on           (approve) Return this memory for every topic, and first.
+                        Budgeted: at most ${ALWAYS_ON_MAX_ENTRIES} entries, so each one stays read
+  --no-always-on        (approve) Explicitly revoke --always-on — the release valve
+                        when the budget refuses a new grant
   --scope group:<name>  (approve) Assign a project group, not the derived scope
   --scope repo:<path>   (approve) Bind to one repo — the path is resolved to its
                         repo container. Needed for an imported memory, whose
@@ -287,8 +293,15 @@ export function parseTriageArgs(argv: string[]): TriageArgs {
     const a = argv[i]!;
     // Help wins over everything after it, matching parseMineArgs.
     if (a === '-h' || a === '--help') return { help: true };
-    if (a === '--always-on') {
-      args.alwaysOn = true;
+    if (a === '--always-on' || a === '--no-always-on') {
+      const value = a === '--always-on';
+      // Contradiction is an error, not last-one-wins: both flags on one invocation
+      // means the user's intent is unknown, and recording a guess would be worse
+      // than asking.
+      if (args.alwaysOn !== undefined && args.alwaysOn !== value) {
+        throw new UsageError('--always-on and --no-always-on are contradictory — pass one');
+      }
+      args.alwaysOn = value;
     } else if (a === '--scope') {
       const value = argv[++i];
       if (!value) throw new UsageError('--scope requires a value (group:<name>)');
@@ -587,7 +600,11 @@ async function runMine(argv: string[]): Promise<void> {
  */
 export function assertActionAcceptsFlags(action: TriageAction, args: TriageArgs): void {
   if (action === 'approve') return;
-  if (args.alwaysOn) throw new UsageError(`${action} does not take --always-on (it applies to approve only)`);
+  // `!== undefined`, not truthy: `--no-always-on` parses to false and is exactly as
+  // wrong on a reject as `--always-on` is.
+  if (args.alwaysOn !== undefined) {
+    throw new UsageError(`${action} does not take --always-on/--no-always-on (they apply to approve only)`);
+  }
   if (args.scope) throw new UsageError(`${action} does not take --scope (it applies to approve only)`);
   if (args.as) throw new UsageError(`${action} does not take --as (it applies to approve only)`);
 }
@@ -647,7 +664,10 @@ function runTriage(action: TriageAction, argv: string[]): void {
       // passed in whenever --as rewrote the text. Reporting the argument instead would
       // print an id that is no longer the canonical row.
       const kept = approve(id, { alwaysOn: args.alwaysOn, scope, as: args.as });
-      const notes = [args.alwaysOn ? 'always-on' : '', scope ? `scope ${scope.type}:${scope.key}` : ''].filter(Boolean);
+      const notes = [
+        args.alwaysOn ? 'always-on' : args.alwaysOn === false ? 'always-on cleared' : '',
+        scope ? `scope ${scope.type}:${scope.key}` : '',
+      ].filter(Boolean);
       process.stderr.write(`  approved ${kept}${notes.length > 0 ? ` (${notes.join(', ')})` : ''}\n`);
       if (kept !== id) process.stderr.write(`  rephrased — ${id} folded in as evidence\n`);
       return;
@@ -741,13 +761,34 @@ function runImport(argv: string[]): void {
   // which the store's PRIMARY KEY would otherwise coalesce silently with the last
   // write winning — and it is the same call a multi-bundle transport would make.
   const merged = merge(incoming);
+
+  // The scan gate on the one path where another MACHINE's text enters the store
+  // (src/memory/scan.ts). A bundle is exactly the prompt-injection vector the serve
+  // path worries about, minus even the "the user once said this" provenance a mined
+  // candidate has — so a flagged record is refused entry outright, and LOUDLY: a
+  // silent drop would leave the sender believing the fact arrived.
+  const admitted: MergedMemory[] = [];
+  const flagged: { memory: MergedMemory; findings: ScanFinding[] }[] = [];
+  for (const m of merged) {
+    const findings = scanMemoryText(m.text);
+    if (findings.length > 0) flagged.push({ memory: m, findings });
+    else admitted.push(m);
+  }
+
   const local = new Map(listMemories().map((r) => [r.id, r]));
-  const records = merged.map((m) => toRecord(m, local.get(m.id)));
+  const records = admitted.map((m) => toRecord(m, local.get(m.id)));
   upsertCandidates(records);
 
   // Nothing on stdout: this writes to the store, it does not emit a batch.
-  const known = merged.filter((m) => local.has(m.id)).length;
-  process.stderr.write(`  ${merged.length - known} imported, ${known} already known\n`);
+  const known = admitted.filter((m) => local.has(m.id)).length;
+  process.stderr.write(`  ${admitted.length - known} imported, ${known} already known\n`);
+  if (flagged.length > 0) {
+    const plural = flagged.length === 1 ? 'memory' : 'memories';
+    process.stderr.write(
+      `  ⚠ ${flagged.length} ${plural} withheld — text matches secret or prompt-injection patterns, not stored:\n`,
+    );
+    for (const w of flagged) process.stderr.write(`    ${w.memory.id} (${describeFindings(w.findings)})\n`);
+  }
 
   // A repo-scoped memory arrives with no key — export blanks the local path on purpose —
   // and retrieval skips a keyless repo memory rather than matching every cwd. Approving one
@@ -921,6 +962,10 @@ export async function runMemory(argv: string[]): Promise<void> {
     }
   } catch (error) {
     if (error instanceof UsageError) die(error.message);
+    // The triage seam's own refusals — a flagged text or a blown always-on budget.
+    // User-caused, so they get the clean line a UsageError gets, not a stack trace;
+    // listed explicitly so a programmer error still crashes loudly.
+    if (error instanceof ContentScanError || error instanceof AlwaysOnBudgetError) die(error.message);
     throw error;
   }
 }

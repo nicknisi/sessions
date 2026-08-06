@@ -19,6 +19,7 @@ import {
   upsertCandidates,
 } from './store';
 import { buildRecord } from './record';
+import { ContentScanError, describeFindings, scanMemoryText } from './scan';
 import type { MemoryEvidence, MemoryRecord, MemoryScope } from './types';
 
 /** How long a snooze suppresses a candidate. Exported so tuning is a one-line change. */
@@ -85,9 +86,55 @@ export function shouldResurface(record: MemoryRecord, freshPhrasings: number, to
   return freshPhrasings > record.evidence.distinctPhrasings;
 }
 
+/**
+ * The always-on budget: a hard cap on how many standing constraints exist and how
+ * many characters they spend, enforced when `--always-on` is granted and never when
+ * it is kept. The cap is what makes the flag's promise credible — always-on rows are
+ * served first and unconditionally, so a set that grows without bound degrades into
+ * the ambient noise it exists to cut through, and the agent reading them stops
+ * treating any of them as special. Sized like hermes' standing-instruction budget
+ * (20 entries / 2,000 chars), which the numbers are borrowed from; exported so tuning
+ * is a one-line change, like SNOOZE_DAYS above.
+ */
+export const ALWAYS_ON_MAX_ENTRIES = 20;
+export const ALWAYS_ON_MAX_CHARS = 2000;
+
+/**
+ * Thrown when `--always-on` would exceed the budget. A class rather than a bare
+ * Error so src/memory/cli.ts can `die()` cleanly on a refusal the user caused
+ * without also swallowing programmer errors.
+ */
+export class AlwaysOnBudgetError extends Error {}
+
+/**
+ * Refuse an `--always-on` grant that would blow the budget.
+ *
+ * `id` is excluded from the standing set so re-approving an already-always-on row is
+ * idempotent at the cap rather than refused for colliding with itself — its slot
+ * transfers to the text it will now carry. The count is over APPROVED rows only:
+ * a rejected or merged row's flag is inert (retrieval filters on state first), so
+ * charging it against the budget would refuse grants for rows no agent ever sees.
+ */
+function assertAlwaysOnBudget(newText: string, id: string, all: MemoryRecord[]): void {
+  const standing = all.filter((r) => r.state === 'approved' && r.alwaysOn && r.id !== id);
+  const chars = standing.reduce((n, r) => n + r.text.length, 0);
+  if (standing.length + 1 <= ALWAYS_ON_MAX_ENTRIES && chars + newText.length <= ALWAYS_ON_MAX_CHARS) return;
+  throw new AlwaysOnBudgetError(
+    `--always-on refused: the always-on set is at its budget ` +
+      `(${standing.length}/${ALWAYS_ON_MAX_ENTRIES} entries, ${chars}/${ALWAYS_ON_MAX_CHARS} chars). ` +
+      `The cap is what keeps standing constraints few enough to always be read. ` +
+      `Free a slot first: sessions memory approve <id> --no-always-on`,
+  );
+}
+
 /** The two judgments a human can attach to an approval that no derivation can produce. */
 export interface ApproveOptions {
-  /** Bypass topic matching from now on. See MemoryRecord.alwaysOn. */
+  /**
+   * `true` grants topic-matching bypass, `false` explicitly revokes it, and absent
+   * leaves it alone. See MemoryRecord.alwaysOn. The tri-state preserves the set-only
+   * principle — omission is not a decision — while giving the budget refusal a
+   * release valve: an explicit `--no-always-on` IS a decision.
+   */
   alwaysOn?: boolean;
   /** Override the derived scope. Only `group` is assignable — repo/workflow stay derived. */
   scope?: MemoryScope;
@@ -107,18 +154,46 @@ export interface ApproveOptions {
 /**
  * Keep a candidate as a durable memory. Clears any snooze — `setState`'s default.
  *
- * Both options are SET-ONLY: `approve(id)` after `approve(id, { alwaysOn: true })`
+ * Options apply only when stated: `approve(id)` after `approve(id, { alwaysOn: true })`
  * leaves the flag alone rather than clearing it. Omission is not a decision, and the
  * failure modes are asymmetric — a stale always-on costs some context on tasks it does
  * not apply to, while silently clearing one reintroduces exactly the invisible
  * suppression the flag exists to prevent, at the moment the user thought they were
- * re-confirming the memory. There is no CLI way to clear it yet; that is a deliberate
- * gap, not an oversight.
+ * re-confirming the memory. Clearing requires the explicit `alwaysOn: false`
+ * (`--no-always-on`), which exists so the budget refusal above has a release valve.
+ *
+ * This is also the write gate on what an approval puts in front of every future
+ * agent: the text that will be served — the `--as` rephrasing when given, the stored
+ * row otherwise — must scan clean (src/memory/scan.ts). The mine and import gates
+ * make a flagged CANDIDATE rare, but rows written before the gates existed, or by a
+ * hand edit of memory.db, reach this moment unscanned; refusing here beats
+ * withholding later, because the refusal reaches the human who can fix it.
  */
 export function approve(id: string, options: ApproveOptions = {}): string {
+  const all = listMemories();
+  // An unknown id falls through unscanned on purpose: `setState` is a bare UPDATE
+  // and `isKnownMemory` is the caller's check — a second existence error here would
+  // shadow the CLI's, which names the id.
+  const text = options.as ?? all.find((r) => r.id === id)?.text;
+  if (text !== undefined) {
+    const findings = scanMemoryText(text);
+    if (findings.length > 0) {
+      const source = options.as === undefined ? 'its text' : 'the --as phrasing';
+      throw new ContentScanError(
+        `refusing to approve ${id}: ${source} matches ${describeFindings(findings)}. ` +
+          `Reject it (sessions memory reject ${id}) or approve a clean rephrasing ` +
+          `(sessions memory approve ${id} --as "<text>").`,
+        findings,
+      );
+    }
+  }
+  // Before recanonicalize: a refusal must not leave a half-approved rewrite behind
+  // (the rewrite path writes a new row and re-points merged members at it).
+  if (options.alwaysOn) assertAlwaysOnBudget(text ?? '', id, all);
   const target = options.as === undefined ? id : recanonicalize(id, options.as);
   setState(target, 'approved');
   if (options.alwaysOn) setAlwaysOn(target, true);
+  else if (options.alwaysOn === false) setAlwaysOn(target, false);
   if (options.scope) setScope(target, options.scope);
   return target;
 }
