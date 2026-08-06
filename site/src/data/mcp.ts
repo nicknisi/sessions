@@ -35,7 +35,7 @@ const GROUPS: Group[] = [
       {
         name: 'search_sessions',
         blurb:
-          'Ranked search across every session, message-granular. Returns the matching messages, not just the sessions — and a ready-to-run resume command. Top-k, so it is fast and not exhaustive.',
+          'Ranked search across every session, message-granular. Returns the matching messages, not just the sessions — and a ready-to-run resume command. Top-k, so it is fast and not exhaustive. Pi sessions carry their /tree branch count and /fork parentage, so abandoned lines show before you open one.',
       },
       {
         name: 'grep_sessions',
@@ -56,7 +56,7 @@ const GROUPS: Group[] = [
       {
         name: 'get_session_messages',
         blurb:
-          'The exact exchange a search matched — pass the hit index straight through as the offset. Ask for tool calls too and you see what the agent actually did, which the prose usually leaves out.',
+          'The exact exchange a search matched — pass the hit index straight through as the offset. Ask for tool calls too and you see what the agent actually did, which the prose usually leaves out. Pi branch and fork markers ride along, so an abandoned line is visible in the reading.',
       },
     ],
   },

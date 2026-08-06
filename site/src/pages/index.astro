@@ -69,7 +69,11 @@ const REFUSALS = [
   },
   {
     title: 'Every MCP tool is read-only',
-    body: 'All eight are annotated read-only and none of them writes. Memory is the only thing that persists a decision, and it changes only when you triage a candidate yourself. A store nobody curates is just a log.',
+    body: `All ${toolCount} are annotated read-only and none of them writes. Memory is the only thing that persists a decision, and it changes only when you triage a candidate yourself. A store nobody curates is just a log.`,
+  },
+  {
+    title: 'Memory text is scanned at every boundary',
+    body: 'Secret material, prompt-injection phrasing, and invisible characters never enter the memory store or reach an agent — not from the mine, not from an import, not from another agent’s store. Withholding is loud: you are told what was refused and why, never silently filtered.',
   },
   {
     title: 'Estimates say they are estimates',
@@ -144,7 +148,8 @@ const lede = 'text-[15.5px] leading-[1.62] text-ink-2';
           <p class:list={[lede, 'mt-3 max-w-[58ch]']}>
             Four tools, four layouts, one timeline. This is the list <code
               class="font-mono text-[13.5px] text-ink">sessions</code
-            > pipes into fzf when you run it with no arguments.
+            > pipes into fzf when you run it with no arguments — and Ctrl-P previews the highlighted
+            session’s conversation as you move, so restoring is never a guess from a one-liner.
           </p>
         </SpineNode>
 
@@ -176,7 +181,7 @@ const lede = 'text-[15.5px] leading-[1.62] text-ink-2';
             <RecallFigure />
           </div>
 
-          <!-- The eight tools -->
+          <!-- The tool groups -->
           <div class="mt-14 grid gap-7">
             <h3 class:list={[h3]}>
               {toolCount} tools, grouped by what you are trying to do
@@ -239,8 +244,9 @@ const lede = 'text-[15.5px] leading-[1.62] text-ink-2';
             <p class:list={[lede, 'mt-3 max-w-[62ch]']}>
               Search answers “what happened”. Memory answers “what am I not supposed to have to say
               again” — build conventions, tooling constraints, the rules you have already stated.
-              Candidates are mined from your own transcripts; nothing becomes memory until you say
-              so.
+              Candidates are mined from your own transcripts — or imported from the memory stores
+              your <em>other</em> agents keep, so switching harnesses costs nothing. Either way,
+              nothing becomes memory until you say so.
             </p>
 
             <Panel class="mt-6">
@@ -267,9 +273,11 @@ const lede = 'text-[15.5px] leading-[1.62] text-ink-2';
             </Panel>
 
             <p class="meta-label mt-3 normal-case">
-              Approve with <code class="font-mono">--always-on</code> and a fact is returned for every
-              topic, first — so an agent that truncates drops the conditional tail, never the
-              invariants.
+              <code class="font-mono">memory import --from pi-hermes|claude</code> lands another
+              agent’s durable facts as candidates through the same gates. Approve with{' '}
+              <code class="font-mono">--always-on</code> and a fact is returned for every topic,
+              first — budgeted to 20 entries and 2,000 characters, so the invariants stay few enough
+              to always be read.
             </p>
           </div>
         </SpineNode>
