@@ -7,6 +7,7 @@
 import { cwdUnder } from '../repo';
 import { groupsFor, loadGroupConfig } from './groups';
 import { createContainerResolver } from './mine';
+import { isScanClean } from './scan';
 import { listMemories } from './store';
 import { matchTopic, TOPIC_THRESHOLD } from './topic';
 import type { MemoryRecord } from './types';
@@ -49,11 +50,51 @@ import type { MemoryRecord } from './types';
 export function activeMemoryFor(cwd: string, topic?: string): MemoryRecord[] {
   // ORDER BY id already (src/memory/store.ts), so a stable partition below
   // preserves id order within each group for free.
-  const approved = listMemories({ state: 'approved' });
+  //
+  // The scan filter is the LAST line of the content gate (src/memory/scan.ts): the
+  // mine, import, and approve already refuse flagged text, but a row written before
+  // those gates existed — or by a hand edit of memory.db — reaches this SELECT
+  // having passed none of them, and this is the final boundary before an agent's
+  // context. Filtering here rather than in the callers is what makes every serve
+  // path (get_memory AND the context primer) covered by construction; the loudness
+  // lives in `withheldMemoryFor` below, which get_memory reports from.
+  const approved = listMemories({ state: 'approved' }).filter((r) => isScanClean(r.text));
   if (approved.length === 0) return [];
 
-  // One resolver, one git resolution per call. `resolveRepo` shells out three
-  // times, and this sits on the hot path of every agent task start.
+  const visible = scopedForCwd(approved, cwd);
+
+  // An absent or content-free topic disables filtering entirely and returns the full
+  // active set — the Phase 3 behavior, preserved exactly. The short-circuit is before
+  // any scoring so there is no path on which a rounding difference could reorder it.
+  if (!topic || !topic.trim()) return visible;
+
+  const alwaysOn: MemoryRecord[] = [];
+  // Decorated with the visible-order index rather than sorted in place: `visible` is
+  // already correct on every key but score, so the index IS the tiebreak, and a bare
+  // `.sort()` over four keys is where a comparator stops being readable.
+  const scored: { memory: MemoryRecord; score: number; order: number }[] = [];
+  visible.forEach((memory, order) => {
+    if (memory.alwaysOn) {
+      alwaysOn.push(memory);
+      return;
+    }
+    const score = matchTopic(memory.text, topic);
+    if (score >= TOPIC_THRESHOLD) scored.push({ memory, score, order });
+  });
+  scored.sort((a, b) => b.score - a.score || a.order - b.order);
+
+  return [...alwaysOn, ...scored.map((s) => s.memory)];
+}
+
+/**
+ * The scope partition `activeMemoryFor` documents above, extracted so the withheld
+ * set below goes through the SAME matching — a flagged memory scoped to a different
+ * repo is not this cwd's problem to report.
+ *
+ * One resolver, one git resolution per call. `resolveRepo` shells out three times,
+ * and this sits on the hot path of every agent task start.
+ */
+function scopedForCwd(records: MemoryRecord[], cwd: string): MemoryRecord[] {
   const container = createContainerResolver()(cwd);
 
   // Lazy, and memoized for this call only. A store with no group-scoped memory — which
@@ -65,7 +106,7 @@ export function activeMemoryFor(cwd: string, topic?: string): MemoryRecord[] {
   const workflow: MemoryRecord[] = [];
   const group: MemoryRecord[] = [];
   const repo: MemoryRecord[] = [];
-  for (const memory of approved) {
+  for (const memory of records) {
     if (memory.scope.type === 'workflow') {
       workflow.push(memory);
       continue;
@@ -90,26 +131,22 @@ export function activeMemoryFor(cwd: string, topic?: string): MemoryRecord[] {
     if (cwdUnder(container, memory.scope.key) || cwdUnder(cwd, memory.scope.key)) repo.push(memory);
   }
 
-  const visible = [...workflow, ...group, ...repo];
-  // An absent or content-free topic disables filtering entirely and returns the full
-  // active set — the Phase 3 behavior, preserved exactly. The short-circuit is before
-  // any scoring so there is no path on which a rounding difference could reorder it.
-  if (!topic || !topic.trim()) return visible;
+  return [...workflow, ...group, ...repo];
+}
 
-  const alwaysOn: MemoryRecord[] = [];
-  // Decorated with the visible-order index rather than sorted in place: `visible` is
-  // already correct on every key but score, so the index IS the tiebreak, and a bare
-  // `.sort()` over four keys is where a comparator stops being readable.
-  const scored: { memory: MemoryRecord; score: number; order: number }[] = [];
-  visible.forEach((memory, order) => {
-    if (memory.alwaysOn) {
-      alwaysOn.push(memory);
-      return;
-    }
-    const score = matchTopic(memory.text, topic);
-    if (score >= TOPIC_THRESHOLD) scored.push({ memory, score, order });
-  });
-  scored.sort((a, b) => b.score - a.score || a.order - b.order);
-
-  return [...alwaysOn, ...scored.map((s) => s.memory)];
+/**
+ * Approved, in-scope memories that `activeMemoryFor` REFUSED to serve because their
+ * text matches secret or prompt-injection patterns (src/memory/scan.ts).
+ *
+ * Exists so the withholding is loud instead of silent: an approved row is a human
+ * decision, and a filter that quietly unmade it would be the exact
+ * invisible-suppression failure the alwaysOn flag documents. `get_memory` reports
+ * the ids from this (src/mcp.ts) so the human can `reject` each one or re-approve a
+ * clean rephrasing with `--as`. Ids only — serving the flagged TEXT anywhere, even
+ * in a warning, would deliver the payload the withholding exists to stop.
+ */
+export function withheldMemoryFor(cwd: string): MemoryRecord[] {
+  const flagged = listMemories({ state: 'approved' }).filter((r) => !isScanClean(r.text));
+  if (flagged.length === 0) return [];
+  return scopedForCwd(flagged, cwd);
 }

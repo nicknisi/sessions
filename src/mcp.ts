@@ -17,7 +17,8 @@ import { getSessionMessages, type PiForkMarker } from './parser';
 import { buildSessionDigest, clip, renderDigestMarkdown } from './digest';
 import { resolveRepo } from './repo';
 import { readSessionLines } from './session-io';
-import { activeMemoryFor } from './memory/retrieve';
+import { activeMemoryFor, withheldMemoryFor } from './memory/retrieve';
+import { ALWAYS_ON_MAX_CHARS, ALWAYS_ON_MAX_ENTRIES } from './memory/triage';
 import { PLUGIN_FILES } from './plugin-files';
 import { type ContextPrimer, type Tool } from './types';
 import { version } from '../package.json';
@@ -149,22 +150,58 @@ export async function runSearchSessions(args: {
 // topic narrowing, the projection shape, and the empty-store sentence can be
 // unit-tested without MCP.
 export async function runGetMemory(args: { cwd?: string; topic?: string }): Promise<ToolResult> {
-  const memory = activeMemoryFor(args.cwd ?? process.cwd(), args.topic);
+  const cwd = args.cwd ?? process.cwd();
+  const memory = activeMemoryFor(cwd, args.topic);
   // A projection, not the record: ids, evidence arrays, and session paths are triage
   // concerns and would spend the agent's context on nothing it can act on. Deliberately
   // no `score` and no `alwaysOn` either — a relevance number invites the agent to
   // second-guess the filter, and "this is a standing constraint" is already carried by
   // the ordering, which puts always-on memory first.
   const formatted = memory.map((s) => ({ text: s.text, kind: s.kind, scope: s.scope.type }));
-  const payload = { results: formatted, count: formatted.length };
+  const payload: z.infer<typeof GetMemoryOutput> = { results: formatted, count: formatted.length };
+
+  // Approved rows the scan gate refused to serve (src/memory/retrieve.ts). Ids and a
+  // count, never the text — the text is the payload the withholding exists to stop.
+  // Reported rather than silent because an approved row is a human decision, and the
+  // only person who can resolve the conflict is the one this note asks the agent to tell.
+  const withheld = withheldMemoryFor(cwd);
+  if (withheld.length > 0) {
+    payload.withheld = {
+      count: withheld.length,
+      ids: withheld.map((r) => r.id),
+      note:
+        'These approved memories were withheld: their text matches secret or prompt-injection ' +
+        'patterns. Tell the user — each can be dismissed with `sessions memory reject <id>` or ' +
+        'restored as a clean rephrasing with `sessions memory approve <id> --as "<text>"`.',
+    };
+  }
+
+  // The always-on budget's serve-side backstop. `approve --always-on` refuses new
+  // grants past the cap (src/memory/triage.ts), but a store written before the cap
+  // existed — or hand-edited — can arrive over it. Everything is still SERVED:
+  // truncating a standing constraint is exactly the silent suppression alwaysOn
+  // exists to prevent. Over-budget is stated instead, so the set gets trimmed by a
+  // decision rather than by a filter.
+  const alwaysOn = memory.filter((m) => m.alwaysOn);
+  const alwaysOnChars = alwaysOn.reduce((n, m) => n + m.text.length, 0);
+  if (alwaysOn.length > ALWAYS_ON_MAX_ENTRIES || alwaysOnChars > ALWAYS_ON_MAX_CHARS) {
+    payload.alwaysOnBudget =
+      `The always-on set is over its budget (${alwaysOn.length}/${ALWAYS_ON_MAX_ENTRIES} entries, ` +
+      `${alwaysOnChars}/${ALWAYS_ON_MAX_CHARS} chars). All of it was returned, but a set this large ` +
+      'stops reading as standing constraints. Tell the user to trim it: ' +
+      '`sessions memory approve <id> --no-always-on`.';
+  }
+
   if (memory.length === 0) {
     // Two sentences, because they mean different things: with a topic, "nothing came
     // back" is a matcher outcome the agent can act on by asking again, not a statement
-    // that this repo has no memory.
+    // that this repo has no memory. The withheld tail keeps the empty sentence honest
+    // when the store is not empty so much as entirely refused.
     const empty = args.topic?.trim()
       ? 'No memory matched this topic for this repo. Call again without `topic` to see everything stored.'
       : 'No memories for this repo.';
-    return sentinel(empty, payload);
+    const tail = payload.withheld ? ` ${payload.withheld.count} approved but withheld — see \`withheld\`.` : '';
+    return sentinel(empty + tail, payload);
   }
   return toolResult(payload);
 }

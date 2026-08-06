@@ -14,6 +14,7 @@ import { basename, dirname } from 'node:path';
 import { getIndexDb } from '../cache';
 import { globPrefix, resolveRepo, type RepoInfo } from '../repo';
 import { buildRecord, gitAuthorEmail, normalizeText } from './record';
+import { isScanClean } from './scan';
 import type { MemoryRecord, MemoryScope } from './types';
 // Type-only, so nothing here reaches into the store at runtime and `mine()` stays the
 // pure read its header promises.
@@ -307,6 +308,13 @@ export async function mine(opts: MineOptions = {}): Promise<MemoryRecord[]> {
     if (text.length < MIN_TEXT_LENGTH || text.length > MAX_TEXT_LENGTH) return null;
     // After normalization, so the `?` a raw turn ends with is still there to see.
     if (isQuestionShaped(text)) return null;
+    // Secret material, hijack phrasing, and invisible characters never become
+    // candidates — not even flagged ones, because the batch is handed verbatim to
+    // the triage agent and the injection case is an attack on exactly that reader.
+    // Silent like the question filter above: this is corpus narrowing, and the
+    // loud surfaces are the ones where a HUMAN decision gets refused (approve,
+    // import) or an approved row gets withheld (get_memory). See src/memory/scan.ts.
+    if (!isScanClean(text)) return null;
     return text;
   };
 

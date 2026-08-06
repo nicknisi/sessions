@@ -73,6 +73,19 @@ export const GetMemoryOutput = z.object({
     }),
   ),
   count: z.number(),
+  // Approved rows the content gate refused to serve — ids and a what-to-do note,
+  // never the flagged text (src/mcp.ts runGetMemory). Absent when nothing was withheld,
+  // so the common case spends no tokens on it.
+  withheld: z
+    .object({
+      count: z.number(),
+      ids: z.array(z.string()),
+      note: z.string(),
+    })
+    .optional(),
+  // Present only when the served always-on set exceeds its budget; the set is still
+  // served in full. See src/memory/triage.ts for the cap and src/mcp.ts for the wording.
+  alwaysOnBudget: z.string().optional(),
 });
 
 // ——— grep_sessions ———
