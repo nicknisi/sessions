@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.25.0](https://github.com/nicknisi/sessions/compare/v1.24.0...v1.25.0) (2026-08-06)
+
+
+### Features
+
+* content-scan the memory pipeline and budget the always-on set ([#77](https://github.com/nicknisi/sessions/issues/77)) ([1c7cd83](https://github.com/nicknisi/sessions/commit/1c7cd83c165fff109d20e2b42253bfcb8800501e))
+* read and import other agents' memory stores ([#79](https://github.com/nicknisi/sessions/issues/79)) ([a319bd9](https://github.com/nicknisi/sessions/commit/a319bd93096cd977a514ab76d5558a730e9b6601))
+* **site:** cover the features shipped since the site launched ([#80](https://github.com/nicknisi/sessions/issues/80)) ([b8057db](https://github.com/nicknisi/sessions/commit/b8057db32bcd557c479d90e8cc289975748abbe0))
+
+
+### Bug Fixes
+
+* preview pane shows bun parse errors instead of session content ([#81](https://github.com/nicknisi/sessions/issues/81)) ([2f6db92](https://github.com/nicknisi/sessions/commit/2f6db9283f05ab8c19dafeb1e6bd35ce3f89b92f))
+
 ## [1.24.0](https://github.com/nicknisi/sessions/compare/v1.23.0...v1.24.0) (2026-08-05)
 
 
