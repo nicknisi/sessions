@@ -1,5 +1,5 @@
 /**
- * Editorial judgement about the MCP surface: how the eight tools group, what
+ * Editorial judgement about the MCP surface: how the ten tools group, what
  * order they read in, and one plain line each.
  *
  * The names and titles are NOT here — those are read from src/mcp.ts at build
@@ -73,6 +73,22 @@ const GROUPS: Group[] = [
         name: 'get_memory',
         blurb:
           'The standing instructions you have already given — build conventions, tooling constraints, rules you should not have to restate. Scoped to this repo, its project group, and your cross-repo workflow rules.',
+      },
+    ],
+  },
+  {
+    label: 'Know what your agents know',
+    lede: 'Memory lives in every harness, not just this one. These two read the others — never write.',
+    entries: [
+      {
+        name: 'get_memory_sources',
+        blurb:
+          'Every memory store your coding agents keep, inventoried — pi-hermes, Claude Code, Codex — with entry counts and when each was last touched. The "what does each agent know about me?" answer.',
+      },
+      {
+        name: 'review_agent_memories',
+        blurb:
+          "The contents of those stores, with provenance and a flag where they overlap what sessions already holds. For auditing what another harness learned, spotting conflicts between agents, or previewing what `memory import --from` would bring in.",
       },
     ],
   },

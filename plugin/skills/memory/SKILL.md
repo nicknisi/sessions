@@ -22,6 +22,8 @@ Turn mined candidate turns into a small set of durable facts worth remembering.
 
    These are **read, never written.** This store complements those surfaces; it does not replace, edit, or override them.
 
+   **Other agents' stores are candidates, not gospel.** If the user asks to pull in what another agent remembers — pi-hermes-memory's store, Claude's CLAUDE.md files — run `sessions memory import --from pi-hermes` (or `claude`, or `all`) FIRST, before mining: those facts land in the candidate batch you are about to triage, marked by their lack of session evidence. Triage them through the same rubric below; the `review_agent_memories` MCP tool previews what would import and flags entries that overlap memories already in the store (`similarTo`), and `get_memory_sources` inventories what stores exist. A pi-hermes fact scoped to a bare project name arrives unbound — bind it with `--scope repo:.` when you approve it, or reject it if the project is gone.
+
 4. **Apply the generalizability rubric.** For each cluster ask: _does this fact hold beyond the session it appeared in, and is it not already stated somewhere binding?_ Propose only the clusters that pass both.
    - **Passes** — standing constraints ("API keys go in the keychain when available"), repo or tooling facts ("this repo branches off canary", "skills can invoke inline scripts"), architectural rules.
    - **Fails** — one-off task instructions ("make it Ideation instead of docs/ideation", "let's do a single PR"), bug reports ("syntax highlighting isn't loading"), anything naming a specific transient artifact.

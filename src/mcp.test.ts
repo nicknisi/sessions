@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { Database } from 'bun:sqlite';
 import type { ZodType } from 'zod';
 import { version as pkgVersion } from '../package.json';
 import { buildRecord } from './memory/record';
@@ -12,10 +13,12 @@ import {
   GetActivityDigestOutput,
   GetContextPrimerOutput,
   GetMemoryOutput,
+  GetMemorySourcesOutput,
   GetSessionDigestOutput,
   GetSessionMessagesOutput,
   GetSessionMetricsOutput,
   GrepSessionsOutput,
+  ReviewAgentMemoriesOutput,
   SearchSessionsOutput,
 } from './mcp-schemas';
 
@@ -232,6 +235,27 @@ beforeAll(async () => {
   upsertCandidates([memory]);
   setState(memory.id, 'approved');
   closeMemoryDb();
+
+  // Agent memory stores, so get_memory_sources and review_agent_memories have a
+  // populated fixture. The paths derive from the same env the session fixtures use:
+  // piHermesDir <- SESSIONS_PI_DIR, codexHome <- dirname(SESSIONS_CODEX_DIR),
+  // claudeHome <- dirname(SESSIONS_CLAUDE_DIR) (src/memory/sources.ts).
+  const hermesDir = join(tmp, 'pi-hermes-memory');
+  mkdirSync(hermesDir, { recursive: true });
+  const hermesDb = new Database(join(hermesDir, 'sessions.db'));
+  hermesDb.run(`CREATE TABLE memories (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project TEXT, target TEXT NOT NULL, category TEXT, content TEXT NOT NULL,
+    failure_reason TEXT, tool_state TEXT, corrected_to TEXT,
+    created DATE NOT NULL, last_referenced DATE NOT NULL
+  )`);
+  hermesDb.run(
+    "INSERT INTO memories (project, target, category, content, created, last_referenced) VALUES (NULL, 'memory', 'correction', 'Never rewrite the lockfile by hand, run the installer', '2026-08-01', '2026-08-05')",
+  );
+  hermesDb.close();
+  mkdirSync(join(tmp, 'rules'), { recursive: true });
+  writeFileSync(join(tmp, 'rules', 'default.rules'), 'prefix_rule(pattern=["gh", "run", "view"], decision="allow")\n');
+  writeFileSync(join(tmp, 'CLAUDE.md'), '- A global instruction of sufficient length to be a fact.\n');
 
   mcp = await import('./mcp');
 });
@@ -571,10 +595,12 @@ const TOOL_NAMES = [
   'get_activity_digest',
   'get_context_primer',
   'get_memory',
+  'get_memory_sources',
   'get_session_digest',
   'get_session_messages',
   'get_session_metrics',
   'grep_sessions',
+  'review_agent_memories',
   'search_sessions',
 ];
 
@@ -594,7 +620,7 @@ test('version: the server reports the package.json version, not a hardcoded lite
   await client.close();
 });
 
-test('tool surface: 8 tools, each with a title, annotations, and an object outputSchema', async () => {
+test('tool surface: 10 tools, each with a title, annotations, and an object outputSchema', async () => {
   const client = await connect();
   const { tools } = await client.listTools();
 
@@ -617,8 +643,8 @@ test('tool surface: 8 tools, each with a title, annotations, and an object outpu
 test('tool surface: two createServer() instances in one process both connect', async () => {
   const a = await connect();
   const b = await connect();
-  expect((await a.listTools()).tools).toHaveLength(8);
-  expect((await b.listTools()).tools).toHaveLength(8);
+  expect((await a.listTools()).tools).toHaveLength(10);
+  expect((await b.listTools()).tools).toHaveLength(10);
   await a.close();
   await b.close();
 });
@@ -718,6 +744,8 @@ test('schema conformance: every tool validates against its declared outputSchema
   const sessionB = join(tmp, 'claude', 'proj', 'b.jsonl');
   const calls: { name: string; args: Record<string, unknown>; schema: ZodType }[] = [
     { name: 'get_memory', args: { cwd: '/repoA' }, schema: GetMemoryOutput },
+    { name: 'get_memory_sources', args: { cwd: '/repoA' }, schema: GetMemorySourcesOutput },
+    { name: 'review_agent_memories', args: { cwd: '/repoA' }, schema: ReviewAgentMemoriesOutput },
     // 'retry' rather than 'kubectl': it matches message text, so messageHits comes back
     // with elements. 'kubectl' lives only in a command, and an all-empty messageHits
     // leaves the nested messageHit shape unvalidated.
@@ -765,6 +793,8 @@ test('schema conformance: every tool validates against its declared outputSchema
   expect(search.results.flatMap((r) => r.messageHits ?? []).length).toBeGreaterThan(0);
 
   expect(GetMemoryOutput.parse(got.get('get_memory')).results.length).toBeGreaterThan(0);
+  expect(GetMemorySourcesOutput.parse(got.get('get_memory_sources')).sources.length).toBeGreaterThan(0);
+  expect(ReviewAgentMemoriesOutput.parse(got.get('review_agent_memories')).memories.length).toBeGreaterThan(0);
   expect(GrepSessionsOutput.parse(got.get('grep_sessions')).hits.length).toBeGreaterThan(0);
   expect(GetSessionMessagesOutput.parse(got.get('get_session_messages')).messages.length).toBeGreaterThan(0);
   expect(GetSessionDigestOutput.parse(got.get('get_session_digest')).exchanges.length).toBeGreaterThan(0);
@@ -842,11 +872,23 @@ describe('empty results', () => {
     rmSync(emptyTmp, { recursive: true, force: true });
   });
 
-  test('empty results: all 8 tools return a conforming payload alongside their sentinel', async () => {
+  test('empty results: all 10 tools return a conforming payload alongside their sentinel', async () => {
     const client = await connect();
     const repoRoot = join(import.meta.dir, '..'); // a real git repo with no indexed sessions
     const calls: { name: string; args: Record<string, unknown>; schema: ZodType; text?: string }[] = [
       { name: 'get_memory', args: { cwd: '/nowhere' }, schema: GetMemoryOutput, text: 'No memories for this repo.' },
+      {
+        name: 'get_memory_sources',
+        args: { cwd: '/nowhere' },
+        schema: GetMemorySourcesOutput,
+        text: 'No agent memory stores found for this repo.',
+      },
+      {
+        name: 'review_agent_memories',
+        args: { cwd: '/nowhere' },
+        schema: ReviewAgentMemoriesOutput,
+        text: 'No agent memories found for this repo.',
+      },
       // These args deliberately MATCH the populated fixture: 'flaky' and the June range
       // both return data there, so if this block ever loses the empty index to the outer
       // beforeEach these assertions go red instead of passing for the wrong reason.

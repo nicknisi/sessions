@@ -27,10 +27,12 @@ import { basename, dirname, join } from 'node:path';
 // SESSIONS_CLAUDE_DIR is the PROJECTS root (`~/.claude/projects`), not `~/.claude`, so
 // the global instruction file is one level up from it. Deriving it rather than reading
 // $HOME keeps a redirected test env fully contained.
-function projectsDir(): string {
+// Exported for src/memory/sources.ts, which inventories Claude's memory surfaces as one
+// agent store among several. The env override contract is documented at the top.
+export function projectsDir(): string {
   return process.env.SESSIONS_CLAUDE_DIR || join(homedir(), '.claude/projects');
 }
-function claudeHome(): string {
+export function claudeHome(): string {
   return dirname(projectsDir());
 }
 
@@ -46,7 +48,7 @@ export function projectSlug(cwd: string): string {
   return cwd.replace(/\//g, '-');
 }
 
-function collapseHome(path: string): string {
+export function collapseHome(path: string): string {
   const home = process.env.HOME ?? '';
   return home && path.startsWith(home) ? `~${path.slice(home.length)}` : path;
 }

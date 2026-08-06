@@ -11,10 +11,12 @@ import { writeFile } from 'node:fs/promises';
 import { resolve as resolvePath } from 'node:path';
 import { resolveRepo } from '../repo';
 import { writeStdoutFully } from '../stdout';
-import { containerFor, createContainerResolver, indexedSessions, mine } from './mine';
+import { containerFor, createContainerResolver, indexedSessions, MAX_TEXT_LENGTH, mine, MIN_TEXT_LENGTH } from './mine';
 import { documentedFacts, documentedSources } from './documented';
 import { fromPortable, merge, toPortable, toRecord, type MergedMemory } from './portable';
+import { buildRecord, gitAuthorEmail } from './record';
 import { ContentScanError, describeFindings, scanMemoryText, type ScanFinding } from './scan';
+import { collectAgentMemory, splitEntryToBand, type SourceAgent } from './sources';
 import { getPersistedStates, listMemories, upsertCandidates, type PersistedState } from './store';
 import {
   ALWAYS_ON_MAX_ENTRIES,
@@ -28,7 +30,13 @@ import {
   snoozeUntil,
   suppressedMemories,
 } from './triage';
-import { MEMORY_SCHEMA_VERSION, type PortableMemory, type MemoryRecord, type MemoryScope } from './types';
+import {
+  MEMORY_SCHEMA_VERSION,
+  type PortableMemory,
+  type MemoryKind,
+  type MemoryRecord,
+  type MemoryScope,
+} from './types';
 import { advanceWatermark, changedSessions, readWatermark, type WatermarkEntry } from './watermark';
 
 /**
@@ -131,6 +139,15 @@ drive, scp) carries it. Imported memories land as candidates for you to triage,
 never as approved. Records merge on a hash of their text, so two people who
 phrase one fact differently produce two records; clustering those is the /memory
 skill's job, and \`merge\` is how it records the result.
+
+\`import --from\` reads the memory stores of the OTHER agents on this machine —
+pi-hermes-memory's structured store (or its MEMORY.md/USER.md/failures.md files),
+and Claude Code's global CLAUDE.md, repo CLAUDE.md/AGENTS.md, and per-project
+memory — and lands their durable facts as candidates with the same gates as a
+bundle import. Codex has no fact store (its rules are command permissions), so
+--from codex reports that and imports nothing. Entries already in the store are
+counted as known, not duplicated. A pi-hermes fact recorded against a bare
+project name arrives unbound — bind it at approve time with --scope repo:.
 `);
   process.exit(0);
 }
@@ -363,21 +380,69 @@ export function parseExportArgs(argv: string[]): ExportArgs {
   return args;
 }
 
+/** The agent stores `memory import --from` can read. 'all' composes the fact-bearing ones. */
+export const IMPORT_SOURCES = ['pi-hermes', 'claude', 'codex', 'all'] as const;
+export type ImportSource = (typeof IMPORT_SOURCES)[number];
+
+/** ImportSource -> the agent family its entries carry. 'all' never reaches this map. */
+const SOURCE_AGENT: Record<Exclude<ImportSource, 'all'>, SourceAgent> = {
+  'pi-hermes': 'pi',
+  claude: 'claude',
+  codex: 'codex',
+};
+
 export interface ImportArgs {
   /** Path to a bundle written by `memory export`. */
   path?: string;
+  /** Read another agent's memory stores instead of a bundle. */
+  from?: ImportSource;
+  /** Repo context for `--from` (repo-scoped stores resolve against it). */
+  repo?: string;
   /** `-h`/`--help` was passed; the caller prints help and exits 0. */
   help: boolean;
 }
 
-/** Parse `memory import <path>`. Throws `UsageError`; never exits. */
+/**
+ * Parse `memory import <path>` or `memory import --from <source> [--repo <path>]`.
+ * Throws `UsageError`; never exits.
+ *
+ * The two forms are mutually exclusive: a bundle path and `--from` name two different
+ * origins, and accepting both would silently import one while the user reads the
+ * other. `--repo` only makes sense with `--from` (a bundle carries its own scoping),
+ * so it is rejected on the path form rather than ignored.
+ */
 export function parseImportArgs(argv: string[]): ImportArgs {
   const args: ImportArgs = { help: false };
-  for (const a of argv) {
+  let i = 0;
+  while (i < argv.length) {
+    const a = argv[i]!;
     if (a === '-h' || a === '--help') return { help: true };
-    if (a.startsWith('-')) throw new UsageError(`unknown option: ${a}`);
-    if (args.path !== undefined) throw new UsageError(`unexpected argument: ${a} (expected exactly one bundle path)`);
-    args.path = a;
+    if (a === '--from') {
+      const value = argv[++i];
+      if (!value) throw new UsageError(`--from requires a source (${IMPORT_SOURCES.join(', ')})`);
+      if (!(IMPORT_SOURCES as readonly string[]).includes(value)) {
+        throw new UsageError(`--from only accepts ${IMPORT_SOURCES.join(', ')}, got: ${value}`);
+      }
+      if (args.from !== undefined) throw new UsageError('--from was given twice');
+      args.from = value as ImportSource;
+    } else if (a === '--repo') {
+      const value = argv[++i];
+      if (!value) throw new UsageError('--repo requires a path');
+      args.repo = value;
+    } else if (a.startsWith('-')) {
+      throw new UsageError(`unknown option: ${a}`);
+    } else if (args.path !== undefined) {
+      throw new UsageError(`unexpected argument: ${a} (expected exactly one bundle path)`);
+    } else {
+      args.path = a;
+    }
+    i++;
+  }
+  if (args.path !== undefined && args.from !== undefined) {
+    throw new UsageError('import takes a bundle path OR --from <source>, not both');
+  }
+  if (args.repo !== undefined && args.from === undefined) {
+    throw new UsageError('--repo only applies to --from (a bundle carries its own scoping)');
   }
   return args;
 }
@@ -735,11 +800,138 @@ async function runExport(argv: string[]): Promise<void> {
  * keeps `sessions memory export > b.json && sessions memory import b.json` a no-op
  * instead of a self-inflicted evidence wipe. See the comment on `toRecord`.
  */
+/**
+ * Import another agent's memory store as triage candidates.
+ *
+ * The same gates as a bundle import, in the same order, for the same reasons: the
+ * text band the mine enforces (an oversized entry is a context tax on every future
+ * task), the content scan (a store written by another tool is exactly the injection
+ * vector the gate exists for), and candidate state on arrival — importing is not
+ * consent, and nothing here can reach an agent until the user approves it.
+ *
+ * Dedupe falls out of the content-addressed id: an entry whose text already lives in
+ * the store upserts to the same id, `upsertCandidates` unions evidence, and the count
+ * is reported as "already known" rather than double-imported.
+ *
+ * Provenance is deliberately NOT recorded on the record: MemoryRecord has no field
+ * for it (bundle imports lose their transport the same way), and a mine re-deriving
+ * the fact later must not find a second copy. The source is reported on stderr at
+ * import time; after that the fact stands on its own, to be triaged like any other.
+ */
+function runImportFrom(source: ImportSource, repo: string | undefined): void {
+  if (source === 'codex') {
+    // By construction: codex entries are permission rules and thread goals, both
+    // durable: false (src/memory/sources.ts). Saying so beats importing zero rows
+    // with no explanation.
+    process.stderr.write(
+      '  codex stores hold command permissions and thread goals, not durable facts — nothing to import\n' +
+        '  (review them with the review_agent_memories MCP tool)\n',
+    );
+    return;
+  }
+
+  const cwd = repo ? resolvePath(repo) : process.cwd();
+  const { entries } = collectAgentMemory(cwd);
+  const agent = source === 'all' ? null : SOURCE_AGENT[source];
+  const selected = entries.filter((e) => e.durable && (agent === null || e.agent === agent));
+
+  // Reshape to the band the mine enforces (src/memory/mine.ts): entries within it
+  // import whole; longer ones split at their own enumeration and sentence
+  // boundaries. Splitting rather than skipping because pi-hermes consolidates many
+  // facts into one ~1,100-char row — a hard skip would import nothing from the
+  // store this flag exists for. See splitEntryToBand (src/memory/sources.ts).
+  interface Shaped {
+    kind: MemoryKind;
+    scope: MemoryScope;
+    text: string;
+    created?: string;
+    lastUpdated?: string;
+  }
+  const shaped: Shaped[] = [];
+  let skippedLong = 0;
+  let skippedShort = 0;
+  for (const e of selected) {
+    if (e.text.length >= MIN_TEXT_LENGTH && e.text.length <= MAX_TEXT_LENGTH) {
+      shaped.push(e);
+      continue;
+    }
+    const split = splitEntryToBand(e.text);
+    skippedLong += split.skippedLong;
+    skippedShort += split.skippedShort;
+    for (const text of split.pieces) shaped.push({ ...e, text });
+  }
+
+  // The scan gate, same shape as the bundle path above: another tool's text is the
+  // injection vector src/memory/scan.ts exists for, and a flagged piece is refused
+  // LOUDLY rather than dropped, because a silent drop reads as a successful import.
+  const admitted: Shaped[] = [];
+  const flagged: { text: string; findings: ScanFinding[] }[] = [];
+  for (const s of shaped) {
+    const findings = scanMemoryText(s.text);
+    if (findings.length > 0) flagged.push({ text: s.text, findings });
+    else admitted.push(s);
+  }
+
+  const local = new Map(listMemories().map((r) => [r.id, r]));
+  const author = gitAuthorEmail();
+  const records = admitted.map((e) =>
+    buildRecord({
+      text: e.text,
+      kind: e.kind,
+      scope: e.scope,
+      author,
+      sessions: [],
+      dates: [e.created ?? '', e.lastUpdated ?? ''],
+      distinctPhrasings: 1,
+    }),
+  );
+  upsertCandidates(records);
+
+  const known = records.filter((r) => local.has(r.id)).length;
+  process.stderr.write(
+    `  ${records.length - known} imported from ${source}${known > 0 ? `, ${known} already known` : ''}\n`,
+  );
+  if (flagged.length > 0) {
+    const plural = flagged.length === 1 ? 'entry' : 'entries';
+    process.stderr.write(
+      `  ⚠ ${flagged.length} ${plural} withheld — text matches secret or prompt-injection patterns, not stored:\n`,
+    );
+    for (const w of flagged) process.stderr.write(`    ${w.text.slice(0, 60)}… (${describeFindings(w.findings)})\n`);
+  }
+  if (skippedLong + skippedShort > 0) {
+    process.stderr.write(
+      `  ${skippedLong + skippedShort} fragments skipped while splitting to the ${MIN_TEXT_LENGTH}–${MAX_TEXT_LENGTH}-char band ` +
+        `(${skippedLong} over, ${skippedShort} under); review the source store directly\n`,
+    );
+  }
+
+  // A pi-hermes row names its project as a bare repo NAME, which no path resolution
+  // can bind honestly (src/memory/sources.ts hermesScope). The record is inert until
+  // the user binds it — same shape and same fix as an imported bundle's repo memory.
+  const unbound = records.filter((r) => r.scope.type === 'repo' && !r.scope.key).length;
+  if (unbound > 0) {
+    const plural = unbound === 1 ? 'memory' : 'memories';
+    process.stderr.write(
+      `  ${unbound} repo-scoped ${plural} arrived unbound (the source named a project this machine cannot resolve to a path)\n` +
+        `  bind ${unbound === 1 ? 'it' : 'each'} to a repo when you approve: ` +
+        `sessions memory approve <id> --scope repo:.\n`,
+    );
+  }
+}
+
 function runImport(argv: string[]): void {
   const args = parseImportArgs(argv);
   if (args.help) help();
+  if (args.from !== undefined) {
+    runImportFrom(args.from, args.repo);
+    return;
+  }
   const path = args.path;
-  if (!path) throw new UsageError('import requires a path to a bundle written by `memory export`');
+  if (!path) {
+    throw new UsageError(
+      `import requires a path to a bundle written by \`memory export\`, or --from <source> (${IMPORT_SOURCES.join(', ')})`,
+    );
+  }
 
   let raw: string;
   try {
