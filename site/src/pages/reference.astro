@@ -73,12 +73,14 @@ const WRAPPED_FLAGS = [
 const MEMORY_COMMANDS = [
   ['memory mine', 'Mine past sessions for durable facts. --repo scopes, --all mines everything, --since-last only what changed.'],
   ['memory pending', 'Count and preview the untriaged backlog. Reads the store only; never mines.'],
-  ['memory approve <id>', 'Keep a candidate. --always-on exempts it from topic filtering; --scope group:<name> or repo:<path> binds it.'],
+  ['memory documented', 'What is already binding here — CLAUDE.md, AGENTS.md, and Claude Code’s own memory store. Read, never written.'],
+  ['memory approve <id>', 'Keep a candidate. --always-on exempts it from topic filtering (budgeted: 20 entries, 2,000 chars); --scope group:<name> or repo:<path> binds it.'],
   ['memory reject <id>', 'Dismiss a candidate. It stops being emitted.'],
   ['memory snooze <id>', 'Hide a candidate without rejecting it.'],
   ['memory merge <id> <id>…', 'Fold paraphrases into the first id.'],
   ['memory export', 'Write approved memories as a portable bundle. No local paths leave the machine.'],
   ['memory import <path>', 'Merge another author’s bundle in as candidates. Never lands as approved.'],
+  ['memory import --from <source>', 'Import another agent’s memory store — pi-hermes, claude, or all — as candidates through the same gates. --repo sets the repo context.'],
 ];
 
 const cell = 'border-t border-line-soft px-4 py-2.5 align-top';
