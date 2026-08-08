@@ -614,6 +614,24 @@ function rowLimit(value: number | undefined, fallback: number): number {
   return Math.max(1, Math.floor(value));
 }
 
+// Ranking knobs — the eval fixture's tuning surface (src/eval/, docs/EVAL.md).
+// These move ONLY against the golden fixture, in coarse steps: change a value,
+// run `bun run eval`, and keep the change only if the gate stays green because a
+// real miss got fixed. The fixture is versioned with the values; grow it (log
+// real misses as new goldens) before giving the knobs another pass.
+//
+// bm25 column weights map to session_fts columns in declaration order:
+// file_path, headline, commands, paths, context_text, thinking. Headline,
+// commands, and paths carry the concrete cues people re-find sessions by;
+// verbose thinking adds recall without dominating (message text ranks via
+// message_fts below).
+export const SESSION_FTS_COLUMN_WEIGHTS = [0.0, 10.0, 6.0, 5.0, 2.0, 0.5] as const;
+// message_fts: file_path, msg_index, role, text — only the text column ranks.
+export const MESSAGE_FTS_COLUMN_WEIGHTS = [0.0, 0.0, 0.0, 1.0] as const;
+// bm25 can't weight by row, so user-turn ranks are boosted in JS instead (bm25
+// is more-negative-is-better; multiplying a negative rank improves it).
+export const USER_HIT_BOOST = 1.5;
+
 export interface SearchOptions {
   tool?: Tool | '';
   project?: string;
@@ -697,11 +715,7 @@ export async function searchSessions(query: string, opts: SearchOptions = {}): P
     // match) and message_fts aggregated by file_path (content match). Fetch both,
     // join in JS on file_path, combine ranks, sort, slice to limit.
 
-    // bm25 weights map to session_fts columns in declaration order:
-    // file_path, headline, commands, paths, context_text, thinking.
-    // Favor headline/commands/paths; de-emphasize verbose thinking so it adds
-    // recall without dominating. Message text ranks via message_fts below.
-    const SESSION_RANK = 'bm25(session_fts, 0.0, 10.0, 6.0, 5.0, 2.0, 0.5)';
+    const SESSION_RANK = `bm25(session_fts, ${SESSION_FTS_COLUMN_WEIGHTS.join(', ')})`;
     interface SessionHitRow {
       file_path: string;
       srank: number;
@@ -724,16 +738,14 @@ export async function searchSessions(query: string, opts: SearchOptions = {}): P
     const messageRows = db
       .query<MessageHitRow, [string]>(`
       SELECT file_path, msg_index, role,
-             bm25(message_fts, 0.0, 0.0, 0.0, 1.0) AS mrank,
+             bm25(message_fts, ${MESSAGE_FTS_COLUMN_WEIGHTS.join(', ')}) AS mrank,
              snippet(message_fts, 3, '', '', '…', 32) AS msnippet
       FROM message_fts WHERE message_fts MATCH ?
     `)
       .all(ftsQuery);
 
     // Role weighting replaces the old user_content 3.0 / assistant_content 2.0
-    // column weights: bm25 can't weight by row, so boost user-turn ranks 1.5× in JS
-    // (bm25 is more-negative-is-better; multiplying a negative rank improves it).
-    const USER_HIT_BOOST = 1.5;
+    // column weights (see USER_HIT_BOOST above).
     interface MessageAgg {
       best: number; // best (most negative) weighted rank across the session's hits
       hits: { hit: MessageHit; rank: number }[];

@@ -18,6 +18,7 @@
     "format:check": "oxfmt --check . '!plugin/**/plugin.json'",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
+    "eval": "bun test src/eval/",
     "site:dev": "cd site && bun run dev",
     "site:build": "cd site && bun install --frozen-lockfile && bun run build",
     "site:check": "cd site && bun run check",
