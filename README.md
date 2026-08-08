@@ -433,7 +433,10 @@ bun run typecheck            # Type-check with tsc
 bun run lint                 # Lint with oxlint
 bun run format               # Format with oxfmt
 bun run format:check         # Check formatting without writing
+bun run eval                 # Search ranking eval against the golden fixture
 ```
+
+Search ranking is gated by a frozen golden eval fixture (`src/eval/`): recall@5, MRR, and negative-abstention thresholds run in CI, and the ranking constants in `cache.ts` move only against that fixture. See [docs/EVAL.md](docs/EVAL.md) for the discipline and how to log a real miss as a new golden.
 
 ### Cross-compilation
 
