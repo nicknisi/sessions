@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.26.0](https://github.com/nicknisi/sessions/compare/v1.25.0...v1.26.0) (2026-08-08)
+
+
+### Features
+
+* gate search ranking with a golden eval fixture ([#82](https://github.com/nicknisi/sessions/issues/82)) ([952ad40](https://github.com/nicknisi/sessions/commit/952ad4058462da9cb536809d8da8aef8cd5c0eda))
+
 ## [1.25.0](https://github.com/nicknisi/sessions/compare/v1.24.0...v1.25.0) (2026-08-06)
 
 
