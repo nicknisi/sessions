@@ -381,7 +381,9 @@ const lede = 'text-[15.5px] leading-[1.62] text-ink-2';
             <p>
               The index is SQLite with FTS5, built on first use and updated incrementally by
               modification time. Hits are message-granular, so a match localizes to the exact message
-              rather than the session that contained it.
+              rather than the session that contained it. Ranking is held to a frozen golden-query
+              fixture — recall@5, MRR, and negative-abstention gates run in CI, so a weight change
+              that degrades results fails the build.
             </p>
           </SectionHead>
 
