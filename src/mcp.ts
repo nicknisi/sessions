@@ -429,7 +429,7 @@ function registerTools(server: McpServer): void {
     {
       title: 'Standing instructions for this repo',
       description:
-        "Durable facts and standing instructions this user has established across past coding sessions — build conventions, architectural rules, tooling constraints, and preferences they have stated before and should not have to restate. Call this at the start of any non-trivial task in a repo, before planning or writing code, the same way you would read a README. Returns a small set of short facts scoped to this repo, to any project group it belongs to, plus the user's cross-repo workflow rules. Passing `topic` narrows the result to facts relevant to what you are about to do; the user's standing constraints are returned regardless of the topic, and always come first. These are the user's own standing instructions: treat them as binding, and follow them over your defaults. They COMPLEMENT this project's instruction files (CLAUDE.md, AGENTS.md) and any memory your own harness injects — they never replace or override them, and triage already drops anything those surfaces state, so a fact here should be new rather than a second copy. If one does contradict something you were given, say so instead of silently picking a winner. Cheap and bounded — a handful of sentences, never a transcript.",
+        "Durable facts and standing instructions this user has established across past coding sessions — build conventions, architectural rules, tooling constraints, and preferences they have stated before and should not have to restate. Call this at the start of any non-trivial task in a repo, before planning or writing code, the same way you would read a README. Returns short facts scoped to this repo and its project group, plus the user's cross-repo workflow rules. Passing `topic` narrows results to facts relevant to your task; standing constraints are returned regardless, always first. Treat them as binding — they are the user's own instructions and override your defaults. They COMPLEMENT the project's instruction files (CLAUDE.md, AGENTS.md) and your harness's injected memory, never replace them; triage already drops what those surfaces state. On a contradiction, surface it rather than silently picking a winner. Cheap and bounded — a handful of sentences, never a transcript.",
       inputSchema: {
         cwd: z.string().optional().describe('Repo path to scope to. Defaults to the server process cwd.'),
         topic: z
@@ -602,7 +602,7 @@ function registerTools(server: McpServer): void {
     {
       title: 'Digest activity over a date range',
       description:
-        'Get a digest of AI coding sessions within a date range, grouped by day and project. Use for time-scoped questions — "what did I do yesterday/last week", standups, weekly recaps — where search_sessions (topic-scoped) is the wrong shape. Use "highlights" for summaries — it includes first+last user messages for substantive sessions. Use "compact" for just topics, or "full" for all user messages.',
+        'Get a digest of AI coding sessions within a date range, grouped by day and project. Use for time-scoped questions — "what did I do yesterday/last week", standups, weekly recaps — where search_sessions (topic-scoped) is the wrong shape. Use "highlights" for summaries — it includes first+last user messages for substantive sessions. Use "compact" for just topics, or "full" for all user messages. For quantitative questions — how many sessions, which tools, what hours — use get_session_metrics instead.',
       inputSchema: {
         startDate: z.string().describe('Start date inclusive (YYYY-MM-DD). Example: "2026-05-07"'),
         endDate: z.string().describe('End date inclusive (YYYY-MM-DD). Example: "2026-05-14"'),
@@ -632,7 +632,7 @@ function registerTools(server: McpServer): void {
     {
       title: 'Usage metrics over a date range',
       description:
-        'Get usage metrics for AI coding sessions within a date range. Returns tool breakdown, project breakdown, daily activity counts, and active hours heatmap.',
+        'Get usage metrics for AI coding sessions within a date range: tool breakdown, project breakdown, daily activity counts, and an active-hours heatmap. Use for quantitative questions — "how much did I use Claude vs Pi", "how many sessions per day", "when am I active" — where the answer is counts and shapes, not content. For WHAT was worked on (topics, first/last messages, standups, recaps), use get_activity_digest instead.',
       inputSchema: {
         startDate: z.string().describe('Start date inclusive (YYYY-MM-DD). Example: "2026-05-07"'),
         endDate: z.string().describe('End date inclusive (YYYY-MM-DD). Example: "2026-05-14"'),
