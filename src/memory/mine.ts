@@ -44,11 +44,62 @@ export const MAX_TEXT_LENGTH = 240;
  * tokens `don` + `t`, so the bare term `dont` matches only the apostrophe-less
  * spelling. `"don t"` is the phrase query that catches the far more common "don't";
  * both spellings are listed because neither subsumes the other.
+ *
+ * The Phase 1 additions are evidence-backed, measured against
+ * src/memory/fixtures/corrections-golden.json by src/memory/recall.test.ts (a term
+ * ships only if it raises recall without turning any `not` entry into a candidate):
+ *
+ * - `again` — recurrence marker ("this came up again in review"). Porter stems
+ *   "against" to `against`, so the two do not collide.
+ * - `told`, `said` — assertion of prior state ("I told you before…"). Porter does
+ *   NOT relate `tell`/`told` or `say`/`said`, so the past-tense spellings are the
+ *   ones that carry the phrasing people actually use.
+ * - `revert`, `undo` — reversal demands. Porter relates revert/reverted/reverting
+ *   and undo/undoes, so one spelling each suffices; "undone" stems to `undon` and
+ *   is deliberately absent (measured: no correction in the labeled set needs it).
+ *
+ * Terms evaluated and REJECTED against the labeled set, recorded here so the next
+ * person does not retry them blind: `please` (matches plain requests, not
+ * corrections), `not` (an FTS5 boolean operator in MATCH syntax, and far too noisy
+ * as a bare term), bare `wait` (interruption-shaped but noisy outside the join — it
+ * lives in INTERRUPTION_TERMS instead).
  */
-export const CORRECTIVE_TERMS = ['always', 'never', 'instead', 'remember', 'dont', '"don t"', 'stop', 'wrong'];
+export const CORRECTIVE_TERMS = [
+  'always',
+  'never',
+  'instead',
+  'remember',
+  'dont',
+  '"don t"',
+  'stop',
+  'wrong',
+  'again',
+  'told',
+  'said',
+  'revert',
+  'undo',
+];
 
 /** The MATCH expression built from CORRECTIVE_TERMS. */
 export const CORRECTIVE_MATCH = CORRECTIVE_TERMS.join(' OR ');
+
+/**
+ * The relaxed vocabulary for the interruption pass. A single short term like `no`
+ * or `wait` is far too noisy to narrow the whole corpus, but correction-shaped when
+ * the turn IMMEDIATELY FOLLOWS another user turn: two consecutive `role='user'`
+ * rows in one session mean the user cut the agent off, and the second turn is the
+ * cut-off message. `wrong` and `stop` are already in CORRECTIVE_TERMS; they repeat
+ * here so the pass stands alone if the main list is tuned away from them.
+ *
+ * Same tokenizer rules as CORRECTIVE_TERMS: `no` and `not` are distinct tokens, and
+ * `wait` matches "waiting"/"waits" via porter. Candidates still flow through
+ * `acceptedText()` unchanged — band, question filter, and scan-clean rules apply
+ * identically, so a "no" that starts a question never becomes a record.
+ */
+export const INTERRUPTION_TERMS = ['no', 'wait', 'wrong', 'stop'];
+
+/** The MATCH expression built from INTERRUPTION_TERMS. */
+export const INTERRUPTION_MATCH = INTERRUPTION_TERMS.join(' OR ');
 
 /**
  * A question is not a durable fact, however corrective its vocabulary.
@@ -299,6 +350,46 @@ export async function mine(opts: MineOptions = {}): Promise<MemoryRecord[]> {
     for (const row of stmt.iterate(...params, ...extraParams)) onRow(row);
   };
 
+  // The interruption pass (Phase 1, docs/ideation/memory-recurrence/spec-phase-1.md):
+  // message_fts excludes tool results and injected turns, so two consecutive
+  // role='user' rows in one session are a real interruption — the user cut the agent
+  // off — and the second turn, matching the relaxed INTERRUPTION_TERMS, is
+  // correction-shaped. A self-join on the existing schema finds them; no index
+  // changes. The msg_index >= 0 guard applies on BOTH sides so the subagent sentinel
+  // (-1) can neither precede nor BE an interruption turn.
+  //
+  // Rows from this pass flow through the SAME `acceptedText()` filter and the SAME
+  // `clusters` map as the main scan — no parallel filter rules to drift, and the
+  // id-sort at the end keeps the batch byte-identical across runs.
+  const interruptionConditions: string[] = [
+    "a.role = 'user'",
+    "b.role = 'user'",
+    'a.msg_index >= 0', // subagent sentinel excluded on BOTH sides (src/cache.ts)
+    'b.msg_index >= 0',
+    'length(b.text) BETWEEN ? AND ?', // prefilter; the band is re-applied to the normalized text
+    'b.text MATCH ?',
+  ];
+  const interruptionParams: (string | number)[] = [MIN_TEXT_LENGTH, MAX_TEXT_LENGTH, INTERRUPTION_MATCH];
+  if (scope.clause) {
+    interruptionConditions.push(scope.clause);
+    interruptionParams.push(...scope.params);
+  }
+
+  const scanInterruptions = (
+    extra: string[],
+    extraParams: (string | number)[],
+    onRow: (row: CandidateRow) => void,
+  ): void => {
+    const stmt = db.query<CandidateRow, any[]>(`
+      SELECT b.file_path AS filePath, b.text AS text, s.cwd AS cwd, s.date AS date
+      FROM message_fts b
+      JOIN message_fts a ON a.file_path = b.file_path AND a.msg_index = b.msg_index - 1
+      JOIN sessions s ON s.file_path = b.file_path
+      WHERE ${[...interruptionConditions, ...extra].join(' AND ')}
+    `);
+    for (const row of stmt.iterate(...interruptionParams, ...extraParams)) onRow(row);
+  };
+
   /** The normalized text a row contributes, or null when the row is out of scope. */
   const acceptedText = (row: CandidateRow): string | null => {
     if (container && containerOf(row.cwd) !== container) return null;
@@ -350,7 +441,14 @@ export async function mine(opts: MineOptions = {}): Promise<MemoryRecord[]> {
     changedTexts = new Set<string>();
     for (let i = 0; i < opts.files.length; i += FILE_CHUNK) {
       const chunk = opts.files.slice(i, i + FILE_CHUNK);
-      scan([`m.file_path IN (${chunk.map(() => '?').join(',')})`], chunk, (row) => {
+      const inChunk = `(${chunk.map(() => '?').join(',')})`;
+      scan([`m.file_path IN ${inChunk}`], chunk, (row) => {
+        const text = acceptedText(row);
+        if (text !== null) changedTexts!.add(text);
+      });
+      // The interruption pass participates in BOTH passes of the incremental mode,
+      // or a --since-last mine would silently miss cut-off corrections.
+      scanInterruptions([`b.file_path IN ${inChunk}`], chunk, (row) => {
         const text = acceptedText(row);
         if (text !== null) changedTexts!.add(text);
       });
@@ -364,7 +462,7 @@ export async function mine(opts: MineOptions = {}): Promise<MemoryRecord[]> {
   // to the same id. One eval fixture prompt appeared 14 times byte-identical in the
   // real corpus; without this it would have been the top candidate.
   const clusters = new Map<string, Cluster>();
-  scan([], [], (row) => {
+  const collect = (row: CandidateRow): void => {
     const text = acceptedText(row);
     if (text === null) return;
     if (changedTexts && !changedTexts.has(text)) return;
@@ -375,7 +473,9 @@ export async function mine(opts: MineOptions = {}): Promise<MemoryRecord[]> {
     }
     cluster.sessions.set(row.filePath, row.cwd);
     cluster.dates.add(row.date);
-  });
+  };
+  scan([], [], collect);
+  scanInterruptions([], [], collect);
 
   const author = gitAuthorEmail();
   const minPhrasings = opts.minPhrasings ?? 1;

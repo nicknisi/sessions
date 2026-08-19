@@ -29,7 +29,7 @@ describe('tokenize', () => {
   });
 
   test('an apostrophe splits the way unicode61 does, leaving no orphan fragments', () => {
-    // "don't" -> don + t inside FTS5 (src/memory/mine.ts:39-42). `t` is below the
+    // "don't" -> don + t inside FTS5 (src/memory/mine.ts:41-46). `t` is below the
     // length floor and `don` is a stopword, so neither survives as a content token.
     expect([...tokenize("don't rewrite it")]).toEqual(['rewrit']);
     expect(tokenize("don't")).toEqual(new Set());
