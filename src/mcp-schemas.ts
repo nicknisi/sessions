@@ -119,6 +119,14 @@ const recurrenceMatch = z.object({
   latestDate: z.string(),
 });
 
+/** Mirrors RecurrenceTrend (src/memory/recurrence.ts) — one violation row's delta. */
+const recurrenceTrend = z.object({
+  id: z.string(),
+  violations: z.number(),
+  previous: z.number().nullable(),
+  delta: z.number().nullable(),
+});
+
 /**
  * Mirrors RecurrenceEnvelope (src/memory/report.ts): the exact JSON
  * `sessions memory report --json` emits, envelope fields included, per the phase-3
@@ -141,6 +149,11 @@ export const GetMemoryRecurrenceOutput = z.object({
     }),
   ),
   fuzzy: z.array(recurrenceMatch),
+  // Trend deltas against the previous snapshot — the report READS the file here
+  // (the append stays CLI-side, so the tool keeps its read-only annotation).
+  trend: z.array(recurrenceTrend),
+  trendSince: z.string().optional(),
+  trendNote: z.string().optional(),
 });
 
 // ——— get_memory_sources ———

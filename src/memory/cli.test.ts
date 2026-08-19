@@ -214,6 +214,8 @@ describe('memory report', () => {
     expect(parseReportArgs(['--repo', '/repos/app'])).toEqual({ all: false, help: false, repo: '/repos/app' });
     expect(parseReportArgs(['--json', '--all'])).toEqual({ all: true, help: false, json: true });
     expect(parseReportArgs(['--since', '2026-06-01'])).toEqual({ all: false, help: false, since: '2026-06-01' });
+    // Absent-not-false, like `since`, so the bare-parse shape assertion above stays bare.
+    expect(parseReportArgs(['--no-snapshot'])).toEqual({ all: false, help: false, noSnapshot: true });
     expect(() => parseReportArgs(['--repo'])).toThrow('--repo requires a path');
     expect(() => parseReportArgs(['--all', '--repo', '/repos/app'])).toThrow('--all and --repo are mutually exclusive');
     expect(() => parseReportArgs(['--since'])).toThrow('--since requires a date');

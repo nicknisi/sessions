@@ -1,16 +1,19 @@
-// The impure half of the recurrence report: scope resolution, the mine, and the
-// store read that src/memory/recurrence.ts deliberately does not do (its header
-// purity contract keeps that module reproducible-from-inputs). Both
-// `sessions memory report` (src/memory/cli.ts) and the get_memory_recurrence MCP
-// tool (src/mcp.ts) run through runRecurrence, so the two surfaces can never
-// drift on what "this repo" means or on what the JSON holds — the scope-drift
-// failure mode the phase-3 spec's failure table names.
+// The impure half of the recurrence report: scope resolution, the mine, the
+// store read, and the previous-snapshot read that src/memory/recurrence.ts
+// deliberately does not do (its header purity contract keeps that module
+// reproducible-from-inputs). Both `sessions memory report` (src/memory/cli.ts)
+// and the get_memory_recurrence MCP tool (src/mcp.ts) run through runRecurrence,
+// so the two surfaces can never drift on what "this repo" means or on what the
+// JSON holds — the scope-drift failure mode the phase-3 spec's failure table
+// names. Only the READ of the trend snapshot lives here; the append stays in
+// cli.ts so the MCP tool keeps its read-only annotation.
 
 import { existsSync } from 'node:fs';
-import { getMemoryDbPath } from '../paths';
+import { getDataDir, getMemoryDbPath } from '../paths';
 import { resolveRepo } from '../repo';
 import { createContainerResolver, mine } from './mine';
 import { classifyRecurrence, type RecurrenceReport } from './recurrence';
+import { diffSnapshots, readSnapshots, scopeLabel } from './snapshots';
 import { listMemories } from './store';
 import { dropSuppressed, suppressedMemories } from './triage';
 import { lastMinedAt } from './watermark';
@@ -19,6 +22,10 @@ import { lastMinedAt } from './watermark';
 export interface RecurrenceEnvelope extends RecurrenceReport {
   generatedAt: string;
   lastMinedAt: string | null;
+  /** Date of the previous snapshot the deltas compare against, when one exists. */
+  trendSince?: string;
+  /** Why the deltas need qualification: first run, or a scope change between runs. */
+  trendNote?: string;
 }
 
 export interface ReportScope {
@@ -84,5 +91,35 @@ export async function runRecurrence(opts: {
   // (triage.ts:76-79) is inert here for the same reason.
   const clusters = dropSuppressed(mined, suppressedMemories(), opts.today);
   const report = classifyRecurrence(clusters, listMemories(), { since: opts.since });
-  return { scope, report: { generatedAt: opts.today, lastMinedAt: lastMinedAt(), ...report } };
+  // The previous-snapshot READ lives on this shared path (both the CLI and the
+  // get_memory_recurrence MCP tool get the same trend) — the APPEND does not.
+  // cli.ts's runReport appends after rendering; this read must see the file state
+  // BEFORE that, and the MCP read-only annotation (mcp.ts) holds because reading
+  // here never writes. classifyRecurrence leaves `trend` empty per its purity
+  // contract; diffSnapshots fills it.
+  const snapshots = readSnapshots(getDataDir());
+  const previous = snapshots.length > 0 ? snapshots[snapshots.length - 1]! : null;
+  const trend = diffSnapshots(previous, report.violations);
+  let trendSince: string | undefined;
+  let trendNote: string | undefined;
+  if (previous === null) {
+    trendNote = 'first snapshot — no previous run';
+  } else if (previous.scope !== scopeLabel(scope)) {
+    // The failure mode the spec's failure table names: a `--repo` snapshot read
+    // against an `--all` one (or vice versa). Per-id counts are truth per row
+    // either way, but the header note says the populations differ.
+    trendSince = previous.date;
+    trendNote = `scopes differ between snapshots (${previous.scope} → ${scopeLabel(scope)}) — deltas compare different populations`;
+  } else {
+    trendSince = previous.date;
+  }
+  const envelope: RecurrenceEnvelope = {
+    generatedAt: opts.today,
+    lastMinedAt: lastMinedAt(),
+    ...report,
+    trend,
+    ...(trendSince ? { trendSince } : {}),
+    ...(trendNote ? { trendNote } : {}),
+  };
+  return { scope, report: envelope };
 }

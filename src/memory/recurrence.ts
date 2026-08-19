@@ -79,10 +79,28 @@ export interface RecurrenceRepeat {
 /** A possible paraphrase of an approved memory, below the assert threshold. */
 export interface RecurrenceFuzzy extends RecurrenceMatch {}
 
+/** One violation row compared against the previous snapshot (snapshots.ts). */
+export interface RecurrenceTrend {
+  /** The violated memory's content-addressed id — stable across re-mines. */
+  id: string;
+  /** Current violation count: the session count the VIOLATIONS row prints. */
+  violations: number;
+  /** The previous snapshot's count for this id, or null on first sighting. */
+  previous: number | null;
+  /** `violations − previous`; null when previous is null (renders `(new)`). */
+  delta: number | null;
+}
+
 export interface RecurrenceReport {
   violations: RecurrenceViolation[];
   repeats: RecurrenceRepeat[];
   fuzzy: RecurrenceFuzzy[];
+  /**
+   * classifyRecurrence emits this EMPTY on purpose: reading the previous
+   * snapshot is I/O, and this module's purity contract (header) refuses it.
+   * report.ts fills it via snapshots.ts after classifying.
+   */
+  trend: RecurrenceTrend[];
 }
 
 export interface RecurrenceOptions {
@@ -230,5 +248,5 @@ export function classifyRecurrence(
   repeats.sort(byCountThenId);
   fuzzy.sort((a, b) => b.similarity - a.similarity || byCountThenId(a, b));
 
-  return { violations, repeats, fuzzy };
+  return { violations, repeats, fuzzy, trend: [] };
 }

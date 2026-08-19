@@ -325,6 +325,8 @@ export async function runGetMemoryRecurrence(args: { repo?: string; all?: boolea
       violations: [],
       repeats: [],
       fuzzy: [],
+      // Absent store = no previous snapshot to read; the trend simply has no rows.
+      trend: [],
     };
     return sentinel('No memory store — run `sessions memory mine` first.', empty);
   }

@@ -9,14 +9,15 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { resolve as resolvePath } from 'node:path';
+import { getDataDir } from '../paths';
 import { resolveRepo } from '../repo';
 import { writeStdoutFully } from '../stdout';
 import { containerFor, createContainerResolver, indexedSessions, MAX_TEXT_LENGTH, mine, MIN_TEXT_LENGTH } from './mine';
 import { documentedFacts, documentedSources } from './documented';
 import { fromPortable, merge, toPortable, toRecord, type MergedMemory } from './portable';
 import { buildRecord, gitAuthorEmail } from './record';
-import { type RecurrenceReport } from './recurrence';
-import { runRecurrence } from './report';
+import { runRecurrence, type RecurrenceEnvelope } from './report';
+import { appendSnapshot, scopeLabel, snapshotCounts } from './snapshots';
 import { ContentScanError, describeFindings, scanMemoryText, type ScanFinding } from './scan';
 import { collectAgentMemory, splitEntryToBand, type SourceAgent } from './sources';
 import { getPersistedStates, listMemories, upsertCandidates, type PersistedState } from './store';
@@ -99,6 +100,8 @@ Options:
                         Budgeted: at most ${ALWAYS_ON_MAX_ENTRIES} entries, so each one stays read
   --no-always-on        (approve) Explicitly revoke --always-on — the release valve
                         when the budget refuses a new grant
+  --no-snapshot         (report) Render the TREND section without appending a
+                        snapshot — for dry inspection of a per-run audit trail
   --scope group:<name>  (approve) Assign a project group, not the derived scope
   --scope repo:<path>   (approve) Bind to one repo — the path is resolved to its
                         repo container. Needed for an imported memory, whose
@@ -667,6 +670,9 @@ export interface ReportArgs {
   since?: string;
   /** `--json` was passed: emit the machine-readable report instead of the prose. */
   json?: boolean;
+  /** `--no-snapshot` was passed: render without appending to the trend snapshot
+   *  file. Absent-not-false, same convention as `since` above. */
+  noSnapshot?: boolean;
   /** `-h`/`--help` was passed; the caller prints help and exits 0. */
   help: boolean;
 }
@@ -710,6 +716,9 @@ export function parseReportArgs(argv: string[]): ReportArgs {
       case '--json':
         args.json = true;
         break;
+      case '--no-snapshot':
+        args.noSnapshot = true;
+        break;
       default:
         throw new UsageError(`unknown option: ${a}`);
     }
@@ -732,7 +741,7 @@ function shortDate(iso: string): string {
  * per-occurrence evidence a cluster carries (mine emits no per-session date map),
  * so "matched in 2 sessions, latest 06-02" reads `lastSeen` as the latest date.
  */
-export function renderReport(report: RecurrenceReport, opts: { today: string; lastMined: string | null }): string {
+export function renderReport(report: RecurrenceEnvelope, opts: { today: string; lastMined: string | null }): string {
   const stale = opts.lastMined ? `last mine ${opts.lastMined.slice(0, 10)}` : 'never mined';
   const lines: string[] = [`memory report — ${opts.today} (${stale})`, ''];
 
@@ -768,6 +777,25 @@ export function renderReport(report: RecurrenceReport, opts: { today: string; la
     lines.push(`  ?   "${f.memory.text}" ~ "${f.cluster.text}"`);
   }
 
+  // TREND reads the deltas report.ts computed against the previous snapshot. The
+  // header line stays first — cli.test.ts's locked regex anchors it — and the
+  // scope/first-run note (trendNote) leads the section rather than a per-row
+  // caveat that would repeat on every violation.
+  lines.push('', 'TREND (violation counts vs the previous snapshot)');
+  if (report.trendNote) lines.push(`  note: ${report.trendNote}`);
+  if (report.trend.length === 0) {
+    lines.push('  none');
+  } else {
+    const textById = new Map(report.violations.map((v) => [v.memory.id, v.memory.text]));
+    for (const t of report.trend) {
+      const delta =
+        t.delta === null
+          ? '(new)'
+          : `(${t.delta >= 0 ? '+' : ''}${t.delta}${report.trendSince ? ` since ${shortDate(report.trendSince)}` : ''})`;
+      lines.push(`  ${t.violations} ${delta}  "${textById.get(t.id) ?? t.id}"`);
+    }
+  }
+
   return lines.join('\n');
 }
 
@@ -775,8 +803,9 @@ export function renderReport(report: RecurrenceReport, opts: { today: string; la
  * Report what recurs: freshly mined clusters classified against the store.
  *
  * Read-only like `pending`, but unlike `pending` it DOES mine — recurrence is
- * defined against fresh evidence, so the run pays for an index read. It still
- * writes nothing: no upsert, no watermark advance (snapshots are Phase 4).
+ * defined against fresh evidence, so the run pays for an index read. The one
+ * write it performs is the trend-snapshot append, skipped under `--no-snapshot`;
+ * no upsert, no watermark advance.
  */
 async function runReport(argv: string[]): Promise<void> {
   const args = parseReportArgs(argv);
@@ -806,15 +835,25 @@ async function runReport(argv: string[]): Promise<void> {
   const { report } = run;
   const counts = `${report.violations.length} violations, ${report.repeats.length} repeats, ${report.fuzzy.length} fuzzy`;
 
+  // The envelope is already the byte-compatible shape — report.ts owns it so the
+  // MCP tool emits the identical JSON, trend fields included.
   if (args.json) {
-    // The envelope is already the byte-compatible shape ({ generatedAt, lastMinedAt,
-    // ...report }) — report.ts owns it so the MCP tool emits the identical JSON.
     await writeStdoutFully(JSON.stringify(report, null, 2) + '\n');
-    process.stderr.write(`  ${counts}\n`);
-    return;
+  } else {
+    await writeStdoutFully(renderReport(report, { today: report.generatedAt, lastMined: report.lastMinedAt }) + '\n');
   }
-  await writeStdoutFully(renderReport(report, { today: report.generatedAt, lastMined: report.lastMinedAt }) + '\n');
   process.stderr.write(`  ${counts}\n`);
+
+  // Append AFTER the render, in both branches: the previous-snapshot read inside
+  // runRecurrence must see the file BEFORE this run's line, or the deltas would
+  // diff the report against itself. `--no-snapshot` skips the write entirely —
+  // including creating the file on a first run.
+  if (!args.noSnapshot) {
+    appendSnapshot(
+      { v: 1, date: report.generatedAt, scope: scopeLabel(run.scope), counts: snapshotCounts(report.violations) },
+      getDataDir(),
+    );
+  }
 }
 
 /**

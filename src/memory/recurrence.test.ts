@@ -1,8 +1,14 @@
 // Unit + golden coverage for recurrence matching (the G2 instrument of
-// docs/ideation/memory-recurrence/spec-phase-2.md). No tmpdir harness: the matcher
-// is pure, so every fixture is a hand-built record.
+// docs/ideation/memory-recurrence/spec-phase-2.md), plus the phase-4 trend
+// snapshot coverage (G4 of spec-phase-4.md). The matching unit tests keep the
+// no-tmpdir promise — hand-built records, matcher is pure; the snapshot tests
+// below bring the tmpdir harness because the snapshot file is the G4 instrument.
 
-import { describe, expect, test } from 'bun:test';
+import { beforeAll, beforeEach, afterAll, describe, expect, test } from 'bun:test';
+import { existsSync, readFileSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { getDataDir } from '../paths';
+import { runMemory } from './cli';
 import { buildRecord } from './record';
 import {
   classifyRecurrence,
@@ -11,8 +17,11 @@ import {
   SIMILARITY_ASSERT,
   SIMILARITY_FUZZY,
 } from './recurrence';
+import { appendSnapshot, diffSnapshots, readSnapshots, snapshotPath } from './snapshots';
+import { setState, upsertCandidates } from './store';
 import { tokenize } from './topic';
 import type { MemoryRecord, MemoryState } from './types';
+import { captureStreams, closeDatabases, makeTmp, setMemoryEnv, userTurn, writeSession } from './fixtures';
 
 function record(
   text: string,
@@ -219,5 +228,153 @@ describe('classifyRecurrence', () => {
     const b = classifyRecurrence([...clusters].reverse(), []);
     expect(a.repeats.map((r) => r.cluster.text)).toEqual(b.repeats.map((r) => r.cluster.text));
     expect(a.repeats[0]!.sessions).toHaveLength(3);
+  });
+});
+
+describe('snapshots: read/append/diff (phase 4 unit)', () => {
+  let dir: string;
+  beforeAll(() => {
+    dir = makeTmp('memory-snapshots-unit');
+  });
+  afterAll(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** One violation row built by the classifier itself, so the shape cannot drift. */
+  function violation(text: string, sessions: string[]) {
+    const memory = record(text, { state: 'approved', dates: ['2026-05-03'] });
+    const cluster = record(text, { sessions, dates: ['2026-06-01', '2026-06-02'] });
+    return classifyRecurrence([cluster], [memory]).violations[0]!;
+  }
+
+  test('a missing file reads as an empty history, not an error', () => {
+    expect(readSnapshots(dir)).toEqual([]);
+  });
+
+  test('append then read round-trips one line per run', () => {
+    appendSnapshot({ v: 1, date: '2026-08-18', scope: 'all', counts: { 'sha256:a': 3 } }, dir);
+    appendSnapshot({ v: 1, date: '2026-08-19', scope: 'all', counts: { 'sha256:a': 4 } }, dir);
+    const read = readSnapshots(dir);
+    expect(read).toHaveLength(2);
+    expect(read[1]!.date).toBe('2026-08-19');
+    expect(read[1]!.counts['sha256:a']).toBe(4);
+  });
+
+  test('diffSnapshots: new id gets null delta, matched id gets the arithmetic', () => {
+    const v = violation('always verify the schema drift before cutting a release', ['/s/a.jsonl', '/s/b.jsonl']);
+    const first = diffSnapshots(null, [v]);
+    expect(first[0]).toEqual({ id: v.memory.id, violations: 2, previous: null, delta: null });
+
+    const second = diffSnapshots({ v: 1, date: '2026-08-18', scope: 'all', counts: { [v.memory.id]: 1 } }, [v]);
+    expect(second[0]).toEqual({ id: v.memory.id, violations: 2, previous: 1, delta: 1 });
+    // Id order follows the violations order, never Object.entries accidentals.
+    expect(second.map((t) => t.id)).toEqual([v.memory.id]);
+  });
+});
+
+describe('trend snapshots (G4: the two-run delta instrument)', () => {
+  const FACT = 'Always run the whole test suite before you report the change done';
+  const SECOND = 'Never force push to a shared branch without asking first';
+  let tmp: string;
+  let repo: string;
+
+  const path = (): string => snapshotPath(getDataDir());
+  /** Snapshot lines so far; [] when the file does not exist yet. */
+  const lines = (): string[] => (existsSync(path()) ? readFileSync(path(), 'utf-8').split('\n').filter(Boolean) : []);
+  const capture = (argv: string[]): Promise<{ stdout: string; stderr: string }> => captureStreams(() => runMemory(argv));
+
+  beforeAll(() => {
+    tmp = makeTmp('memory-snapshots');
+    setMemoryEnv(tmp);
+    repo = join(tmp, 'repo');
+    closeDatabases();
+  });
+  beforeEach(() => {
+    // Re-assert, per fixtures.ts: the shared module instances would otherwise read
+    // the last test's env.
+    setMemoryEnv(tmp);
+    closeDatabases();
+  });
+  afterAll(() => {
+    closeDatabases();
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  function approve(text: string, lastSeen: string): MemoryRecord {
+    const memory = buildRecord({
+      text,
+      scope: { type: 'repo', key: repo },
+      author: 'dev@example.com',
+      sessions: ['/s/old.jsonl'],
+      dates: [lastSeen],
+      distinctPhrasings: 1,
+    });
+    upsertCandidates([memory]);
+    setState(memory.id, 'approved');
+    return memory;
+  }
+
+  interface TrendRow {
+    id: string;
+    violations: number;
+    previous: number | null;
+    delta: number | null;
+  }
+  interface TrendJson {
+    trend: TrendRow[];
+    trendNote?: string;
+  }
+
+  test('G4: two runs over a mutated corpus — the delta shows exactly the new violation', async () => {
+    writeSession(tmp, 's1', repo, [userTurn(FACT, '2026-06-01T10:00:00Z')]);
+    writeSession(tmp, 's2', repo, [userTurn(FACT, '2026-06-02T10:00:00Z')]);
+    const memory = approve(FACT, '2026-05-03');
+    closeDatabases();
+
+    // First run: no previous run, every violation is (new), one snapshot line lands.
+    const first = JSON.parse((await capture(['report', '--repo', repo, '--json'])).stdout) as TrendJson;
+    expect(first.trendNote).toBe('first snapshot — no previous run');
+    expect(first.trend.every((t) => t.delta === null && t.previous === null)).toBe(true);
+    const firstCount = first.trend.find((t) => t.id === memory.id)!.violations;
+    expect(lines()).toHaveLength(1);
+
+    // Mutate the corpus: a second approved memory violated by two new sessions.
+    const second = approve(SECOND, '2026-05-04');
+    writeSession(tmp, 's3', repo, [userTurn(SECOND, '2026-06-03T10:00:00Z')]);
+    writeSession(tmp, 's4', repo, [userTurn(SECOND, '2026-06-04T10:00:00Z')]);
+    closeDatabases();
+
+    const next = JSON.parse((await capture(['report', '--repo', repo, '--json'])).stdout) as TrendJson;
+    // The unchanged memory deltas exactly 0; the mutated corpus' addition is the
+    // ONLY (new) row — the whole G4 claim: the diff shows exactly the new violation
+    // and nothing else.
+    const unchanged = next.trend.find((t) => t.id === memory.id)!;
+    expect({ id: unchanged.id, delta: unchanged.delta }).toEqual({ id: memory.id, delta: 0 });
+    const added = next.trend.find((t) => t.id === second.id)!;
+    expect(added.delta).toBeNull();
+    expect(next.trend.some((t) => t.previous === null && t.id !== second.id)).toBe(false);
+    expect(lines()).toHaveLength(2);
+    expect(firstCount).toBe(unchanged.violations);
+  });
+
+  test('--no-snapshot leaves the snapshot file byte-untouched, including never-created', async () => {
+    const before = existsSync(path()) ? readFileSync(path(), 'utf-8') : null;
+    await capture(['report', '--repo', repo, '--no-snapshot']);
+    if (before === null) {
+      expect(existsSync(path())).toBe(false);
+    } else {
+      expect(readFileSync(path(), 'utf-8')).toBe(before);
+    }
+  });
+
+  test('a corrupt trailing line (a truncated write) is skipped with a warning, not fatal', async () => {
+    // Simulate the torn line directly rather than mocking a failed write.
+    const garbage = '{"v":1,"date":"2026-08-18","sco\n';
+    const prior = existsSync(path()) ? readFileSync(path(), 'utf-8') : '';
+    const { writeFileSync } = await import('node:fs');
+    writeFileSync(path(), prior + garbage);
+    const result = await capture(['report', '--repo', repo]);
+    expect(result.stderr).toContain('skipping corrupt snapshot line');
+    expect(result.stdout).toContain('memory report');
   });
 });
