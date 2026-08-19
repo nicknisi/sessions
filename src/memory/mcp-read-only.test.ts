@@ -105,3 +105,20 @@ test('driving get_memory over the protocol leaves the store byte-identical', asy
   await client.close();
   expect(dumpStore()).toBe(before);
 });
+
+test('driving get_memory_recurrence over the protocol leaves the store byte-identical', async () => {
+  const before = dumpStore();
+  const client = await connect();
+
+  // Every arg shape: defaulted, all-repos, and repo-scoped. This tool MINES — the
+  // one read-only tool that does real work — so it is where a write (a candidate
+  // upsert, a watermark advance) would most plausibly hide. The byte-compare only
+  // covers tools this file drives, which is why this loop exists at all.
+  for (const args of [{}, { all: true }, { repo: '/repos/app' }]) {
+    const res = await client.callTool({ name: 'get_memory_recurrence', arguments: args });
+    expect({ args, isError: Boolean(res.isError) }).toEqual({ args, isError: false });
+  }
+
+  await client.close();
+  expect(dumpStore()).toBe(before);
+});

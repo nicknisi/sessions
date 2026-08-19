@@ -20,6 +20,7 @@ import { readSessionLines } from './session-io';
 import { activeMemoryFor, withheldMemoryFor } from './memory/retrieve';
 import { fingerprint } from './memory/record';
 import { collectAgentMemory, similarStoredIds, splitByScan, type SourceAgent } from './memory/sources';
+import { runRecurrence } from './memory/report';
 import { listMemories } from './memory/store';
 import { matchTopic, TOPIC_THRESHOLD } from './memory/topic';
 import { ALWAYS_ON_MAX_CHARS, ALWAYS_ON_MAX_ENTRIES } from './memory/triage';
@@ -30,6 +31,7 @@ import {
   GetActivityDigestOutput,
   GetContextPrimerOutput,
   GetMemoryOutput,
+  GetMemoryRecurrenceOutput,
   GetMemorySourcesOutput,
   GetSessionDigestOutput,
   GetSessionMessagesOutput,
@@ -45,12 +47,14 @@ const INSTRUCTIONS =
   'Two ways to find things: search_sessions ranks the most relevant sessions for a topic (top-k, not exhaustive); grep_sessions finds every message matching a literal string or regex (exhaustive — use it for "every time", counts, or exact-pattern needs). ' +
   'Prefer bounded calls: get_session_digest over paging full transcripts. ' +
   'Memory are the other half: short standing instructions and durable facts this user has already established (build conventions, tooling constraints, preferences). Call get_memory when starting work in a repo and treat what it returns as binding. ' +
-  'Two read-only windows into what OTHER agents remember: get_memory_sources inventories every agent memory store on this machine (pi-hermes, Claude Code, Codex), and review_agent_memories reads their contents with provenance — use them to audit what another harness knows, to spot redundancy against get_memory, or before porting conventions between agents.';
+  'Two read-only windows into what OTHER agents remember: get_memory_sources inventories every agent memory store on this machine (pi-hermes, Claude Code, Codex), and review_agent_memories reads their contents with provenance — use them to audit what another harness knows, to spot redundancy against get_memory, or before porting conventions between agents. get_memory_recurrence reports what recurs against that store — approved memories still being violated, untriaged repeats, and fuzzy paraphrase pairs awaiting triage confirmation.';
 
 /**
- * Correct for all 10 tools: every one reads the local index and mutates nothing.
+ * Correct for all 11 tools: every one reads the local index and mutates nothing.
  * get_memory included — it reads stored memory, it does not record it. The two
  * agent-source tools read other harnesses' stores but only ever open them readonly.
+ * get_memory_recurrence MINES — real work, an index read per call — but writes
+ * nothing: no candidate upsert, no watermark advance (src/memory/report.ts).
  */
 const READ_ONLY = { readOnlyHint: true, openWorldHint: false } as const;
 
@@ -304,6 +308,29 @@ export async function runReviewAgentMemories(args: {
   return toolResult(payload);
 }
 
+// Exported, testable seam: the get_memory_recurrence tool delegates here so the
+// absent-store sentinel and the shared report pipeline can be unit-tested without MCP.
+export async function runGetMemoryRecurrence(args: { repo?: string; all?: boolean }): Promise<ToolResult> {
+  // The clock read lives at the I/O layer — everything under src/memory/ takes the
+  // date as an argument so tests stay hermetic (same rule as cli.ts's todayIso).
+  const today = new Date().toISOString().slice(0, 10);
+  const run = await runRecurrence({ repo: args.repo, all: args.all, today });
+  if (!run) {
+    // Absent store = empty report, never an error — and never a bare isError, which
+    // would bypass output validation. The existence check (inside runRecurrence) is
+    // by path precisely so this call cannot CREATE the db as a side effect.
+    const empty: z.infer<typeof GetMemoryRecurrenceOutput> = {
+      generatedAt: today,
+      lastMinedAt: null,
+      violations: [],
+      repeats: [],
+      fuzzy: [],
+    };
+    return sentinel('No memory store — run `sessions memory mine` first.', empty);
+  }
+  return toolResult(run.report);
+}
+
 // Exported, testable seam: the grep_sessions tool delegates here so its exhaustive-match
 // behavior, totals, and truncation can be unit-tested without MCP plumbing.
 export async function runGrepSessions(args: {
@@ -418,7 +445,7 @@ export async function runGetSessionDigest(args: { filePath: string }): Promise<T
 }
 
 /**
- * All 10 tool registrations. Extracted alongside createServer() so a test can drive
+ * All 11 tool registrations. Extracted alongside createServer() so a test can drive
  * `tools/list` and `tools/call` over an in-memory transport — the only path that runs
  * the SDK's output validation. The exported `run*` seams stay the handlers' bodies, but
  * they bypass that validation, which is exactly why they cannot cover this surface.
@@ -487,6 +514,31 @@ function registerTools(server: McpServer): void {
       annotations: READ_ONLY,
     },
     async ({ cwd, agent, topic }) => runReviewAgentMemories({ cwd, agent, topic }),
+  );
+
+  server.registerTool(
+    'get_memory_recurrence',
+    {
+      title: 'What recurs against stored memory',
+      description:
+        'What recurs: freshly mined corrections classified against the memory store — the same JSON `sessions memory report --json` emits. Three sections. `violations`: approved memories still being re-corrected after the store last saw them — a rule the user keeps breaking is a rule that is not working. `repeats`: corrections seen across 2+ sessions and 2+ dates that nobody has triaged. `fuzzy`: possible paraphrases of approved memories, below the binary\'s assert threshold — confirmation is the /memory triage skill\'s job, and a confirmed pair closes with `sessions memory merge <memory-id> <cluster-id>`. Call this to answer "is the user still hitting a rule they already approved", or before memory triage to find merge candidates. Read-only but not free: each call re-mines the session index and writes nothing (no upsert, no watermark advance).',
+      inputSchema: {
+        repo: z
+          .string()
+          .optional()
+          .describe(
+            'Repo path to scope the report to. Defaults to the server process cwd; a path that is not a git repo scopes to itself.',
+          ),
+        all: z
+          .boolean()
+          .optional()
+          .default(false)
+          .describe('Report across every repo in the index. Overrides repo.'),
+      },
+      outputSchema: GetMemoryRecurrenceOutput,
+      annotations: READ_ONLY,
+    },
+    async ({ repo, all }) => runGetMemoryRecurrence({ repo, all }),
   );
 
   server.registerTool(

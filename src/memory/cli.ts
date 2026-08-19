@@ -9,14 +9,14 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { resolve as resolvePath } from 'node:path';
-import { getMemoryDbPath } from '../paths';
 import { resolveRepo } from '../repo';
 import { writeStdoutFully } from '../stdout';
 import { containerFor, createContainerResolver, indexedSessions, MAX_TEXT_LENGTH, mine, MIN_TEXT_LENGTH } from './mine';
 import { documentedFacts, documentedSources } from './documented';
 import { fromPortable, merge, toPortable, toRecord, type MergedMemory } from './portable';
 import { buildRecord, gitAuthorEmail } from './record';
-import { classifyRecurrence, type RecurrenceReport } from './recurrence';
+import { type RecurrenceReport } from './recurrence';
+import { runRecurrence } from './report';
 import { ContentScanError, describeFindings, scanMemoryText, type ScanFinding } from './scan';
 import { collectAgentMemory, splitEntryToBand, type SourceAgent } from './sources';
 import { getPersistedStates, listMemories, upsertCandidates, type PersistedState } from './store';
@@ -39,7 +39,7 @@ import {
   type MemoryRecord,
   type MemoryScope,
 } from './types';
-import { advanceWatermark, changedSessions, lastMinedAt, readWatermark, type WatermarkEntry } from './watermark';
+import { advanceWatermark, changedSessions, readWatermark, type WatermarkEntry } from './watermark';
 
 /**
  * A bad invocation. Thrown rather than exiting inline so `parseMineArgs` stays a
@@ -782,41 +782,38 @@ async function runReport(argv: string[]): Promise<void> {
   const args = parseReportArgs(argv);
   if (args.help) help();
 
-  // An absent store is an empty report, not an error (spec error table). Checked
-  // before any mining so the answer is instant, and checked by path because
-  // getMemoryDb() would CREATE the file as a side effect of asking (store.ts).
-  if (!existsSync(getMemoryDbPath())) {
+  // The pipeline is shared with the get_memory_recurrence MCP tool
+  // (src/memory/report.ts) — including the absent-store guard, which is checked by
+  // path because getMemoryDb() would CREATE the file as a side effect of asking.
+  const run = await runRecurrence({
+    repo: args.repo,
+    all: args.all,
+    since: args.since,
+    today: todayIso(),
+    onScope: (scope) => {
+      if (scope.outsideRepo) {
+        process.stderr.write('  not inside a git repository — reporting across every repo in the index\n');
+      }
+      process.stderr.write(`  mining ${scope.repo ?? 'all repos'}...\n`);
+    },
+  });
+  // An absent store is an empty report, not an error (spec error table).
+  if (!run) {
     process.stderr.write('  no memory store — run sessions memory mine first\n');
     return;
   }
 
-  // Scoping copied from runMine, not shared: one block, one consumer each, and a
-  // helper extracted for two call sites would drift the moment mine grows a flag
-  // report does not take.
-  const containerOf = createContainerResolver();
-  let repo: string | undefined;
-  if (!args.all) {
-    const target = args.repo ?? process.cwd();
-    if (args.repo || resolveRepo(target)) {
-      repo = containerOf(target);
-    } else {
-      process.stderr.write('  not inside a git repository — reporting across every repo in the index\n');
-    }
-  }
-
-  process.stderr.write(`  mining ${repo ?? 'all repos'}...\n`);
-  const clusters = await mine({ repo });
-  const report = classifyRecurrence(clusters, listMemories(), { since: args.since });
+  const { report } = run;
   const counts = `${report.violations.length} violations, ${report.repeats.length} repeats, ${report.fuzzy.length} fuzzy`;
 
   if (args.json) {
-    await writeStdoutFully(
-      JSON.stringify({ generatedAt: todayIso(), lastMinedAt: lastMinedAt(), ...report }, null, 2) + '\n',
-    );
+    // The envelope is already the byte-compatible shape ({ generatedAt, lastMinedAt,
+    // ...report }) — report.ts owns it so the MCP tool emits the identical JSON.
+    await writeStdoutFully(JSON.stringify(report, null, 2) + '\n');
     process.stderr.write(`  ${counts}\n`);
     return;
   }
-  await writeStdoutFully(renderReport(report, { today: todayIso(), lastMined: lastMinedAt() }) + '\n');
+  await writeStdoutFully(renderReport(report, { today: report.generatedAt, lastMined: report.lastMinedAt }) + '\n');
   process.stderr.write(`  ${counts}\n`);
 }
 

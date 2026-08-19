@@ -1,4 +1,4 @@
-// The 8 tools' `outputSchema` shapes, kept out of src/mcp.ts so that file stays readable.
+// The 11 tools' `outputSchema` shapes, kept out of src/mcp.ts so that file stays readable.
 //
 // Two invariants govern everything here:
 //
@@ -86,6 +86,61 @@ export const GetMemoryOutput = z.object({
   // Present only when the served always-on set exceeds its budget; the set is still
   // served in full. See src/memory/triage.ts for the cap and src/mcp.ts for the wording.
   alwaysOnBudget: z.string().optional(),
+});
+
+// ——— get_memory_recurrence ———
+
+/** Mirrors MemoryRecord (src/memory/types.ts) — served verbatim, as the CLI emits it. */
+const memoryRecord = z.object({
+  v: z.number(),
+  id: z.string(),
+  text: z.string(),
+  kind: z.enum(['instruction', 'information']),
+  scope: z.object({ type: z.enum(['repo', 'group', 'workflow']), key: z.string() }),
+  author: z.string(),
+  evidence: z.object({
+    distinctPhrasings: z.number(),
+    sessions: z.array(z.string()),
+    firstSeen: z.string(),
+    lastSeen: z.string(),
+  }),
+  state: z.enum(['candidate', 'approved', 'rejected', 'snoozed', 'merged']),
+  snoozedUntil: z.string().nullable(),
+  alwaysOn: z.boolean(),
+  mergedInto: z.string().nullable(),
+});
+
+/** Mirrors RecurrenceMatch (src/memory/recurrence.ts) — the shape violations and fuzzy share. */
+const recurrenceMatch = z.object({
+  memory: memoryRecord,
+  cluster: memoryRecord,
+  similarity: z.number(),
+  sessions: z.array(z.string()),
+  latestDate: z.string(),
+});
+
+/**
+ * Mirrors RecurrenceEnvelope (src/memory/report.ts): the exact JSON
+ * `sessions memory report --json` emits, envelope fields included, per the phase-3
+ * spec's "the same JSON the CLI emits". One shape means the /memory skill and this
+ * tool never disagree about the report's contents.
+ */
+export const GetMemoryRecurrenceOutput = z.object({
+  generatedAt: z.string(),
+  // null until the first watermark-advancing mine; the report still runs.
+  lastMinedAt: z.string().nullable(),
+  violations: z.array(recurrenceMatch),
+  repeats: z.array(
+    z.object({
+      cluster: memoryRecord,
+      sessions: z.array(z.string()),
+      firstDate: z.string(),
+      latestDate: z.string(),
+      // Present only when the repeat matches an untriaged candidate (recurrence.ts).
+      candidateId: z.string().optional(),
+    }),
+  ),
+  fuzzy: z.array(recurrenceMatch),
 });
 
 // ——— get_memory_sources ———

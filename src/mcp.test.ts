@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeAll, beforeEach, afterAll } from 'bun:test';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -8,11 +8,13 @@ import { Database } from 'bun:sqlite';
 import type { ZodType } from 'zod';
 import { version as pkgVersion } from '../package.json';
 import { buildRecord } from './memory/record';
+import { getMemoryDbPath } from './paths';
 import { closeMemoryDb, setState, upsertCandidates } from './memory/store';
 import {
   GetActivityDigestOutput,
   GetContextPrimerOutput,
   GetMemoryOutput,
+  GetMemoryRecurrenceOutput,
   GetMemorySourcesOutput,
   GetSessionDigestOutput,
   GetSessionMessagesOutput,
@@ -595,6 +597,7 @@ const TOOL_NAMES = [
   'get_activity_digest',
   'get_context_primer',
   'get_memory',
+  'get_memory_recurrence',
   'get_memory_sources',
   'get_session_digest',
   'get_session_messages',
@@ -620,7 +623,7 @@ test('version: the server reports the package.json version, not a hardcoded lite
   await client.close();
 });
 
-test('tool surface: 10 tools, each with a title, annotations, and an object outputSchema', async () => {
+test('tool surface: 11 tools, each with a title, annotations, and an object outputSchema', async () => {
   const client = await connect();
   const { tools } = await client.listTools();
 
@@ -643,8 +646,8 @@ test('tool surface: 10 tools, each with a title, annotations, and an object outp
 test('tool surface: two createServer() instances in one process both connect', async () => {
   const a = await connect();
   const b = await connect();
-  expect((await a.listTools()).tools).toHaveLength(10);
-  expect((await b.listTools()).tools).toHaveLength(10);
+  expect((await a.listTools()).tools).toHaveLength(11);
+  expect((await b.listTools()).tools).toHaveLength(11);
   await a.close();
   await b.close();
 });
@@ -744,6 +747,9 @@ test('schema conformance: every tool validates against its declared outputSchema
   const sessionB = join(tmp, 'claude', 'proj', 'b.jsonl');
   const calls: { name: string; args: Record<string, unknown>; schema: ZodType }[] = [
     { name: 'get_memory', args: { cwd: '/repoA' }, schema: GetMemoryOutput },
+    // all:true — the fixture's sessions span several projects, and a repo-scoped call
+    // here would test scope resolution, not the schema.
+    { name: 'get_memory_recurrence', args: { all: true }, schema: GetMemoryRecurrenceOutput },
     { name: 'get_memory_sources', args: { cwd: '/repoA' }, schema: GetMemorySourcesOutput },
     { name: 'review_agent_memories', args: { cwd: '/repoA' }, schema: ReviewAgentMemoriesOutput },
     // 'retry' rather than 'kubectl': it matches message text, so messageHits comes back
@@ -793,6 +799,12 @@ test('schema conformance: every tool validates against its declared outputSchema
   expect(search.results.flatMap((r) => r.messageHits ?? []).length).toBeGreaterThan(0);
 
   expect(GetMemoryOutput.parse(got.get('get_memory')).results.length).toBeGreaterThan(0);
+  // The recurrence report's sections all admit [] — the fixture has one approved
+  // memory and fresh mines may classify nothing — so non-vacuity here is the
+  // envelope: a real generatedAt proves the pipeline ran rather than the schema
+  // validating an empty payload by accident.
+  const recurrence = GetMemoryRecurrenceOutput.parse(got.get('get_memory_recurrence'));
+  expect(recurrence.generatedAt).toMatch(/^\d{4}-\d{2}-\d{2}$/);
   expect(GetMemorySourcesOutput.parse(got.get('get_memory_sources')).sources.length).toBeGreaterThan(0);
   expect(ReviewAgentMemoriesOutput.parse(got.get('review_agent_memories')).memories.length).toBeGreaterThan(0);
   expect(GrepSessionsOutput.parse(got.get('grep_sessions')).hits.length).toBeGreaterThan(0);
@@ -872,11 +884,16 @@ describe('empty results', () => {
     rmSync(emptyTmp, { recursive: true, force: true });
   });
 
-  test('empty results: all 10 tools return a conforming payload alongside their sentinel', async () => {
+  test('empty results: all 11 tools return a conforming payload alongside their sentinel', async () => {
     const client = await connect();
     const repoRoot = join(import.meta.dir, '..'); // a real git repo with no indexed sessions
     const calls: { name: string; args: Record<string, unknown>; schema: ZodType; text?: string }[] = [
       { name: 'get_memory', args: { cwd: '/nowhere' }, schema: GetMemoryOutput, text: 'No memories for this repo.' },
+      // No text assertion: get_memory runs earlier in this table and CREATES the
+      // empty store, so this exercises the populated-but-empty report. The true
+      // absent-store sentinel is asserted in its own test below, where no prior
+      // call can have created the file.
+      { name: 'get_memory_recurrence', args: {}, schema: GetMemoryRecurrenceOutput },
       {
         name: 'get_memory_sources',
         args: { cwd: '/nowhere' },
@@ -931,6 +948,21 @@ describe('empty results', () => {
       // The sentinel prose survives: it tells a model something the payload does not.
       if (text) expect((res.content as { text: string }[])[0]!.text).toBe(text);
     }
+    await client.close();
+  });
+
+  test('empty results: get_memory_recurrence with NO store returns the sentinel without creating the db', async () => {
+    // A data dir nothing has touched: getMemoryDb() creates memory.db on open, so
+    // the absent-store guard is checked by PATH (src/memory/report.ts) — and this
+    // test is the proof, because the read-only byte-compare cannot see a new file.
+    process.env.SESSIONS_DATA_DIR = join(emptyTmp, 'never-made');
+    closeMemoryDb();
+    const client = await connect();
+    const res = await client.callTool({ name: 'get_memory_recurrence', arguments: {} });
+    expect(res.isError).toBeFalsy();
+    expect((res.content as { text: string }[])[0]!.text).toBe('No memory store — run `sessions memory mine` first.');
+    expect(conforms('get_memory_recurrence', GetMemoryRecurrenceOutput, res.structuredContent)).toBe('ok');
+    expect(existsSync(getMemoryDbPath())).toBe(false);
     await client.close();
   });
 
