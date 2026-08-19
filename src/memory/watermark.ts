@@ -59,6 +59,17 @@ export function readWatermark(): Map<string, WatermarkEntry> {
 }
 
 /**
+ * The most recent `mined_at` across the watermark, or null when nothing was ever
+ * mined. Report provenance only (the `memory report` header prints it so a stale
+ * store is visible) — like `mined_at` itself, it is never an input to a decision.
+ */
+export function lastMinedAt(): string | null {
+  const db = getMemoryDb();
+  const row = db.query<{ mined: string | null }, []>('SELECT MAX(mined_at) AS mined FROM mine_watermark').get();
+  return row?.mined ?? null;
+}
+
+/**
  * Session file paths that are new or changed since the last mine.
  *
  * A file is unchanged only when BOTH mtime and size match — either half differing

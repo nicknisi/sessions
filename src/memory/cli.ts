@@ -9,12 +9,14 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { resolve as resolvePath } from 'node:path';
+import { getMemoryDbPath } from '../paths';
 import { resolveRepo } from '../repo';
 import { writeStdoutFully } from '../stdout';
 import { containerFor, createContainerResolver, indexedSessions, MAX_TEXT_LENGTH, mine, MIN_TEXT_LENGTH } from './mine';
 import { documentedFacts, documentedSources } from './documented';
 import { fromPortable, merge, toPortable, toRecord, type MergedMemory } from './portable';
 import { buildRecord, gitAuthorEmail } from './record';
+import { classifyRecurrence, type RecurrenceReport } from './recurrence';
 import { ContentScanError, describeFindings, scanMemoryText, type ScanFinding } from './scan';
 import { collectAgentMemory, splitEntryToBand, type SourceAgent } from './sources';
 import { getPersistedStates, listMemories, upsertCandidates, type PersistedState } from './store';
@@ -37,7 +39,7 @@ import {
   type MemoryRecord,
   type MemoryScope,
 } from './types';
-import { advanceWatermark, changedSessions, readWatermark, type WatermarkEntry } from './watermark';
+import { advanceWatermark, changedSessions, lastMinedAt, readWatermark, type WatermarkEntry } from './watermark';
 
 /**
  * A bad invocation. Thrown rather than exiting inline so `parseMineArgs` stays a
@@ -67,6 +69,8 @@ Usage:
   sessions memory mine --all       Mine every repo in the index
   sessions memory mine --since-last  Mine only what changed since the last mine
   sessions memory pending          Count and preview candidates awaiting triage
+  sessions memory report           What recurs: violations, untriaged repeats,
+                                   fuzzy paraphrase candidates (--since YYYY-MM-DD)
   sessions memory documented       What is already binding here (CLAUDE.md,
                                    AGENTS.md, Claude Code's own memory store)
   sessions memory approve <id>     Keep a candidate as a durable memory
@@ -651,6 +655,171 @@ async function runMine(argv: string[]): Promise<void> {
   await writeStdoutFully(renderBatch(batch, { suppressed: hidden }) + '\n');
 }
 
+export interface ReportArgs {
+  repo?: string;
+  all: boolean;
+  /**
+   * `--since YYYY-MM-DD` was passed: drop cluster evidence that ends before the
+   * date. Absent rather than false so an untouched parse stays bare, matching
+   * `MineArgs.sinceLast` — the shape `parseReportArgs([])` returns is asserted
+   * verbatim in cli.test.ts.
+   */
+  since?: string;
+  /** `--json` was passed: emit the machine-readable report instead of the prose. */
+  json?: boolean;
+  /** `-h`/`--help` was passed; the caller prints help and exits 0. */
+  help: boolean;
+}
+
+const SINCE_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * Parse `memory report` flags. Throws `UsageError` on a bad invocation; never exits.
+ *
+ * Mirrors `parseMineArgs` flag-for-flag except `--since-last`, which report replaces
+ * with `--since <date>`: report is read-only, so a watermark-advancing flag would be
+ * a lie, and the recurrence module documents why the date filters cluster evidence
+ * rather than memories (src/memory/recurrence.ts, RecurrenceOptions.since).
+ */
+export function parseReportArgs(argv: string[]): ReportArgs {
+  const args: ReportArgs = { all: false, help: false };
+  let i = 0;
+  while (i < argv.length) {
+    const a = argv[i]!;
+    switch (a) {
+      case '-h':
+      case '--help':
+        // Help wins over everything after it: `--help --bogus` prints help.
+        return { ...args, help: true };
+      case '--repo': {
+        const value = argv[++i];
+        if (!value) throw new UsageError('--repo requires a path');
+        args.repo = value;
+        break;
+      }
+      case '--all':
+        args.all = true;
+        break;
+      case '--since': {
+        const value = argv[++i];
+        if (!value) throw new UsageError('--since requires a date');
+        if (!SINCE_DATE.test(value)) throw new UsageError(`--since takes YYYY-MM-DD, got: ${value}`);
+        args.since = value;
+        break;
+      }
+      case '--json':
+        args.json = true;
+        break;
+      default:
+        throw new UsageError(`unknown option: ${a}`);
+    }
+    i++;
+  }
+  if (args.all && args.repo) throw new UsageError('--all and --repo are mutually exclusive');
+  return args;
+}
+
+/** '2026-08-18' -> '08-18' for the prose columns; an empty date stays empty. */
+function shortDate(iso: string): string {
+  return iso ? iso.slice(5) : '';
+}
+
+/**
+ * The recurrence classification as prose. Three sections, never three flags — the
+ * comparison between "working" and "failing" memories is the point of the report.
+ *
+ * Counts are session counts, not phrasing counts: `evidence.sessions` is the only
+ * per-occurrence evidence a cluster carries (mine emits no per-session date map),
+ * so "matched in 2 sessions, latest 06-02" reads `lastSeen` as the latest date.
+ */
+export function renderReport(report: RecurrenceReport, opts: { today: string; lastMined: string | null }): string {
+  const stale = opts.lastMined ? `last mine ${opts.lastMined.slice(0, 10)}` : 'never mined';
+  const lines: string[] = [`memory report — ${opts.today} (${stale})`, ''];
+
+  lines.push('VIOLATIONS (approved memories still being re-corrected)');
+  if (report.violations.length === 0) {
+    lines.push('  none');
+  }
+  for (const v of report.violations) {
+    lines.push(
+      `  ${v.sessions.length}x  "${v.memory.text}"        approved, last seen ${shortDate(v.memory.evidence.lastSeen)}`,
+      `      → matched "${v.cluster.text}" in ${v.sessions.length} session${v.sessions.length === 1 ? '' : 's'}, latest ${shortDate(v.latestDate)}`,
+      `      sessions: ${v.sessions.join(', ')}`,
+    );
+  }
+
+  lines.push('', 'REPEATS (corrections never triaged)');
+  if (report.repeats.length === 0) {
+    lines.push('  none');
+  }
+  for (const r of report.repeats) {
+    const known = r.candidateId ? ' (already a candidate)' : '';
+    lines.push(
+      `  ${r.sessions.length}x  "${r.cluster.text}"        ${r.sessions.length} sessions, ${shortDate(r.firstDate)} → ${shortDate(r.latestDate)}${known}`,
+      `      sessions: ${r.sessions.join(', ')}`,
+    );
+  }
+
+  lines.push('', 'FUZZY (possible paraphrases — confirm in /memory triage)');
+  if (report.fuzzy.length === 0) {
+    lines.push('  none');
+  }
+  for (const f of report.fuzzy) {
+    lines.push(`  ?   "${f.memory.text}" ~ "${f.cluster.text}"`);
+  }
+
+  return lines.join('\n');
+}
+
+/**
+ * Report what recurs: freshly mined clusters classified against the store.
+ *
+ * Read-only like `pending`, but unlike `pending` it DOES mine — recurrence is
+ * defined against fresh evidence, so the run pays for an index read. It still
+ * writes nothing: no upsert, no watermark advance (snapshots are Phase 4).
+ */
+async function runReport(argv: string[]): Promise<void> {
+  const args = parseReportArgs(argv);
+  if (args.help) help();
+
+  // An absent store is an empty report, not an error (spec error table). Checked
+  // before any mining so the answer is instant, and checked by path because
+  // getMemoryDb() would CREATE the file as a side effect of asking (store.ts).
+  if (!existsSync(getMemoryDbPath())) {
+    process.stderr.write('  no memory store — run sessions memory mine first\n');
+    return;
+  }
+
+  // Scoping copied from runMine, not shared: one block, one consumer each, and a
+  // helper extracted for two call sites would drift the moment mine grows a flag
+  // report does not take.
+  const containerOf = createContainerResolver();
+  let repo: string | undefined;
+  if (!args.all) {
+    const target = args.repo ?? process.cwd();
+    if (args.repo || resolveRepo(target)) {
+      repo = containerOf(target);
+    } else {
+      process.stderr.write('  not inside a git repository — reporting across every repo in the index\n');
+    }
+  }
+
+  process.stderr.write(`  mining ${repo ?? 'all repos'}...\n`);
+  const clusters = await mine({ repo });
+  const report = classifyRecurrence(clusters, listMemories(), { since: args.since });
+  const counts = `${report.violations.length} violations, ${report.repeats.length} repeats, ${report.fuzzy.length} fuzzy`;
+
+  if (args.json) {
+    await writeStdoutFully(
+      JSON.stringify({ generatedAt: todayIso(), lastMinedAt: lastMinedAt(), ...report }, null, 2) + '\n',
+    );
+    process.stderr.write(`  ${counts}\n`);
+    return;
+  }
+  await writeStdoutFully(renderReport(report, { today: todayIso(), lastMined: lastMinedAt() }) + '\n');
+  process.stderr.write(`  ${counts}\n`);
+}
+
 /**
  * Reject the approve-only flags on `reject` and `snooze`. Throws `UsageError`; never exits.
  *
@@ -1131,6 +1300,9 @@ export async function runMemory(argv: string[]): Promise<void> {
         return;
       case 'pending':
         await runPending(argv.slice(1));
+        return;
+      case 'report':
+        await runReport(argv.slice(1));
         return;
       case 'documented':
         await runDocumented(argv.slice(1));
