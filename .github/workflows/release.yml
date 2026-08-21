@@ -94,20 +94,41 @@ jobs:
           VERSION: ${{ needs.release-please.outputs.tag_name }}
         run: |
           VER="${VERSION#v}"
-          SHA_ARM64=$(shasum -a 256 sessions-darwin-arm64.tar.gz | cut -d' ' -f1)
-          SHA_X86_64=$(shasum -a 256 sessions-darwin-x86_64.tar.gz | cut -d' ' -f1)
-          SHA_LINUX=$(shasum -a 256 sessions-linux-x86_64.tar.gz | cut -d' ' -f1)
+          export SHA_DARWIN_ARM64=$(shasum -a 256 sessions-darwin-arm64.tar.gz | cut -d' ' -f1)
+          export SHA_DARWIN_X86_64=$(shasum -a 256 sessions-darwin-x86_64.tar.gz | cut -d' ' -f1)
+          export SHA_LINUX_X86_64=$(shasum -a 256 sessions-linux-x86_64.tar.gz | cut -d' ' -f1)
+          export SHA_LINUX_ARM64=$(shasum -a 256 sessions-linux-arm64.tar.gz | cut -d' ' -f1)
           cd tap
           sed -i "s/version \".*\"/version \"${VER}\"/" Formula/sessions.rb
-          python3 -c "
-          import re
+          python3 - <<'PY'
+          import os, re, sys
           f = 'Formula/sessions.rb'
           txt = open(f).read()
-          shas = {'arm64': '${SHA_ARM64}', 'x86_64': '${SHA_X86_64}', 'linux': '${SHA_LINUX}'}
-          for arch, sha in shas.items():
-              txt = re.sub(r'(sessions-.*' + arch + r'.*\n\s*sha256 \")([a-fA-F0-9]+|PLACEHOLDER_\w+)(\")', lambda m: m.group(1) + sha + m.group(3), txt)
+          # Exact artifact-filename -> checksum. Each artifact's sha256 lives on
+          # the line right after its url, so we anchor on the full tarball name
+          # and rewrite only that block. A broad arch/os regex would collide
+          # (e.g. 'arm64' matches both darwin and linux, 'linux' matches both
+          # x86_64 and arm64), so we key on the exact published filename.
+          mapping = {
+              'sessions-darwin-arm64.tar.gz': os.environ['SHA_DARWIN_ARM64'],
+              'sessions-darwin-x86_64.tar.gz': os.environ['SHA_DARWIN_X86_64'],
+              'sessions-linux-x86_64.tar.gz': os.environ['SHA_LINUX_X86_64'],
+              'sessions-linux-arm64.tar.gz': os.environ['SHA_LINUX_ARM64'],
+          }
+          for artifact, sha in mapping.items():
+              pattern = re.compile(
+                  r'(' + re.escape(artifact) + r'\"\s*\n\s*sha256 \")([a-fA-F0-9]+|PLACEHOLDER_\w+)(\")'
+              )
+              txt, n = pattern.subn(lambda m: m.group(1) + sha + m.group(3), txt)
+              # Exactly one match required. Zero means the tap formula is missing
+              # this artifact's branch (e.g. the Linux ARM64 branch not yet
+              # landed), so fail loudly instead of publishing a stale checksum.
+              if n != 1:
+                  sys.exit(
+                      f'expected exactly one sha256 substitution for {artifact}, got {n}'
+                  )
           open(f, 'w').write(txt)
-          "
+          PY
 
       - name: Commit formula
         run: |
