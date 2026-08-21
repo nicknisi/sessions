@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.27.0](https://github.com/nicknisi/sessions/compare/v1.26.1...v1.27.0) (2026-08-21)
+
+
+### Features
+
+* **memory:** recurrence report for the memory subsystem ([#88](https://github.com/nicknisi/sessions/issues/88)) ([847da10](https://github.com/nicknisi/sessions/commit/847da10a28903ced2b56e42c727c2e89ad58f9ca))
+
 ## [1.26.1](https://github.com/nicknisi/sessions/compare/v1.26.0...v1.26.1) (2026-08-21)
 
 
