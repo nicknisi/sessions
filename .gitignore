@@ -43,7 +43,8 @@ usage-report.json
 report.html
 
 # ideation planning artifacts (kept local)
-docs/ideation/
+docs/ideation/*
+!docs/ideation/learnings.md
 
 # site build caches (site/dist and site/node_modules are already covered above)
 site/.astro/
