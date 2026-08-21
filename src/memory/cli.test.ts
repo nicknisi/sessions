@@ -9,6 +9,7 @@ import {
   parseImportArgs,
   parseMineArgs,
   parsePendingArgs,
+  parseReportArgs,
   parseTriageArgs,
   pendingBatch,
   PENDING_PREVIEW,
@@ -198,6 +199,79 @@ describe('memory pending', () => {
     // payload a skill pastes into a summary.
     const records = [candidate(1), candidate(2), candidate(3)];
     expect(pendingBatch(records).preview).toEqual(records.map((r) => ({ id: r.id, text: r.text })));
+  });
+});
+
+describe('memory report', () => {
+  const RECURRING = 'Always run the full test suite before telling me the work is done';
+
+  beforeEach(() => {
+    getMemoryDb().run('DELETE FROM memory');
+  });
+
+  test('parseReportArgs mirrors parseMineArgs, plus --since as YYYY-MM-DD', () => {
+    expect(parseReportArgs([])).toEqual({ all: false, help: false });
+    expect(parseReportArgs(['--repo', '/repos/app'])).toEqual({ all: false, help: false, repo: '/repos/app' });
+    expect(parseReportArgs(['--json', '--all'])).toEqual({ all: true, help: false, json: true });
+    expect(parseReportArgs(['--since', '2026-06-01'])).toEqual({ all: false, help: false, since: '2026-06-01' });
+    // Absent-not-false, like `since`, so the bare-parse shape assertion above stays bare.
+    expect(parseReportArgs(['--no-snapshot'])).toEqual({ all: false, help: false, noSnapshot: true });
+    expect(() => parseReportArgs(['--repo'])).toThrow('--repo requires a path');
+    expect(() => parseReportArgs(['--all', '--repo', '/repos/app'])).toThrow('--all and --repo are mutually exclusive');
+    expect(() => parseReportArgs(['--since'])).toThrow('--since requires a date');
+    expect(() => parseReportArgs(['--since', 'June'])).toThrow('--since takes YYYY-MM-DD');
+    expect(() => parseReportArgs(['--since-last'])).toThrow('unknown option: --since-last');
+    expect(() => parseReportArgs(['--nope'])).toThrow('unknown option: --nope');
+    expect(parseReportArgs(['--help', '--nope']).help).toBe(true);
+  });
+
+  test('no memory store yet is a friendly exit 0, not an error', async () => {
+    setMemoryEnv(join(tmp, 'fresh'));
+    closeDatabases();
+    const { stdout, stderr } = await capture(['report', '--all']);
+    expect(stdout).toBe('');
+    expect(stderr).toContain('no memory store');
+  });
+
+  test('a re-corrected approved memory shows under VIOLATIONS in prose and JSON', async () => {
+    // Two sessions on two dates say the correction AFTER the store last saw it.
+    writeSession(tmp, 'r1', repo, [userTurn(RECURRING, '2026-06-01T10:00:00Z')]);
+    writeSession(tmp, 'r2', repo, [userTurn(RECURRING, '2026-06-02T10:00:00Z')]);
+    closeDatabases();
+    const memory = buildRecord({
+      text: RECURRING,
+      scope: { type: 'repo', key: repo },
+      author: 'dev@example.com',
+      sessions: ['/s/old.jsonl'],
+      dates: ['2026-05-03'],
+      distinctPhrasings: 1,
+    });
+    upsertCandidates([memory]);
+    setState(memory.id, 'approved');
+
+    const json = JSON.parse((await capture(['report', '--repo', repo, '--json'])).stdout) as {
+      violations: { memory: { id: string }; sessions: string[]; latestDate: string }[];
+      repeats: unknown[];
+    };
+    const violation = json.violations.find((v) => v.memory.id === memory.id);
+    expect(violation).toBeDefined();
+    expect(violation!.sessions.length).toBeGreaterThanOrEqual(2);
+    expect(violation!.latestDate > memory.evidence.lastSeen).toBe(true);
+
+    const prose = (await capture(['report', '--repo', repo])).stdout;
+    expect(prose).toContain('VIOLATIONS');
+    expect(prose).toContain(RECURRING);
+    expect(prose).toMatch(/^memory report — \d{4}-\d{2}-\d{2}/);
+  });
+
+  test('an untriaged repeat shows under REPEATS, and a quiet corpus reports none', async () => {
+    getMemoryDb().run('DELETE FROM memory');
+    const json = JSON.parse((await capture(['report', '--repo', repo, '--json'])).stdout) as {
+      violations: unknown[];
+      repeats: { cluster: { text: string } }[];
+    };
+    expect(json.violations).toEqual([]);
+    expect(json.repeats.some((r) => r.cluster.text === RECURRING)).toBe(true);
   });
 });
 

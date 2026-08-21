@@ -9,12 +9,15 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { resolve as resolvePath } from 'node:path';
+import { getDataDir } from '../paths';
 import { resolveRepo } from '../repo';
 import { writeStdoutFully } from '../stdout';
 import { containerFor, createContainerResolver, indexedSessions, MAX_TEXT_LENGTH, mine, MIN_TEXT_LENGTH } from './mine';
 import { documentedFacts, documentedSources } from './documented';
 import { fromPortable, merge, toPortable, toRecord, type MergedMemory } from './portable';
 import { buildRecord, gitAuthorEmail } from './record';
+import { runRecurrence, type RecurrenceEnvelope } from './report';
+import { appendSnapshot, scopeLabel, snapshotCounts } from './snapshots';
 import { ContentScanError, describeFindings, scanMemoryText, type ScanFinding } from './scan';
 import { collectAgentMemory, splitEntryToBand, type SourceAgent } from './sources';
 import { getPersistedStates, listMemories, upsertCandidates, type PersistedState } from './store';
@@ -67,6 +70,8 @@ Usage:
   sessions memory mine --all       Mine every repo in the index
   sessions memory mine --since-last  Mine only what changed since the last mine
   sessions memory pending          Count and preview candidates awaiting triage
+  sessions memory report           What recurs: violations, untriaged repeats,
+                                   fuzzy paraphrase candidates (--since YYYY-MM-DD)
   sessions memory documented       What is already binding here (CLAUDE.md,
                                    AGENTS.md, Claude Code's own memory store)
   sessions memory approve <id>     Keep a candidate as a durable memory
@@ -95,6 +100,8 @@ Options:
                         Budgeted: at most ${ALWAYS_ON_MAX_ENTRIES} entries, so each one stays read
   --no-always-on        (approve) Explicitly revoke --always-on — the release valve
                         when the budget refuses a new grant
+  --no-snapshot         (report) Render the TREND section without appending a
+                        snapshot — for dry inspection of a per-run audit trail
   --scope group:<name>  (approve) Assign a project group, not the derived scope
   --scope repo:<path>   (approve) Bind to one repo — the path is resolved to its
                         repo container. Needed for an imported memory, whose
@@ -651,6 +658,204 @@ async function runMine(argv: string[]): Promise<void> {
   await writeStdoutFully(renderBatch(batch, { suppressed: hidden }) + '\n');
 }
 
+export interface ReportArgs {
+  repo?: string;
+  all: boolean;
+  /**
+   * `--since YYYY-MM-DD` was passed: drop cluster evidence that ends before the
+   * date. Absent rather than false so an untouched parse stays bare, matching
+   * `MineArgs.sinceLast` — the shape `parseReportArgs([])` returns is asserted
+   * verbatim in cli.test.ts.
+   */
+  since?: string;
+  /** `--json` was passed: emit the machine-readable report instead of the prose. */
+  json?: boolean;
+  /** `--no-snapshot` was passed: render without appending to the trend snapshot
+   *  file. Absent-not-false, same convention as `since` above. */
+  noSnapshot?: boolean;
+  /** `-h`/`--help` was passed; the caller prints help and exits 0. */
+  help: boolean;
+}
+
+const SINCE_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * Parse `memory report` flags. Throws `UsageError` on a bad invocation; never exits.
+ *
+ * Mirrors `parseMineArgs` flag-for-flag except `--since-last`, which report replaces
+ * with `--since <date>`: report is read-only, so a watermark-advancing flag would be
+ * a lie, and the recurrence module documents why the date filters cluster evidence
+ * rather than memories (src/memory/recurrence.ts, RecurrenceOptions.since).
+ */
+export function parseReportArgs(argv: string[]): ReportArgs {
+  const args: ReportArgs = { all: false, help: false };
+  let i = 0;
+  while (i < argv.length) {
+    const a = argv[i]!;
+    switch (a) {
+      case '-h':
+      case '--help':
+        // Help wins over everything after it: `--help --bogus` prints help.
+        return { ...args, help: true };
+      case '--repo': {
+        const value = argv[++i];
+        if (!value) throw new UsageError('--repo requires a path');
+        args.repo = value;
+        break;
+      }
+      case '--all':
+        args.all = true;
+        break;
+      case '--since': {
+        const value = argv[++i];
+        if (!value) throw new UsageError('--since requires a date');
+        if (!SINCE_DATE.test(value)) throw new UsageError(`--since takes YYYY-MM-DD, got: ${value}`);
+        args.since = value;
+        break;
+      }
+      case '--json':
+        args.json = true;
+        break;
+      case '--no-snapshot':
+        args.noSnapshot = true;
+        break;
+      default:
+        throw new UsageError(`unknown option: ${a}`);
+    }
+    i++;
+  }
+  if (args.all && args.repo) throw new UsageError('--all and --repo are mutually exclusive');
+  return args;
+}
+
+/** '2026-08-18' -> '08-18' for the prose columns; an empty date stays empty. */
+function shortDate(iso: string): string {
+  return iso ? iso.slice(5) : '';
+}
+
+/**
+ * The recurrence classification as prose. Three sections, never three flags — the
+ * comparison between "working" and "failing" memories is the point of the report.
+ *
+ * Counts are session counts, not phrasing counts: `evidence.sessions` is the only
+ * per-occurrence evidence a cluster carries (mine emits no per-session date map),
+ * so "matched in 2 sessions, latest 06-02" reads `lastSeen` as the latest date.
+ */
+export function renderReport(report: RecurrenceEnvelope, opts: { today: string; lastMined: string | null }): string {
+  const stale = opts.lastMined ? `last mine ${opts.lastMined.slice(0, 10)}` : 'never mined';
+  const lines: string[] = [`memory report — ${opts.today} (${stale})`, ''];
+
+  lines.push('VIOLATIONS (approved memories still being re-corrected)');
+  if (report.violations.length === 0) {
+    lines.push('  none');
+  }
+  for (const v of report.violations) {
+    lines.push(
+      `  ${v.sessions.length}x  "${v.memory.text}"        approved, last seen ${shortDate(v.memory.evidence.lastSeen)}`,
+      `      → matched "${v.cluster.text}" in ${v.sessions.length} session${v.sessions.length === 1 ? '' : 's'}, latest ${shortDate(v.latestDate)}`,
+      `      sessions: ${v.sessions.join(', ')}`,
+    );
+  }
+
+  lines.push('', 'REPEATS (corrections never triaged)');
+  if (report.repeats.length === 0) {
+    lines.push('  none');
+  }
+  for (const r of report.repeats) {
+    const known = r.candidateId ? ' (already a candidate)' : '';
+    lines.push(
+      `  ${r.sessions.length}x  "${r.cluster.text}"        ${r.sessions.length} sessions, ${shortDate(r.firstDate)} → ${shortDate(r.latestDate)}${known}`,
+      `      sessions: ${r.sessions.join(', ')}`,
+    );
+  }
+
+  lines.push('', 'FUZZY (possible paraphrases — confirm in /memory triage)');
+  if (report.fuzzy.length === 0) {
+    lines.push('  none');
+  }
+  for (const f of report.fuzzy) {
+    lines.push(`  ?   "${f.memory.text}" ~ "${f.cluster.text}"`);
+  }
+
+  // TREND reads the deltas report.ts computed against the previous snapshot. The
+  // header line stays first — cli.test.ts's locked regex anchors it — and the
+  // scope/first-run note (trendNote) leads the section rather than a per-row
+  // caveat that would repeat on every violation.
+  lines.push('', 'TREND (violation counts vs the previous snapshot)');
+  if (report.trendNote) lines.push(`  note: ${report.trendNote}`);
+  if (report.trend.length === 0) {
+    lines.push('  none');
+  } else {
+    const textById = new Map(report.violations.map((v) => [v.memory.id, v.memory.text]));
+    for (const t of report.trend) {
+      const delta =
+        t.delta === null
+          ? '(new)'
+          : `(${t.delta >= 0 ? '+' : ''}${t.delta}${report.trendSince ? ` since ${shortDate(report.trendSince)}` : ''})`;
+      lines.push(`  ${t.violations} ${delta}  "${textById.get(t.id) ?? t.id}"`);
+    }
+  }
+
+  return lines.join('\n');
+}
+
+/**
+ * Report what recurs: freshly mined clusters classified against the store.
+ *
+ * Read-only like `pending`, but unlike `pending` it DOES mine — recurrence is
+ * defined against fresh evidence, so the run pays for an index read. The one
+ * write it performs is the trend-snapshot append, skipped under `--no-snapshot`;
+ * no upsert, no watermark advance.
+ */
+async function runReport(argv: string[]): Promise<void> {
+  const args = parseReportArgs(argv);
+  if (args.help) help();
+
+  // The pipeline is shared with the get_memory_recurrence MCP tool
+  // (src/memory/report.ts) — including the absent-store guard, which is checked by
+  // path because getMemoryDb() would CREATE the file as a side effect of asking.
+  const run = await runRecurrence({
+    repo: args.repo,
+    all: args.all,
+    since: args.since,
+    today: todayIso(),
+    onScope: (scope) => {
+      if (scope.outsideRepo) {
+        process.stderr.write('  not inside a git repository — reporting across every repo in the index\n');
+      }
+      process.stderr.write(`  mining ${scope.repo ?? 'all repos'}...\n`);
+    },
+  });
+  // An absent store is an empty report, not an error (spec error table).
+  if (!run) {
+    process.stderr.write('  no memory store — run sessions memory mine first\n');
+    return;
+  }
+
+  const { report } = run;
+  const counts = `${report.violations.length} violations, ${report.repeats.length} repeats, ${report.fuzzy.length} fuzzy`;
+
+  // The envelope is already the byte-compatible shape — report.ts owns it so the
+  // MCP tool emits the identical JSON, trend fields included.
+  if (args.json) {
+    await writeStdoutFully(JSON.stringify(report, null, 2) + '\n');
+  } else {
+    await writeStdoutFully(renderReport(report, { today: report.generatedAt, lastMined: report.lastMinedAt }) + '\n');
+  }
+  process.stderr.write(`  ${counts}\n`);
+
+  // Append AFTER the render, in both branches: the previous-snapshot read inside
+  // runRecurrence must see the file BEFORE this run's line, or the deltas would
+  // diff the report against itself. `--no-snapshot` skips the write entirely —
+  // including creating the file on a first run.
+  if (!args.noSnapshot) {
+    appendSnapshot(
+      { v: 1, date: report.generatedAt, scope: scopeLabel(run.scope), counts: snapshotCounts(report.violations) },
+      getDataDir(),
+    );
+  }
+}
+
 /**
  * Reject the approve-only flags on `reject` and `snooze`. Throws `UsageError`; never exits.
  *
@@ -1131,6 +1336,9 @@ export async function runMemory(argv: string[]): Promise<void> {
         return;
       case 'pending':
         await runPending(argv.slice(1));
+        return;
+      case 'report':
+        await runReport(argv.slice(1));
         return;
       case 'documented':
         await runDocumented(argv.slice(1));

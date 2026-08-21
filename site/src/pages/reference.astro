@@ -72,6 +72,7 @@ const WRAPPED_FLAGS = [
 
 const MEMORY_COMMANDS = [
   ['memory mine', 'Mine past sessions for durable facts. --repo scopes, --all mines everything, --since-last only what changed.'],
+  ['memory report', 'Recurrence report: violations of approved memories, untriaged repeats, fuzzy paraphrase pairs. --repo/--all scope, --since filters evidence, --json for machines, --no-snapshot skips the trend append. TREND shows deltas vs the previous run.'],
   ['memory pending', 'Count and preview the untriaged backlog. Reads the store only; never mines.'],
   ['memory documented', 'What is already binding here — CLAUDE.md, AGENTS.md, and Claude Code’s own memory store. Read, never written.'],
   ['memory approve <id>', 'Keep a candidate. --always-on exempts it from topic filtering (budgeted: 20 entries, 2,000 chars); --scope group:<name> or repo:<path> binds it.'],

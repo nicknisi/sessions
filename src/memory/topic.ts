@@ -42,7 +42,7 @@ const STOPWORDS = new Set(
     'into onto over under about above below up down out off again once here there when where which who whom whose what ' +
     'why how all any both each few more most other some such no not only own same very can cant cannot will wont just ' +
     // `don` earns its place: unicode61 splits "don't" into don + t, so without it every
-    // negated topic carries a spurious content token (src/memory/mine.ts:39-42).
+    // negated topic carries a spurious content token (src/memory/mine.ts:41-46).
     'don dont doesnt didnt is are was were be been being am do does did done has have had having i me my we us our you your ' +
     'he she they them their his her theirs would should could shall may might must let lets'
   ).split(' '),
@@ -116,7 +116,7 @@ function stem(token: string): string {
  *
  * Splitting on non-alphanumerics is what `unicode61` does inside FTS5, so `"don't"`
  * becomes `don` + `t` here exactly as it does in the index (documented at
- * src/memory/mine.ts:39-42). That looks like a bug and is not — matching the index's
+ * src/memory/mine.ts:41-46). That looks like a bug and is not — matching the index's
  * behavior is the point. The single-character fragment it leaves behind is dropped by
  * the length floor below, which is why that floor is 2 rather than 1.
  *
