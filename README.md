@@ -440,13 +440,14 @@ Search ranking is gated by a frozen golden eval fixture (`src/eval/`): recall@5,
 
 ### Cross-compilation
 
-The release workflow compiles binaries for three platforms:
+The release workflow compiles binaries for four platforms:
 
 | Target                    | Artifact                 |
 | ------------------------- | ------------------------ |
 | macOS ARM (Apple Silicon) | `sessions-darwin-arm64`  |
 | macOS x86_64 (Intel)      | `sessions-darwin-x86_64` |
 | Linux x86_64              | `sessions-linux-x86_64`  |
+| Linux ARM64 (aarch64)     | `sessions-linux-arm64`   |
 
 Binaries are compiled with `bun build --compile --minify` and distributed as `.tar.gz` archives attached to GitHub Releases.
 
