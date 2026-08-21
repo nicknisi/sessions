@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.26.1](https://github.com/nicknisi/sessions/compare/v1.26.0...v1.26.1) (2026-08-21)
+
+
+### Bug Fixes
+
+* **release:** publish Linux ARM64 binaries ([#85](https://github.com/nicknisi/sessions/issues/85)) ([aa41d5d](https://github.com/nicknisi/sessions/commit/aa41d5d3778009b15a9572c7e9d0dda528326a9c))
+* **release:** update Homebrew for Linux ARM64 ([#87](https://github.com/nicknisi/sessions/issues/87)) ([98ed828](https://github.com/nicknisi/sessions/commit/98ed828669f76b7021622392148304fa1747e817))
+
 ## [1.26.0](https://github.com/nicknisi/sessions/compare/v1.25.0...v1.26.0) (2026-08-08)
 
 
