@@ -531,11 +531,7 @@ function registerTools(server: McpServer): void {
           .describe(
             'Repo path to scope the report to. Defaults to the server process cwd; a path that is not a git repo scopes to itself.',
           ),
-        all: z
-          .boolean()
-          .optional()
-          .default(false)
-          .describe('Report across every repo in the index. Overrides repo.'),
+        all: z.boolean().optional().default(false).describe('Report across every repo in the index. Overrides repo.'),
       },
       outputSchema: GetMemoryRecurrenceOutput,
       annotations: READ_ONLY,

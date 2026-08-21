@@ -140,7 +140,12 @@ function isExact(a: MemoryRecord, b: MemoryRecord): boolean {
 }
 
 /** Best similarity score of `cluster` against `memory`: 1 exact, else Jaccard or 0. */
-function matchScore(cluster: MemoryRecord, memory: MemoryRecord, clusterTokens: Set<string>, memoryTokens: Set<string>): number {
+function matchScore(
+  cluster: MemoryRecord,
+  memory: MemoryRecord,
+  clusterTokens: Set<string>,
+  memoryTokens: Set<string>,
+): number {
   if (isExact(cluster, memory)) return 1;
   if (clusterTokens.size < MIN_SIMILARITY_TOKENS || memoryTokens.size < MIN_SIMILARITY_TOKENS) return 0;
   return jaccard(clusterTokens, memoryTokens);

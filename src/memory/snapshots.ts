@@ -79,7 +79,10 @@ export function readSnapshots(dir: string): RecurrenceSnapshot[] {
  * current violations is NOT decayed to zero silently — absence means "not in this
  * report's scope" and the row simply leaves the TREND section.
  */
-export function diffSnapshots(previous: RecurrenceSnapshot | null, violations: RecurrenceViolation[]): RecurrenceTrend[] {
+export function diffSnapshots(
+  previous: RecurrenceSnapshot | null,
+  violations: RecurrenceViolation[],
+): RecurrenceTrend[] {
   return violations.map((v) => {
     const prev = previous?.counts[v.memory.id];
     return {
@@ -101,6 +104,8 @@ export function appendSnapshot(snapshot: RecurrenceSnapshot, dir: string): void 
     appendFileSync(snapshotPath(dir), JSON.stringify(snapshot) + '\n', 'utf-8');
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
-    process.stderr.write(`  could not append to ${SNAPSHOT_FILENAME} (${reason}) — report rendered without snapshotting\n`);
+    process.stderr.write(
+      `  could not append to ${SNAPSHOT_FILENAME} (${reason}) — report rendered without snapshotting\n`,
+    );
   }
 }

@@ -23,9 +23,10 @@ interface GoldenEntry {
   source: string;
 }
 
-const GOLDEN = JSON.parse(
-  readFileSync(join(import.meta.dir, 'fixtures', 'corrections-golden.json'), 'utf8'),
-) as { _comment: string; entries: GoldenEntry[] };
+const GOLDEN = JSON.parse(readFileSync(join(import.meta.dir, 'fixtures', 'corrections-golden.json'), 'utf8')) as {
+  _comment: string;
+  entries: GoldenEntry[];
+};
 
 const CORRECTIONS = GOLDEN.entries.filter((e) => e.label === 'correction');
 const NOTS = GOLDEN.entries.filter((e) => e.label === 'not');

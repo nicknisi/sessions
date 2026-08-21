@@ -10,23 +10,14 @@ import { join } from 'node:path';
 import { getDataDir } from '../paths';
 import { runMemory } from './cli';
 import { buildRecord } from './record';
-import {
-  classifyRecurrence,
-  jaccard,
-  MIN_SIMILARITY_TOKENS,
-  SIMILARITY_ASSERT,
-  SIMILARITY_FUZZY,
-} from './recurrence';
+import { classifyRecurrence, jaccard, MIN_SIMILARITY_TOKENS, SIMILARITY_ASSERT, SIMILARITY_FUZZY } from './recurrence';
 import { appendSnapshot, diffSnapshots, readSnapshots, snapshotPath } from './snapshots';
 import { setState, upsertCandidates } from './store';
 import { tokenize } from './topic';
 import type { MemoryRecord, MemoryState } from './types';
 import { captureStreams, closeDatabases, makeTmp, setMemoryEnv, userTurn, writeSession } from './fixtures';
 
-function record(
-  text: string,
-  opts: { state?: MemoryState; sessions?: string[]; dates?: string[] } = {},
-): MemoryRecord {
+function record(text: string, opts: { state?: MemoryState; sessions?: string[]; dates?: string[] } = {}): MemoryRecord {
   return buildRecord({
     text,
     scope: { type: 'repo', key: '/repos/app' },
@@ -62,7 +53,7 @@ describe('jaccard', () => {
 });
 
 describe('tokenize reuse', () => {
-  test('the spec\'s false pair tokenizes below the similarity floor', () => {
+  test("the spec's false pair tokenizes below the similarity floor", () => {
     // "don't commit" / "don't push": `don` is a stopword and `t` is under the length
     // floor, so both sides are singletons and similarity never runs.
     expect(tokenize("don't commit").size).toBeLessThan(MIN_SIMILARITY_TOKENS);
@@ -88,7 +79,7 @@ describe('classifyRecurrence', () => {
     expect(report.repeats).toHaveLength(0);
   });
 
-  test('a match entirely within the memory\'s evidence window is NOT a violation', () => {
+  test("a match entirely within the memory's evidence window is NOT a violation", () => {
     const memory = record(VIOLATION_TEXT, { state: 'approved', dates: ['2026-05-01', '2026-06-30'] });
     const cluster = record(VIOLATION_TEXT, {
       sessions: ['/s/a.jsonl', '/s/b.jsonl'],
@@ -217,8 +208,7 @@ describe('classifyRecurrence', () => {
   });
 
   test('output order is deterministic: count desc, then cluster id', () => {
-    const mk = (text: string, sessions: string[]) =>
-      record(text, { sessions, dates: ['2026-06-01', '2026-06-02'] });
+    const mk = (text: string, sessions: string[]) => record(text, { sessions, dates: ['2026-06-01', '2026-06-02'] });
     const clusters = [
       mk('alpha correction repeated across sessions here', ['/s/1.jsonl', '/s/2.jsonl']),
       mk('beta correction repeated across sessions here', ['/s/1.jsonl', '/s/2.jsonl', '/s/3.jsonl']),
@@ -281,7 +271,8 @@ describe('trend snapshots (G4: the two-run delta instrument)', () => {
   const path = (): string => snapshotPath(getDataDir());
   /** Snapshot lines so far; [] when the file does not exist yet. */
   const lines = (): string[] => (existsSync(path()) ? readFileSync(path(), 'utf-8').split('\n').filter(Boolean) : []);
-  const capture = (argv: string[]): Promise<{ stdout: string; stderr: string }> => captureStreams(() => runMemory(argv));
+  const capture = (argv: string[]): Promise<{ stdout: string; stderr: string }> =>
+    captureStreams(() => runMemory(argv));
 
   beforeAll(() => {
     tmp = makeTmp('memory-snapshots');
