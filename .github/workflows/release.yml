@@ -36,6 +36,9 @@ jobs:
           - os: ubuntu-latest
             target: bun-linux-x64
             artifact: sessions-linux-x86_64
+          - os: ubuntu-latest
+            target: bun-linux-arm64
+            artifact: sessions-linux-arm64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
