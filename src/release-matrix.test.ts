@@ -36,3 +36,37 @@ describe('release matrix', () => {
     expect(linux.map(([, a]) => a).sort()).toEqual(['sessions-linux-arm64', 'sessions-linux-x86_64']);
   });
 });
+
+// Guards the Homebrew tap update step. The formula sha256 for each artifact is
+// keyed by the exact published tarball name, and every substitution must match
+// exactly once so a missing tap branch (e.g. the coordinated Linux ARM64
+// branch) fails the release instead of silently publishing a stale checksum.
+describe('homebrew formula update', () => {
+  const TARBALLS = EXPECTED.map(([, a]) => `${a}.tar.gz`);
+
+  test('computes a sha256 for every published artifact', () => {
+    for (const tarball of TARBALLS) {
+      expect(workflow).toContain(`shasum -a 256 ${tarball}`);
+    }
+  });
+
+  test('maps each exact artifact filename to its checksum', () => {
+    for (const tarball of TARBALLS) {
+      expect(workflow).toContain(`'${tarball}': os.environ[`);
+    }
+    // Exactly four artifact keys, no broad arch/os regex that could collide.
+    const keys = [...workflow.matchAll(/'(sessions-[^']+\.tar\.gz)':/g)].map((m) => m[1]);
+    expect(keys.sort()).toEqual([...TARBALLS].sort());
+  });
+
+  test('requires exactly one substitution per artifact', () => {
+    expect(workflow).toContain('if n != 1:');
+    expect(workflow).toContain('pattern.subn(');
+  });
+
+  test('accepts the coordinated Linux ARM64 placeholder', () => {
+    expect(workflow).toContain('PLACEHOLDER_');
+    expect(workflow).toContain('SHA_LINUX_ARM64');
+    expect(workflow).toContain('sessions-linux-arm64.tar.gz');
+  });
+});
