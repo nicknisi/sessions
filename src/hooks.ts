@@ -2,6 +2,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 
+import { asJsonObject, type JsonObject, type JsonValue } from './extract-util';
+
 /**
  * Tools whose SessionStart hook contract is confirmed. Claude Code only for
  * now — Codex and Cursor session-start hook schemas are unverified, so we ship
@@ -16,17 +18,6 @@ export const HOOK_COMMAND = 'sessions context --hook';
 /** SessionStart hook startup budget. Generous, but bounds a pathological run. */
 const HOOK_TIMEOUT_MS = 10000;
 
-interface CommandHook {
-  type: 'command';
-  command: string;
-  timeout?: number;
-}
-
-interface HookMatcherGroup {
-  matcher?: string;
-  hooks: CommandHook[];
-}
-
 /** The Claude Code settings file that owns the user's `hooks` block. The
  * `SESSIONS_CLAUDE_CONFIG_DIR` override keeps tests hermetic and lets advanced
  * users relocate their config. */
@@ -40,7 +31,7 @@ function settingsPath(tool: SupportedTool): string {
 }
 
 /** Our tagged SessionStart entry: stdout becomes additional session context. */
-function hookEntry(): HookMatcherGroup {
+function hookEntry(): JsonObject {
   return {
     hooks: [{ type: 'command', command: HOOK_COMMAND, timeout: HOOK_TIMEOUT_MS }],
   };
@@ -51,39 +42,51 @@ function hookEntry(): HookMatcherGroup {
  * the file exists but is unparseable, so callers abort rather than clobber it.
  * A missing file is fine — it returns an empty object to be created on write.
  */
-function loadSettings(path: string): Record<string, unknown> | null {
+function loadSettings(path: string): JsonObject | null {
   if (!existsSync(path)) return {};
   try {
-    return JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
+    const parsed = asJsonObject(JSON.parse(readFileSync(path, 'utf-8')));
+    if (!parsed) throw new Error('settings file is not a JSON object');
+    return parsed;
   } catch {
     process.stderr.write(`settings file unparseable, leaving it untouched: ${path}\n`);
     return null;
   }
 }
 
-function writeSettings(path: string, config: Record<string, unknown>): void {
+function writeSettings(path: string, config: JsonObject): void {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, JSON.stringify(config, null, 2) + '\n');
 }
 
 /** True if a matcher group contains our tagged command hook. */
-function isOurEntry(group: unknown): boolean {
-  if (typeof group !== 'object' || group === null) return false;
-  const hooks = (group as HookMatcherGroup).hooks;
-  return Array.isArray(hooks) && hooks.some((h) => h?.type === 'command' && h.command === HOOK_COMMAND);
+function isOurEntry(group: JsonValue | undefined): boolean {
+  const hooks = asJsonObject(group)?.hooks;
+  if (!Array.isArray(hooks)) return false;
+  return hooks.some((h) => {
+    const hook = asJsonObject(h);
+    return hook?.type === 'command' && hook.command === HOOK_COMMAND;
+  });
+}
+
+/** The enable/disable result. */
+interface HookChange {
+  changed: boolean;
 }
 
 /**
  * Add our tagged SessionStart hook to the tool's settings, preserving any
  * existing hooks. Idempotent: enabling twice leaves exactly one entry.
  */
-export function enableSessionHook(tool: SupportedTool): { changed: boolean } {
+export function enableSessionHook(tool: SupportedTool): HookChange {
   const path = settingsPath(tool);
   const config = loadSettings(path);
   if (config === null) return { changed: false }; // unparseable → abort, no corruption
 
-  const hooks = (config.hooks ?? {}) as Record<string, unknown>;
-  const sessionStart = (Array.isArray(hooks.SessionStart) ? hooks.SessionStart : []) as HookMatcherGroup[];
+  // asJsonObject detaches the subtree; config.hooks is re-attached before write.
+  const hooks = asJsonObject(config.hooks) ?? {};
+  const existing = hooks.SessionStart;
+  const sessionStart = Array.isArray(existing) ? existing : [];
 
   if (sessionStart.some(isOurEntry)) return { changed: false }; // already present
 
@@ -99,23 +102,25 @@ export function enableSessionHook(tool: SupportedTool): { changed: boolean } {
  * Remove only our tagged SessionStart hook, leaving any other hooks intact.
  * Idempotent: disabling when absent is a no-op.
  */
-export function disableSessionHook(tool: SupportedTool): { changed: boolean } {
+export function disableSessionHook(tool: SupportedTool): HookChange {
   const path = settingsPath(tool);
   const config = loadSettings(path);
   if (config === null) return { changed: false }; // unparseable → abort, no corruption
 
-  const hooks = config.hooks as Record<string, unknown> | undefined;
-  if (!hooks || !Array.isArray(hooks.SessionStart)) return { changed: false };
+  const hooks = asJsonObject(config.hooks);
+  const existing = hooks?.SessionStart;
+  if (!hooks || !Array.isArray(existing)) return { changed: false };
 
-  const sessionStart = hooks.SessionStart as HookMatcherGroup[];
-  const kept = sessionStart.filter((g) => !isOurEntry(g));
-  if (kept.length === sessionStart.length) return { changed: false }; // nothing of ours
+  const kept = existing.filter((g) => !isOurEntry(g));
+  if (kept.length === existing.length) return { changed: false }; // nothing of ours
 
   if (kept.length > 0) {
     hooks.SessionStart = kept;
   } else {
     delete hooks.SessionStart; // drop the now-empty array rather than leave clutter
   }
+  // asJsonObject detaches the subtree — re-attach before serializing.
+  config.hooks = hooks;
 
   writeSettings(path, config);
   return { changed: true };
