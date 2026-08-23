@@ -4,6 +4,12 @@
 
 export type PeriodPreset = 'today' | 'this-week' | 'this-month' | 'last-month' | 'this-year' | 'month';
 
+/** Inclusive local-date range, YYYY-MM-DD. */
+export interface DateRange {
+  from: string;
+  to: string;
+}
+
 function pad(n: number): string {
   return String(n).padStart(2, '0');
 }
@@ -48,11 +54,7 @@ export function periodRunsTo(preset: PeriodPreset, month: string | undefined, to
   }
 }
 
-export function resolvePeriod(
-  preset: PeriodPreset,
-  month: string | undefined,
-  today: string,
-): { from: string; to: string } {
+export function resolvePeriod(preset: PeriodPreset, month: string | undefined, today: string): DateRange {
   const [ty, tm, td] = today.split('-').map(Number);
   const y = ty!;
   const m = tm!;

@@ -12,12 +12,12 @@ import type { ToolId } from './types.ts';
 
 // The report and the index name the same tool differently ('claude-code' is the
 // usage-contract id, 'claude' is the index's).
-const INDEX_TOOL: Record<ToolId, string> = {
+const INDEX_TOOL = {
   'claude-code': 'claude',
   pi: 'pi',
   codex: 'codex',
   opencode: 'opencode',
-};
+} satisfies Record<ToolId, string>;
 
 export interface SessionKey {
   tool: ToolId;
@@ -55,6 +55,7 @@ export function lookupIntents(keys: SessionKey[]): Map<string, string> {
     // the id set is already selective, and this keeps the SQL to one parameter list.
     const ids = [...new Set(keys.map((k) => k.sessionId))];
     const placeholders = ids.map(() => '?').join(',');
+    // SAFETY: bun:sqlite returns untyped rows; the SELECT list fixes the shape.
     const rows = db
       .query(
         `SELECT tool, session_id, custom_title, first_prompt, message_count

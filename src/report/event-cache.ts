@@ -59,6 +59,7 @@ export function openEventCache(): Database | null {
     const db = new Database(getEventCachePath());
     db.run('PRAGMA busy_timeout = 5000');
     db.run('PRAGMA journal_mode = WAL');
+    // SAFETY: bun:sqlite returns untyped rows; PRAGMA user_version returns one integer column.
     const version = (db.query('PRAGMA user_version').get() as { user_version: number } | null)?.user_version ?? 0;
     if (version !== SCHEMA_VERSION) {
       // A shape change makes every stored blob unreadable, so there is nothing to
@@ -116,6 +117,7 @@ export interface CachePlan {
 export function planRefresh(db: Database, files: FileStat[]): CachePlan {
   const known = new Map<string, Row>();
   try {
+    // SAFETY: bun:sqlite returns untyped rows; the SELECT list fixes the shape.
     for (const r of db.query('SELECT path, mtime_ms, size, events, agent_types FROM files').all() as Row[]) {
       known.set(r.path, r);
     }
@@ -160,6 +162,7 @@ export function putFile(db: Database, file: FileStat, parsed: FileParse): void {
 export function pruneMissing(db: Database, livePaths: Set<string>, enumeratedRoots: string[]): number {
   if (enumeratedRoots.length === 0) return 0;
   try {
+    // SAFETY: bun:sqlite returns untyped rows; the SELECT list fixes the shape.
     const rows = db.query('SELECT path FROM files').all() as { path: string }[];
     const gone = rows
       .filter((r) => enumeratedRoots.some((root) => r.path.startsWith(root)) && !livePaths.has(r.path))
@@ -177,6 +180,8 @@ export function pruneMissing(db: Database, livePaths: Set<string>, enumeratedRoo
 
 export function decodeRow(row: Row): FileParse {
   try {
+    // SAFETY: both blobs were written by this cache (encodeRow) from these
+    // exact types; the schema version gates anything older.
     return {
       events: JSON.parse(row.events) as UsageEvent[],
       agentTypes: JSON.parse(row.agent_types) as Record<string, AgentName>,

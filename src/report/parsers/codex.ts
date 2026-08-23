@@ -1,43 +1,37 @@
 // Sessions-owned (forked from tokenmaxing's parser). Codex's input_tokens are cache-inclusive and
 // output_tokens already include reasoning; correct both so totals reflect actual billing (and match ccusage).
+import { z } from 'zod';
+
 import type { UsageEvent } from './types.ts';
 import { readJsonlLines } from './util.ts';
 import { walkJsonl, type WalkOptions } from './walk.ts';
 
-interface CodexEnvelope {
-  timestamp: string;
-  type: string;
-  payload?: unknown;
-}
+const codexEnvelopeSchema = z.object({
+  timestamp: z.string(),
+  type: z.string(),
+  payload: z.unknown().optional(),
+});
 
-interface SessionMetaPayload {
-  id: string;
-  cwd?: string;
-}
-interface TokenCountInfo {
-  last_token_usage?: {
-    input_tokens?: number;
-    output_tokens?: number;
-    reasoning_output_tokens?: number;
-    cached_input_tokens?: number;
-  };
-}
-interface TokenCountPayload {
-  type: 'token_count';
-  info: TokenCountInfo | null;
-}
-
-function isEnvelope(v: unknown): v is CodexEnvelope {
-  return (
-    !!v &&
-    typeof v === 'object' &&
-    typeof (v as { type?: unknown }).type === 'string' &&
-    typeof (v as { timestamp?: unknown }).timestamp === 'string'
-  );
-}
-function isObject(v: unknown): v is Record<string, unknown> {
-  return !!v && typeof v === 'object' && !Array.isArray(v);
-}
+const sessionMetaPayloadSchema = z.object({
+  id: z.string(),
+  cwd: z.string().optional(),
+});
+const turnContextPayloadSchema = z.object({ model: z.string() });
+const tokenCountPayloadSchema = z.object({
+  type: z.literal('token_count'),
+  info: z
+    .object({
+      last_token_usage: z
+        .object({
+          input_tokens: z.number().optional(),
+          output_tokens: z.number().optional(),
+          reasoning_output_tokens: z.number().optional(),
+          cached_input_tokens: z.number().optional(),
+        })
+        .optional(),
+    })
+    .nullable(),
+});
 
 export async function parseCodex(root: string, opts: WalkOptions = {}): Promise<UsageEvent[]> {
   const events: UsageEvent[] = [];
@@ -50,35 +44,34 @@ export async function parseCodex(root: string, opts: WalkOptions = {}): Promise<
 export async function parseCodexFile(path: string): Promise<UsageEvent[]> {
   const events: UsageEvent[] = [];
   {
-    let meta: SessionMetaPayload | null = null;
+    let meta: z.infer<typeof sessionMetaPayloadSchema> | null = null;
     let model: string | null = null;
     for await (const line of readJsonlLines(path)) {
-      if (!isEnvelope(line)) continue;
-      const payload = line.payload;
-      if (line.type === 'session_meta') {
-        if (isObject(payload) && typeof payload['id'] === 'string') {
-          meta = { id: payload['id'], cwd: typeof payload['cwd'] === 'string' ? payload['cwd'] : undefined };
-        }
+      const envelope = codexEnvelopeSchema.safeParse(line);
+      if (!envelope.success) continue;
+      const { payload } = envelope.data;
+      if (envelope.data.type === 'session_meta') {
+        const sessionMeta = sessionMetaPayloadSchema.safeParse(payload);
+        if (sessionMeta.success) meta = sessionMeta.data;
         continue;
       }
-      if (line.type === 'turn_context') {
-        if (isObject(payload) && typeof payload['model'] === 'string') {
-          model = payload['model'];
-        }
+      if (envelope.data.type === 'turn_context') {
+        const turnContext = turnContextPayloadSchema.safeParse(payload);
+        if (turnContext.success) model = turnContext.data.model;
         continue;
       }
-      if (line.type !== 'event_msg') continue;
-      if (!isObject(payload) || payload['type'] !== 'token_count') continue;
-      const tcp = payload as unknown as TokenCountPayload;
-      const info = tcp.info;
-      if (!info || !info.last_token_usage) continue;
+      if (envelope.data.type !== 'event_msg') continue;
+      const tokenCount = tokenCountPayloadSchema.safeParse(payload);
+      if (!tokenCount.success) continue;
+      const info = tokenCount.data.info;
+      if (!info?.last_token_usage) continue;
       if (!meta || !model) continue;
       const u = info.last_token_usage;
       events.push({
         tool: 'codex',
         provider: 'openai',
         model,
-        timestamp: line.timestamp,
+        timestamp: envelope.data.timestamp,
         sessionId: meta.id,
         projectPath: meta.cwd,
         tokens: {

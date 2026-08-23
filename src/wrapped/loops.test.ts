@@ -24,7 +24,9 @@ const ev = (sessionId: string, at: number, cwd = '/Users/x/Developer/sessions'):
 });
 
 type JsonValue = string | number | boolean | null | JsonValue[] | JsonObject;
-type JsonObject = { [key: string]: JsonValue };
+interface JsonObject {
+  [key: string]: JsonValue;
+}
 
 const turns = (entries: [string, UserTurn[]][]): Map<string, UserTurn[]> => new Map(entries);
 

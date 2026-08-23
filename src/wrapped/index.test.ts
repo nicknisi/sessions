@@ -30,7 +30,9 @@ const event = (sessionId: string, timestamp: string, model = 'claude-opus-4-6', 
   }) + '\n';
 
 type JsonValue = string | number | boolean | null | JsonValue[] | JsonObject;
-type JsonObject = { [key: string]: JsonValue };
+interface JsonObject {
+  [key: string]: JsonValue;
+}
 
 /** A user-role line for the loop pass; extra fields ride through as-is. */
 const userLine = (sessionId: string, timestamp: string, content: JsonValue, extra: JsonObject = {}) =>

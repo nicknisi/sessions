@@ -7,7 +7,7 @@ export async function* walkJsonl(root: string): AsyncGenerator<string> {
   try {
     entries = await readdir(root, { withFileTypes: true });
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
+    if (err instanceof Error && 'code' in err && err.code === 'ENOENT') return;
     throw err;
   }
   for (const entry of entries) {

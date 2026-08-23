@@ -24,11 +24,16 @@ const PAYLOAD = JSON.stringify({
   'gpt-5.5': { input_cost_per_token: 5e-6, output_cost_per_token: 30e-6 },
 });
 
-function makeFetcher(body: string | (() => never)): { fn: (url: string) => Promise<string>; calls: () => number } {
+interface StubFetcher {
+  fn: (url: string) => Promise<string>;
+  calls: () => number;
+}
+
+function makeFetcher(body: string | (() => never)): StubFetcher {
   let calls = 0;
   const fn = async (_url: string): Promise<string> => {
     calls++;
-    if (typeof body === 'function') return body();
+    if (body instanceof Function) return body();
     return body;
   };
   return { fn, calls: () => calls };

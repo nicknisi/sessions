@@ -104,7 +104,7 @@ export async function gatherEvents(
 
   // OpenCode is one SQLite database, not a file tree, so it has nothing to
   // incrementally re-walk and stays on the direct path either way.
-  const opencode = want('opencode') && roots.opencode ? await parseOpencode(roots.opencode) : ([] as UsageEvent[]);
+  const opencode: UsageEvent[] = want('opencode') && roots.opencode ? await parseOpencode(roots.opencode) : [];
 
   const db = opts.noCache ? null : openEventCache();
   if (!db) return [...(await gatherDirect(roots, want, opts.since)), ...opencode];

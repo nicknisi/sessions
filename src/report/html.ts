@@ -20,7 +20,7 @@ const esc = (s: string): string =>
 
 /** JSON destined for a <script> block: `<` is the only character that can close
  *  the block early, so it is the only one that has to go. */
-const jsonForScript = (v: unknown): string => JSON.stringify(v).replace(/</g, '\\u003c');
+const jsonForScript = <T>(v: T): string => JSON.stringify(v).replace(/</g, '\\u003c');
 
 const fmtUSD = (n: number): string =>
   '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -38,7 +38,12 @@ function fmtTokens(n: number): string {
 
 /** fmtTokens split at its magnitude suffix, so the suffix can be set smaller and
  *  in the accent without the numeral losing its baseline. */
-function splitMagnitude(n: number): { num: string; suffix: string } {
+interface MagnitudeParts {
+  num: string;
+  suffix: string;
+}
+
+function splitMagnitude(n: number): MagnitudeParts {
   const s = fmtTokens(n);
   const m = /^([\d.,]+)([A-Z]*)$/.exec(s);
   return { num: m?.[1] ?? s, suffix: m?.[2] ?? '' };
