@@ -25,9 +25,10 @@
     "site:deploy": "cd site && bun run deploy"
   },
   "devDependencies": {
+    "@oxlint/plugins": "1.79.0",
     "@types/bun": "latest",
     "oxfmt": "^0.47.0",
-    "oxlint": "^1.62.0"
+    "oxlint": "1.79.0"
   },
   "peerDependencies": {
     "typescript": "^5"
