@@ -23,14 +23,17 @@ const ev = (sessionId: string, at: number, cwd = '/Users/x/Developer/sessions'):
   tokens: { input: 100, output: 50, cacheRead: 1000, cacheWrite: 10 },
 });
 
+type JsonValue = string | number | boolean | null | JsonValue[] | JsonObject;
+type JsonObject = { [key: string]: JsonValue };
+
 const turns = (entries: [string, UserTurn[]][]): Map<string, UserTurn[]> => new Map(entries);
 
 describe('collectClaudeUserTurns', () => {
   const root = join(tmp, 'claude');
   mkdirSync(join(root, 'proj', 'sub', 'subagents'), { recursive: true });
 
-  const line = (o: Record<string, unknown>): string => JSON.stringify(o) + '\n';
-  const user = (sessionId: string, timestamp: string, content: unknown, extra: Record<string, unknown> = {}) =>
+  const line = (o: JsonObject): string => JSON.stringify(o) + '\n';
+  const user = (sessionId: string, timestamp: string, content: JsonValue, extra: JsonObject = {}) =>
     line({ type: 'user', sessionId, timestamp, message: { role: 'user', content }, ...extra });
 
   writeFileSync(

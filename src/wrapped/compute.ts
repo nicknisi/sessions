@@ -337,12 +337,19 @@ export function computeLoops(
   return { longest, count: durations.length, medianMs: median(durations) };
 }
 
+/** A span of consecutive (or silent) days with its date range. */
+interface DayRange {
+  days: number;
+  from: string;
+  to: string;
+}
+
 /** Longest run of silent days strictly between two active dates — the
  *  disappearance. Edges of the period don't count: silence before the first
  *  session or after the last one is "hadn't started" / "hasn't happened yet". */
-export function longestGapRange(activeDates: string[]): { days: number; from: string; to: string } | null {
+export function longestGapRange(activeDates: string[]): DayRange | null {
   const dates = [...new Set(activeDates)].sort();
-  let best: { days: number; from: string; to: string } | null = null;
+  let best: DayRange | null = null;
   for (let i = 1; i < dates.length; i++) {
     const prev = Date.parse(dates[i - 1]!);
     const gap = (Date.parse(dates[i]!) - prev) / 86_400_000 - 1;
@@ -358,10 +365,10 @@ export function longestGapRange(activeDates: string[]): { days: number; from: st
 }
 
 /** Longest run of consecutive active dates, with its range. */
-export function longestStreakRange(activeDates: string[]): { days: number; from: string; to: string } | null {
+export function longestStreakRange(activeDates: string[]): DayRange | null {
   const dates = [...new Set(activeDates)].sort();
   if (dates.length === 0) return null;
-  let best: { days: number; from: string; to: string } = { days: 1, from: dates[0]!, to: dates[0]! };
+  let best: DayRange = { days: 1, from: dates[0]!, to: dates[0]! };
   let runFrom = dates[0]!;
   let runDays = 1;
   for (let i = 1; i < dates.length; i++) {

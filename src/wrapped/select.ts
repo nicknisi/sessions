@@ -385,20 +385,20 @@ export function buildCandidates(
   return out;
 }
 
-const THEME_META: Record<Candidate['theme'], { kicker: string; title: string }> = {
+const THEME_META = {
   friction: { kicker: 'the friction reel', title: 'It wasn’t always pretty.' },
   relationship: { kicker: 'the relationship', title: 'You two have a dynamic.' },
   lies: { kicker: 'famous last words', title: 'The lies you told yourself.' },
   bloopers: { kicker: 'the bloopers', title: 'And then there’s… this.' },
-};
+} satisfies Record<Candidate['theme'], { kicker: string; title: string }>;
 
-const FOOTNOTES: Record<Candidate['theme'], string> = {
+const FOOTNOTES = {
   friction:
     'errors = any failed tool call (a denied command, a missing file, a bad API call) — friction, not disasters · cursed day by session start date (UTC)',
   relationship: 'counted from your local transcripts — messages containing each phrase',
   lies: 'counted from your own prompts — messages containing each phrase, in any context',
   bloopers: 'all counted locally from your own transcripts and usage',
-};
+} satisfies Record<Candidate['theme'], string>;
 
 /** Assemble themed cards from the highest-scoring candidates. A card renders
  *  only when its lead stat clears the bar — thresholds, not quotas. */
@@ -444,7 +444,10 @@ const NIGHT_THRESHOLD = 0.25;
 const FOCUS_THRESHOLD = 0.4;
 const DEPTH_THRESHOLD = 40; // raw indexed message_count median (tool turns included)
 
-const ARCHETYPES: Record<string, { name: string; tagline: string }> = {
+interface ArchetypeMap {
+  [axisKey: string]: { name: string; tagline: string };
+}
+const ARCHETYPES: ArchetypeMap = {
   'night|focus|deep': { name: 'The Midnight Machinist', tagline: 'One project, the small hours, total immersion.' },
   'night|focus|quick': { name: 'The Nocturnal Sniper', tagline: 'In after dark, one clean shot, out.' },
   'night|multi|deep': { name: 'The Moonlit Cartographer', tagline: 'Mapping every repo while the world sleeps.' },
