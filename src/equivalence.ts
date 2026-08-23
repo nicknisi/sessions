@@ -178,8 +178,13 @@ function ratio(n: number): string {
   return s.endsWith('.0') ? s.slice(0, -2) : s;
 }
 
+interface TimeSpan {
+  short: string;
+  long: string;
+}
+
 /** Hours, days, or years — whichever keeps the number under three digits. */
-function span(hours: number): { short: string; long: string } {
+function span(hours: number): TimeSpan {
   if (hours < 48) {
     const n = Math.round(hours);
     return { short: `${n} hrs`, long: `${n} hours` };
@@ -233,7 +238,12 @@ function hash(seed: string): number {
 /** The candidate list plus where the seed lands in it. Callers serialize both:
  *  the page opens on `start` and the reroll control walks the array, so the
  *  cycling happens without shipping the hash to the browser. */
-export function equivalenceChoices(tokens: number, seed: string): { options: Equivalence[]; start: number } {
+export interface EquivalenceChoices {
+  options: Equivalence[];
+  start: number;
+}
+
+export function equivalenceChoices(tokens: number, seed: string): EquivalenceChoices {
   const options = equivalences(tokens);
   if (options.length === 0) return { options, start: 0 };
   return { options, start: hash(seed) % options.length };

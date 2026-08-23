@@ -9,10 +9,11 @@
 //    (the auth-*/"middleware" pair and the "cache" pair are the examples).
 
 import { mkdirSync, writeFileSync } from 'node:fs';
+import type { JsonObject, JsonValue } from '../extract-util';
 import { join } from 'node:path';
 
-type Rec = Record<string, unknown>;
-const j = (o: unknown): string => JSON.stringify(o);
+type Rec = JsonObject;
+const j = (o: JsonValue): string => JSON.stringify(o);
 
 // Claude Code record helpers. Only the fields the extractors read are set.
 const user = (text: string, t: string): Rec => ({

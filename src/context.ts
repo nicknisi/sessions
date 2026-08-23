@@ -83,6 +83,7 @@ export function parseContextArgs(argv: string[]): ContextArgs {
       case '--tool': {
         const v = argv[++i] ?? '';
         if (!VALID_TOOLS.has(v)) die('--tool must be claude|codex|pi|opencode');
+        // SAFETY: VALID_TOOLS.has() above proves v is a Tool.
         args.tool = v as Tool;
         break;
       }

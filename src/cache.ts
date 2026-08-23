@@ -1,5 +1,5 @@
 import { Database } from 'bun:sqlite';
-import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
 import { join, basename } from 'node:path';
 import { homedir } from 'node:os';
 import { readdir } from 'node:fs/promises';
@@ -29,6 +29,7 @@ import {
 } from './parser';
 import { buildPiTree } from './pi-tree';
 import { extractFiles, extractFilesRead } from './extract-files';
+import { jsonStrings } from './extract-util';
 import { extractCommands } from './extract-commands';
 import { extractErrors } from './extract-errors';
 import { extractThinking } from './extract-thinking';
@@ -241,8 +242,8 @@ function removeDbFiles(): void {
 // A corrupt or non-database index file surfaces as a SQLiteError on the first
 // PRAGMA/CREATE in openDb (e.g. "file is not a database" / "database disk image is
 // malformed"). Match SQLite's wording case-insensitively so getDb can self-heal.
-function isCorruption(e: unknown): boolean {
-  const msg = e instanceof Error ? e.message.toLowerCase() : String(e).toLowerCase();
+function isCorruption(cause: unknown): boolean {
+  const msg = cause instanceof Error ? cause.message.toLowerCase() : String(cause).toLowerCase();
   return msg.includes('malformed') || msg.includes('corrupt') || msg.includes('not a database');
 }
 
@@ -325,7 +326,7 @@ function collectSubagentContent(filePath: string): string {
 
   const parts: string[] = [];
   try {
-    const files = require('node:fs').readdirSync(dir) as string[];
+    const files = readdirSync(dir);
     for (const f of files) {
       if (!f.endsWith('.jsonl')) continue;
       try {
@@ -762,6 +763,7 @@ export async function searchSessions(query: string, opts: SearchOptions = {}): P
       // Sentinel rows (msg_index -1: subagent text) rank the session but are not
       // addressable messages, so they never become visible hits.
       if (m.msg_index >= 0) {
+        // SAFETY: the role column is written by the index from 'user' | 'assistant' values only.
         agg.hits.push({ hit: { index: m.msg_index, role: m.role as 'user' | 'assistant', snippet: m.msnippet }, rank });
       }
     }
@@ -832,6 +834,7 @@ export async function searchSessions(query: string, opts: SearchOptions = {}): P
     date: r.date,
     createdAt: r.created_at,
     cwd: r.cwd,
+    // SAFETY: the tool column is written by the index from Tool values only.
     tool: r.tool as Tool,
     sessionId: r.session_id,
     displayText: r.snippet ?? (r.custom_title || r.first_prompt),
@@ -991,11 +994,13 @@ export async function grepSessions(pattern: string, opts: GrepOptions = {}): Pro
       if (start > 0) snippet = '…' + snippet;
       if (end < row.text.length) snippet = snippet + '…';
       hits.push({
+        // SAFETY: tool/role columns are written by the index from Tool and 'user'|'assistant' values only.
         tool: row.tool as Tool,
         project: row.cwd,
         sessionId: row.sessionId,
         filePath: row.filePath,
         date: row.date,
+        // SAFETY: same index-written contract as tool above.
         role: row.role as 'user' | 'assistant',
         msgIndex: row.msgIndex,
         snippet,
@@ -1347,7 +1352,12 @@ function repoRoots(repo: RepoInfo, worktreeOnly = false): string[] {
 
 /** A boundary-aware `cwd` predicate over several roots. Parenthesized as a whole: OR'd
  *  alternatives inside a clause that gets AND'd with tool/date filters must not leak. */
-function repoScopeClause(roots: string[]): { clause: string; params: string[] } {
+interface ScopeClause {
+  clause: string;
+  params: string[];
+}
+
+function repoScopeClause(roots: string[]): ScopeClause {
   // No roots means no repo, which must select nothing rather than everything.
   if (roots.length === 0) return { clause: '(1 = 0)', params: [] };
   return {
@@ -1358,8 +1368,9 @@ function repoScopeClause(roots: string[]): { clause: string; params: string[] } 
 
 function parseFiles(json: string): string[] {
   try {
-    const parsed = JSON.parse(json);
-    return Array.isArray(parsed) ? (parsed as string[]) : [];
+    // The files_touched column is written by the index from string[]; the JSON
+    // read-back still validates because a hand-edited row could carry anything.
+    return jsonStrings(JSON.parse(json));
   } catch {
     return [];
   }
@@ -1383,7 +1394,12 @@ function parseFiles(json: string): string[] {
 export const PRIMER_MEMORY_LIMIT = 8;
 
 /** Approved memories for a repo, always-on first, capped — plus the true in-scope total. */
-function primerMemory(container: string): { memory: PrimerMemory[]; memoryTotal: number } {
+interface PrimerMemoryTier {
+  memory: PrimerMemory[];
+  memoryTotal: number;
+}
+
+function primerMemory(container: string): PrimerMemoryTier {
   let all: MemoryRecord[];
   try {
     // No topic: the primer has no task to condition on. Opening the store must never be
@@ -1478,6 +1494,7 @@ export async function getContextPrimer(repo: RepoInfo, opts: ContextOptions): Pr
     const files = parseFiles(r.files_touched);
     return {
       sessionId: r.session_id,
+      // SAFETY: the tool column is written by the index from Tool values only.
       tool: r.tool as Tool,
       branch: r.branch || branchLabel(r.cwd, repo.branches),
       date: r.date,
@@ -1494,6 +1511,7 @@ export async function getContextPrimer(repo: RepoInfo, opts: ContextOptions): Pr
 
   const headlines: ContextHeadline[] = headlineRows.map((r) => ({
     date: r.date,
+    // SAFETY: the tool column is written by the index from Tool values only.
     tool: r.tool as Tool,
     branch: r.branch || branchLabel(r.cwd, repo.branches),
     intent: r.custom_title || r.first_prompt,

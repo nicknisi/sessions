@@ -1,4 +1,11 @@
-import { tryParse, extractUserText, isGenuineUserTurn, isUserMessage, type MessageLine } from './extract-util';
+import {
+  tryParse,
+  extractUserText,
+  isGenuineUserTurn,
+  isUserMessage,
+  asJsonString,
+  type JsonObject,
+} from './extract-util';
 
 export interface PiEntry {
   id: string;
@@ -75,7 +82,7 @@ export function buildPiTree(lines: string[]): PiTree | null {
   const sniff = Math.min(lines.length, PI_SNIFF_LINES);
   for (let i = 0; i < sniff; i++) {
     const d = tryParse(lines[i] ?? '');
-    if (d && typeof d.id === 'string' && 'parentId' in d) {
+    if (d && asJsonString(d.id) !== undefined && 'parentId' in d) {
       detected = true;
       break;
     }
@@ -83,17 +90,18 @@ export function buildPiTree(lines: string[]): PiTree | null {
   if (!detected) return null;
 
   // Pass 1: collect the id-bearing entries (every line of a real pi file has one).
-  const parsed: (Record<string, unknown> | null)[] = [];
+  const parsed: (JsonObject | null)[] = [];
   const entries: PiEntry[] = [];
   for (let i = 0; i < lines.length; i++) {
     const d = tryParse(lines[i] ?? '');
     parsed.push(d);
-    if (!d || typeof d.id !== 'string') continue;
+    const id = asJsonString(d?.id);
+    if (!d || id === undefined) continue;
     entries.push({
-      id: d.id,
-      parentId: typeof d.parentId === 'string' ? d.parentId : null,
-      type: typeof d.type === 'string' ? d.type : '',
-      timestamp: typeof d.timestamp === 'string' ? d.timestamp : undefined,
+      id,
+      parentId: asJsonString(d.parentId) ?? null,
+      type: asJsonString(d.type) ?? '',
+      timestamp: asJsonString(d.timestamp),
       lineIndex: i,
     });
   }
@@ -165,9 +173,9 @@ export function buildPiTree(lines: string[]): PiTree | null {
     let firstUserText = '';
     for (const m of members) {
       const d = parsed[entries[m]!.lineIndex];
-      if (!d || !isUserMessage(d as MessageLine)) continue;
-      const text = extractUserText(d as MessageLine).trim();
-      if (!text || !isGenuineUserTurn(d as MessageLine, text)) continue;
+      if (!d || !isUserMessage(d)) continue;
+      const text = extractUserText(d).trim();
+      if (!text || !isGenuineUserTurn(d, text)) continue;
       firstUserText = text.length > FORK_TEXT_MAX ? text.slice(0, FORK_TEXT_MAX) : text;
       break;
     }

@@ -138,7 +138,12 @@ function runClaude(...args: string[]): boolean {
   }
 }
 
-function registerClaudePlugin(): { marketplace: boolean; install: boolean } {
+interface PluginRegistration {
+  marketplace: boolean;
+  install: boolean;
+}
+
+function registerClaudePlugin(): PluginRegistration {
   const marketplace = runClaude('marketplace', 'add', sessionsDir());
   const install = runClaude('install', `${PLUGIN_NAME}@${MARKETPLACE_NAME}`);
   return { marketplace, install };

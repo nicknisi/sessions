@@ -47,10 +47,10 @@ export function jsonStrings(v: JsonValue | undefined): string[] {
  * can use them without an import cycle between those two modules.
  */
 export type MessageLine = {
-  type?: string;
-  isCompactSummary?: boolean;
-  promptSource?: string | null;
-  message?: JsonObject | string;
+  type?: JsonValue;
+  isCompactSummary?: JsonValue;
+  promptSource?: JsonValue;
+  message?: JsonValue;
 };
 
 /** Parse one JSONL line to an object, or null — never throws, never yields a bare primitive. */

@@ -4,8 +4,9 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Database } from 'bun:sqlite';
+import { asJsonNumber, type JsonObject, type JsonValue } from './extract-util';
 
-const j = (o: unknown): string => JSON.stringify(o);
+const j = (o: JsonValue): string => JSON.stringify(o);
 
 // cache.ts resolves SESSIONS_* env lazily, but the module instance is shared across
 // test files in one `bun test` run (cache.search.test.ts, cache.metrics.test.ts,
@@ -29,7 +30,7 @@ const piPath = (id: string) => join(piDir(), `${id}.jsonl`);
 // Pi fixture shapes mirror real ~/.pi/agent/sessions files: every line carries
 // id/parentId, the session header is the root, and the header-adjacent model_change
 // has parentId: null. Same conventions as src/parser.test.ts's pi fixtures.
-const piSession = (extra: Record<string, unknown> = {}) => ({
+const piSession = (extra: JsonObject = {}) => ({
   type: 'session',
   id: 's1',
   timestamp: '2026-08-04T17:00:00.000Z',
@@ -57,7 +58,7 @@ const piAssistant = (id: string, parentId: string, text: string) => ({
   message: { role: 'assistant', content: [{ type: 'text', text }] },
 });
 
-function writePi(id: string, records: Record<string, unknown>[]): void {
+function writePi(id: string, records: JsonObject[]): void {
   mkdirSync(piDir(), { recursive: true });
   writeFileSync(piPath(id), records.map(j).join('\n'));
 }
@@ -165,7 +166,8 @@ test('lineage: a branched pi session stores the fork count and the PiFork[] JSON
   expect(row!.branches).toBe(1);
   // Round-trip: the stored JSON parses back to the buildPiTree shape, lineIndexes
   // included, so the stretch-tier family view can read it without re-parsing.
-  const forks = JSON.parse(row!.fork_points) as Record<string, unknown>[];
+  // SAFETY: fork_points is written by the index (sessionLineage) from PiFork objects.
+  const forks = JSON.parse(row!.fork_points) as JsonObject[];
   expect(forks).toHaveLength(1);
   expect(forks[0]).toMatchObject({
     fromEntryId: 'u1',
@@ -173,8 +175,10 @@ test('lineage: a branched pi session stores the fork count and the PiFork[] JSON
     firstUserText: 'hello world',
     timestamp: '2026-08-04T17:01:00.000Z',
   });
-  expect(Array.isArray(forks[0]!.lineIndexes)).toBe(true);
-  expect((forks[0]!.lineIndexes as number[]).every((n) => typeof n === 'number')).toBe(true);
+  const lineIndexes = forks[0]!.lineIndexes;
+  expect(Array.isArray(lineIndexes)).toBe(true);
+  if (!Array.isArray(lineIndexes)) throw new Error('lineIndexes missing');
+  expect(lineIndexes.every((n) => asJsonNumber(n) !== undefined)).toBe(true);
 });
 
 test('lineage: a /fork copy stores forked_from raw; a normal pi session stores empty', () => {

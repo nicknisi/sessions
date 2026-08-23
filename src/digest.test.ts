@@ -1,22 +1,23 @@
 import { describe, test, expect } from 'bun:test';
 import { extractMessages } from './parser';
 import { buildSessionDigest, renderDigestMarkdown, DIGEST_MAX_CHARS, USER_MAX, ASSISTANT_MAX } from './digest';
+import type { JsonObject } from './extract-util';
 
-function jsonl(...objs: Record<string, unknown>[]): string[] {
+function jsonl(...objs: JsonObject[]): string[] {
   return objs.map((o) => JSON.stringify(o));
 }
 
 /** A genuine (typed) user turn. */
-function user(text: string): Record<string, unknown> {
+function user(text: string): JsonObject {
   return { type: 'user', message: { role: 'user', content: [{ type: 'text', text }] }, promptSource: 'typed' };
 }
 
 /** An injected user-role turn (skill body / system-injected): present promptSource, not typed. */
-function injected(text: string): Record<string, unknown> {
+function injected(text: string): JsonObject {
   return { type: 'user', message: { role: 'user', content: [{ type: 'text', text }] }, promptSource: null };
 }
 
-function assistant(text: string): Record<string, unknown> {
+function assistant(text: string): JsonObject {
   return { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text }] } };
 }
 
@@ -146,7 +147,7 @@ describe('buildSessionDigest truncation and budget', () => {
   });
 
   const sessionOf = (messages: number): string[] => {
-    const rows: Record<string, unknown>[] = [];
+    const rows: JsonObject[] = [];
     for (let i = 0; rows.length < messages; i++) {
       rows.push(user(`turn ${i}: ${'question detail '.repeat(8)}`));
       if (rows.length < messages) rows.push(assistant(`answer ${i}: ${'outcome detail '.repeat(12)}`));
@@ -184,7 +185,7 @@ describe('renderDigestMarkdown', () => {
   });
 
   test('places an elision marker between head and tail', () => {
-    const rows: Record<string, unknown>[] = [];
+    const rows: JsonObject[] = [];
     for (let i = 0; i < 300; i++) {
       rows.push(user(`turn ${i}: ${'question detail '.repeat(8)}`));
       rows.push(assistant(`answer ${i}: ${'outcome detail '.repeat(12)}`));

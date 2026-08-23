@@ -487,9 +487,12 @@ describe('cli', () => {
   });
 
   test('parseContextArgs rejects unknown flags via die', () => {
+    // SAFETY: mockImplementation's overloads reject the throwing stub's signature; the
+    // cast is the test's way to replace process.exit with a throw.
     const exitSpy = spyOn(process, 'exit').mockImplementation(((): never => {
       throw new Error('exit');
     }) as never);
+    // SAFETY: same overload escape for stderr.write, which the stub silences.
     const errSpy = spyOn(process.stderr, 'write').mockImplementation((() => true) as never);
     try {
       expect(() => ctx.parseContextArgs(['--bogus'])).toThrow('exit');
@@ -516,6 +519,7 @@ describe('mcp', () => {
     // The MCP handler does exactly this: getContextPrimer → JSON.stringify(_, null, 2).
     const primer = await cache.getContextPrimer(fakeRepo(cwd, {}), { tool: '', worktreeOnly: undefined });
     const json = JSON.stringify(primer, null, 2);
+    // SAFETY: json is JSON.stringify(primer) — a same-process round-trip of the object above.
     const parsed = JSON.parse(json) as ContextPrimer;
 
     // Same structure the CLI renderer consumes — render it to prove parity.
