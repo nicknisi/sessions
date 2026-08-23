@@ -1,5 +1,5 @@
 import type { Tool } from './types';
-import { tryParse, opencodeAssistantBlocks, toolInput } from './extract-util';
+import { tryParse, opencodeAssistantBlocks, toolInput, asJsonObject, asJsonString, jsonStrings } from './extract-util';
 
 /** Upper bound on stored distinct commands per session (bounds the indexed column). */
 export const MAX_COMMANDS = 100;
@@ -9,17 +9,16 @@ function extractClaude(lines: string[], push: (c: string) => void): void {
   for (const line of lines) {
     const d = tryParse(line);
     if (!d || d.type !== 'assistant') continue;
-    const msg = d.message;
-    if (!msg || typeof msg !== 'object') continue;
-    const content = (msg as Record<string, unknown>).content;
+    const msg = asJsonObject(d.message);
+    if (!msg) continue;
+    const content = msg.content;
     if (!Array.isArray(content)) continue;
     for (const block of content) {
-      if (!block || typeof block !== 'object') continue;
-      const b = block as Record<string, unknown>;
+      const b = asJsonObject(block);
+      if (!b) continue;
       if (b.type !== 'tool_use' || b.name !== 'Bash') continue;
-      const input = b.input as Record<string, unknown> | undefined;
-      const cmd = input?.command;
-      if (typeof cmd === 'string' && cmd.trim()) push(cmd.trim());
+      const cmd = asJsonString(asJsonObject(b.input)?.command);
+      if (cmd?.trim()) push(cmd.trim());
     }
   }
 }
@@ -31,15 +30,14 @@ function extractCodex(lines: string[], push: (c: string) => void): void {
   for (const line of lines) {
     const d = tryParse(line);
     if (!d) continue;
-    const p = d.payload as Record<string, unknown> | undefined;
+    const p = asJsonObject(d.payload);
     if (!p || p.type !== 'exec_command_end') continue;
     const cmd = p.command;
-    if (typeof cmd === 'string' && cmd.trim()) push(cmd.trim());
-    else if (Array.isArray(cmd)) {
-      const joined = cmd
-        .filter((x) => typeof x === 'string')
-        .join(' ')
-        .trim();
+    const cmdString = asJsonString(cmd);
+    if (cmdString?.trim()) {
+      push(cmdString.trim());
+    } else if (Array.isArray(cmd)) {
+      const joined = jsonStrings(cmd).join(' ').trim();
       if (joined) push(joined);
     }
   }
@@ -50,22 +48,21 @@ function extractPi(lines: string[], push: (c: string) => void): void {
   for (const line of lines) {
     const d = tryParse(line);
     if (!d || d.type !== 'message') continue;
-    const msg = d.message as Record<string, unknown> | undefined;
-    if (!msg || typeof msg !== 'object') continue;
+    const msg = asJsonObject(d.message);
+    if (!msg) continue;
     if (msg.role === 'bashExecution') {
-      const cmd = msg.command;
-      if (typeof cmd === 'string' && cmd.trim()) push(cmd.trim());
+      const cmd = asJsonString(msg.command);
+      if (cmd?.trim()) push(cmd.trim());
       continue;
     }
     const content = msg.content;
     if (!Array.isArray(content)) continue;
     for (const block of content) {
-      if (!block || typeof block !== 'object') continue;
-      const b = block as Record<string, unknown>;
+      const b = asJsonObject(block);
+      if (!b) continue;
       if (b.type !== 'toolCall' || b.name !== 'bash') continue;
-      const argsObj = b.arguments as Record<string, unknown> | undefined;
-      const cmd = argsObj?.command;
-      if (typeof cmd === 'string' && cmd.trim()) push(cmd.trim());
+      const cmd = asJsonString(asJsonObject(b.arguments)?.command);
+      if (cmd?.trim()) push(cmd.trim());
     }
   }
 }
@@ -74,8 +71,8 @@ function extractPi(lines: string[], push: (c: string) => void): void {
 function extractOpencode(lines: string[], push: (c: string) => void): void {
   for (const block of opencodeAssistantBlocks(lines)) {
     if (block.type !== 'tool' || block.tool !== 'bash') continue;
-    const cmd = toolInput(block).command;
-    if (typeof cmd === 'string' && cmd.trim()) push(cmd.trim());
+    const cmd = asJsonString(toolInput(block).command);
+    if (cmd?.trim()) push(cmd.trim());
   }
 }
 

@@ -1,5 +1,12 @@
 import type { Tool } from './types';
-import { tryParse, opencodeAssistantBlocks } from './extract-util';
+import {
+  tryParse,
+  opencodeAssistantBlocks,
+  asJsonObject,
+  asJsonString,
+  asJsonNumber,
+  type JsonValue,
+} from './extract-util';
 
 export const MAX_ERROR_MESSAGES = 20;
 export const MAX_ERROR_LEN = 300;
@@ -10,15 +17,15 @@ export interface SessionErrors {
   messages: string[];
 }
 
-function textOf(content: unknown): string {
-  if (typeof content === 'string') return content;
+function textOf(content: JsonValue | undefined): string {
+  const text = asJsonString(content);
+  if (text !== undefined) return text;
   if (Array.isArray(content)) {
     return content
-      .map((c) =>
-        c && typeof c === 'object' && typeof (c as Record<string, unknown>).text === 'string'
-          ? (c as Record<string, string>).text
-          : '',
-      )
+      .map((c) => {
+        const block = asJsonObject(c);
+        return block ? (asJsonString(block.text) ?? '') : '';
+      })
       .join(' ')
       .trim();
   }
@@ -30,15 +37,15 @@ function extractClaude(lines: string[], push: (m: string) => void): void {
     const d = tryParse(line);
     if (!d) continue;
     if (d.isApiErrorMessage) {
-      push(textOf((d.message as Record<string, unknown> | undefined)?.content) || 'api error');
+      push(textOf(asJsonObject(d.message)?.content) || 'api error');
       continue;
     }
     if (d.type !== 'user') continue;
-    const content = (d.message as Record<string, unknown> | undefined)?.content;
+    const content = asJsonObject(d.message)?.content;
     if (!Array.isArray(content)) continue;
     for (const block of content) {
-      if (!block || typeof block !== 'object') continue;
-      const b = block as Record<string, unknown>;
+      const b = asJsonObject(block);
+      if (!b) continue;
       if (b.type === 'tool_result' && b.is_error === true) push(textOf(b.content) || 'tool error');
     }
   }
@@ -48,10 +55,11 @@ function extractCodex(lines: string[], push: (m: string) => void): void {
   for (const line of lines) {
     const d = tryParse(line);
     if (!d) continue;
-    const p = d.payload as Record<string, unknown> | undefined;
+    const p = asJsonObject(d.payload);
     if (!p) continue;
-    if (p.type === 'exec_command_end' && typeof p.exit_code === 'number' && p.exit_code !== 0) {
-      push(textOf(p.stderr) || textOf(p.formatted_output) || `exit ${p.exit_code}`);
+    const exitCode = asJsonNumber(p.exit_code);
+    if (p.type === 'exec_command_end' && exitCode !== undefined && exitCode !== 0) {
+      push(textOf(p.stderr) || textOf(p.formatted_output) || `exit ${exitCode}`);
     } else if (p.type === 'error') {
       push(textOf(p.message) || 'error');
     }
@@ -62,13 +70,16 @@ function extractPi(lines: string[], push: (m: string) => void): void {
   for (const line of lines) {
     const d = tryParse(line);
     if (!d || d.type !== 'message') continue;
-    const msg = d.message as Record<string, unknown> | undefined;
+    const msg = asJsonObject(d.message);
     if (!msg) continue;
     if (msg.role === 'toolResult' && msg.isError === true) push(textOf(msg.content) || 'tool error');
-    else if (msg.role === 'assistant' && typeof msg.errorMessage === 'string' && msg.errorMessage)
-      push(msg.errorMessage);
-    else if (msg.role === 'bashExecution' && typeof msg.exitCode === 'number' && msg.exitCode !== 0)
-      push(textOf(msg.output) || `exit ${msg.exitCode}`);
+    else if (msg.role === 'assistant') {
+      const errorMessage = asJsonString(msg.errorMessage);
+      if (errorMessage) push(errorMessage);
+    } else if (msg.role === 'bashExecution') {
+      const exitCode = asJsonNumber(msg.exitCode);
+      if (exitCode !== undefined && exitCode !== 0) push(textOf(msg.output) || `exit ${exitCode}`);
+    }
   }
 }
 
@@ -76,10 +87,10 @@ function extractPi(lines: string[], push: (m: string) => void): void {
 function extractOpencode(lines: string[], push: (m: string) => void): void {
   for (const block of opencodeAssistantBlocks(lines)) {
     if (block.type !== 'tool') continue;
-    const state = block.state as Record<string, unknown> | undefined;
+    const state = asJsonObject(block.state);
     if (!state || state.status !== 'error') continue;
-    const msg = typeof state.error === 'string' ? state.error : '';
-    push(msg || `${typeof block.tool === 'string' ? block.tool : 'tool'} error`);
+    const msg = asJsonString(state.error) ?? '';
+    push(msg || `${asJsonString(block.tool) ?? 'tool'} error`);
   }
 }
 

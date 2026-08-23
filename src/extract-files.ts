@@ -1,5 +1,5 @@
 import type { Tool } from './types';
-import { tryParse, opencodeAssistantBlocks, toolInput } from './extract-util';
+import { tryParse, opencodeAssistantBlocks, toolInput, asJsonObject, asJsonString, jsonStrings } from './extract-util';
 
 /** Upper bound on stored edited-file paths per session (bounds the indexed column). */
 export const MAX_FILES = 50;
@@ -11,19 +11,19 @@ function extractClaude(lines: string[], push: (p: string) => void): void {
   for (const line of lines) {
     const d = tryParse(line);
     if (!d || d.type !== 'assistant') continue;
-    const msg = d.message;
-    if (!msg || typeof msg !== 'object') continue;
-    const content = (msg as Record<string, unknown>).content;
+    const msg = asJsonObject(d.message);
+    if (!msg) continue;
+    const content = msg.content;
     if (!Array.isArray(content)) continue;
     for (const block of content) {
-      if (!block || typeof block !== 'object') continue;
-      const b = block as Record<string, unknown>;
-      if (b.type !== 'tool_use' || typeof b.name !== 'string' || !CLAUDE_EDIT_TOOLS.has(b.name)) continue;
-      const input = b.input;
-      if (!input || typeof input !== 'object') continue;
-      const inp = input as Record<string, unknown>;
-      const path = b.name === 'NotebookEdit' ? inp.notebook_path : inp.file_path;
-      if (typeof path === 'string' && path) push(path);
+      const b = asJsonObject(block);
+      if (!b) continue;
+      const name = asJsonString(b.name);
+      if (b.type !== 'tool_use' || name === undefined || !CLAUDE_EDIT_TOOLS.has(name)) continue;
+      const inp = asJsonObject(b.input);
+      if (!inp) continue;
+      const path = asJsonString(name === 'NotebookEdit' ? inp.notebook_path : inp.file_path);
+      if (path) push(path);
     }
   }
 }
@@ -40,12 +40,10 @@ function extractCodex(lines: string[], push: (p: string) => void): void {
   for (const line of lines) {
     const d = tryParse(line);
     if (!d) continue;
-    const payload = d.payload;
-    if (!payload || typeof payload !== 'object') continue;
-    const p = payload as Record<string, unknown>;
-    if (p.type !== 'custom_tool_call' || p.name !== 'apply_patch') continue;
-    const input = p.input;
-    if (typeof input !== 'string') continue;
+    const p = asJsonObject(d.payload);
+    if (!p || p.type !== 'custom_tool_call' || p.name !== 'apply_patch') continue;
+    const input = asJsonString(p.input);
+    if (input === undefined) continue;
     for (const patchLine of input.split('\n')) {
       const m = PATCH_HEADER.exec(patchLine.trim());
       if (m && m[1]) push(m[1].trim());
@@ -72,15 +70,18 @@ function extractPi(_lines: string[], _push: (p: string) => void): void {
 function extractOpencode(lines: string[], push: (p: string) => void): void {
   for (const block of opencodeAssistantBlocks(lines)) {
     if (block.type === 'patch' && Array.isArray(block.files)) {
-      for (const f of block.files) if (typeof f === 'string' && f) push(f);
+      for (const f of jsonStrings(block.files)) if (f) push(f);
       continue;
     }
     if (block.type !== 'tool') continue;
     const input = toolInput(block);
-    if ((block.tool === 'edit' || block.tool === 'write') && typeof input.filePath === 'string' && input.filePath) {
-      push(input.filePath);
-    } else if (block.tool === 'apply_patch' && typeof input.patchText === 'string') {
-      for (const patchLine of input.patchText.split('\n')) {
+    const filePath = asJsonString(input.filePath);
+    if ((block.tool === 'edit' || block.tool === 'write') && filePath) {
+      push(filePath);
+    } else if (block.tool === 'apply_patch') {
+      const patchText = asJsonString(input.patchText);
+      if (patchText === undefined) continue;
+      for (const patchLine of patchText.split('\n')) {
         const m = PATCH_HEADER.exec(patchLine.trim());
         if (m && m[1]) push(m[1].trim());
       }
@@ -113,17 +114,18 @@ function extractClaudeRead(lines: string[], push: (p: string) => void): void {
   for (const line of lines) {
     const d = tryParse(line);
     if (!d || d.type !== 'assistant') continue;
-    const msg = d.message;
-    if (!msg || typeof msg !== 'object') continue;
-    const content = (msg as Record<string, unknown>).content;
+    const msg = asJsonObject(d.message);
+    if (!msg) continue;
+    const content = msg.content;
     if (!Array.isArray(content)) continue;
     for (const block of content) {
-      if (!block || typeof block !== 'object') continue;
-      const b = block as Record<string, unknown>;
-      if (b.type !== 'tool_use' || typeof b.name !== 'string' || !CLAUDE_READ_TOOLS.has(b.name)) continue;
-      const input = b.input as Record<string, unknown> | undefined;
-      const path = input?.file_path ?? input?.path ?? input?.pattern;
-      if (typeof path === 'string' && path) push(path);
+      const b = asJsonObject(block);
+      if (!b) continue;
+      const name = asJsonString(b.name);
+      if (b.type !== 'tool_use' || name === undefined || !CLAUDE_READ_TOOLS.has(name)) continue;
+      const input = asJsonObject(b.input);
+      const path = asJsonString(input?.file_path ?? input?.path ?? input?.pattern);
+      if (path) push(path);
     }
   }
 }
@@ -157,6 +159,7 @@ function extractOpencodeRead(lines: string[], push: (p: string) => void): void {
         : block.tool === 'grep' || block.tool === 'glob' || block.tool === 'list'
           ? (input.path ?? input.pattern)
           : undefined;
-    if (typeof path === 'string' && path) push(path);
+    const target = asJsonString(path);
+    if (target) push(target);
   }
 }

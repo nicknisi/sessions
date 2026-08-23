@@ -1,5 +1,5 @@
 import type { Tool } from './types';
-import { tryParse } from './extract-util';
+import { tryParse, asJsonObject, asJsonString } from './extract-util';
 
 export const MAX_THINKING_LEN = 20_000;
 
@@ -8,14 +8,17 @@ function collect(lines: string[]): string {
   for (const line of lines) {
     const d = tryParse(line);
     if (!d || (d.type !== 'assistant' && d.type !== 'message')) continue;
-    const msg = d.message as Record<string, unknown> | undefined;
-    if (!msg || typeof msg !== 'object') continue;
+    const msg = asJsonObject(d.message);
+    if (!msg) continue;
     const content = msg.content;
     if (!Array.isArray(content)) continue;
     for (const block of content) {
-      if (!block || typeof block !== 'object') continue;
-      const b = block as Record<string, unknown>;
-      if (b.type === 'thinking' && typeof b.thinking === 'string') parts.push(b.thinking);
+      const b = asJsonObject(block);
+      if (!b) continue;
+      if (b.type === 'thinking') {
+        const thinking = asJsonString(b.thinking);
+        if (thinking !== undefined) parts.push(thinking);
+      }
     }
   }
   return parts.join('\n').slice(0, MAX_THINKING_LEN);

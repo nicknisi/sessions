@@ -1,7 +1,8 @@
 import { test, expect } from 'bun:test';
 import { extractCommands, MAX_COMMANDS } from './extract-commands';
+import type { JsonValue } from './extract-util';
 
-const j = (o: unknown): string => JSON.stringify(o);
+const j = (o: JsonValue): string => JSON.stringify(o);
 
 test('claude: extracts Bash commands, ignores other tools', () => {
   const lines = [

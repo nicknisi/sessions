@@ -1,5 +1,17 @@
+import { z } from 'zod';
+
 import { type Tool } from './types';
-import { extractUserText, isGenuineUserTurn, isUserMessage, stripInjected } from './extract-util';
+import {
+  extractUserText,
+  isGenuineUserTurn,
+  isUserMessage,
+  stripInjected,
+  asJsonObject,
+  asJsonString,
+  jsonObjectSchema,
+  type JsonObject,
+  type JsonValue,
+} from './extract-util';
 import { buildPiTree, type PiEntry } from './pi-tree';
 
 interface JsonLine {
@@ -20,13 +32,17 @@ interface JsonLine {
   /** Pi /fork and /clone copies record the absolute path of the session they
    *  were copied from in their line-1 session header. */
   parentSession?: string;
-  message?: Record<string, unknown> | string;
-  payload?: Record<string, unknown>;
+  message?: JsonObject | string;
+  payload?: JsonObject;
 }
 
 function tryParseJson(line: string): JsonLine | null {
   try {
-    return JSON.parse(line);
+    // SAFETY: JSON.parse's range is the JSON domain; JsonLine's fields are all
+    // optional, and every read below re-narrows (asJsonObject/asJsonString or a
+    // comparison) before use. Deep schema validation on this hot path costs real
+    // indexing time for no additional safety.
+    return JSON.parse(line) as JsonLine | null;
   } catch {
     return null;
   }
@@ -74,8 +90,8 @@ export function extractSessionMetadata(lines: string[], tool: Tool): SessionMeta
       } else if ((tool === 'pi' || tool === 'opencode') && d.type === 'session' && d.cwd) {
         cwd = d.cwd;
       } else if (tool === 'codex' && d.type === 'session_meta') {
-        const value = (d.payload as Record<string, unknown> | undefined)?.cwd;
-        if (typeof value === 'string' && value) cwd = value;
+        const value = asJsonString(d.payload?.cwd);
+        if (value) cwd = value;
       }
     }
 
@@ -93,8 +109,7 @@ export function extractSessionMetadata(lines: string[], tool: Tool): SessionMeta
     if (isUserMessage(d) || d.type === 'assistant') {
       count++;
     } else if (d.type === 'message') {
-      const msg = d.message;
-      if (typeof msg === 'object' && msg !== null && (msg as Record<string, unknown>).role === 'assistant') count++;
+      if (asJsonObject(d.message)?.role === 'assistant') count++;
     } else if (d.type === 'response_item') {
       // The same envelope gap extractMessages had, in the counting loop. Left unfixed,
       // every Codex row indexed with message_count 0 even once its messages parsed —
@@ -105,10 +120,11 @@ export function extractSessionMetadata(lines: string[], tool: Tool): SessionMeta
     }
 
     if (tool === 'claude') {
-      if (typeof d.gitBranch === 'string' && d.gitBranch) branch = d.gitBranch;
+      const b = asJsonString(d.gitBranch);
+      if (b) branch = b;
     } else if (tool === 'codex' && !branch && d.type === 'session_meta') {
-      const git = (d.payload as Record<string, unknown> | undefined)?.git as Record<string, unknown> | undefined;
-      if (typeof git?.branch === 'string' && git.branch) branch = git.branch;
+      const b = asJsonString(asJsonObject(d.payload?.git)?.branch);
+      if (b) branch = b;
     }
   }
 
@@ -135,8 +151,8 @@ export function sessionParentSession(lines: string[], tool: Tool): string {
   // carry parentSession at all, so non-pi returns without a parse.
   if (tool !== 'pi' || lines.length === 0) return '';
   const d = tryParseJson(lines[0]!);
-  const ps = d?.type === 'session' ? d.parentSession : undefined;
-  return typeof ps === 'string' ? ps : '';
+  const ps = d?.type === 'session' ? asJsonString(d.parentSession) : undefined;
+  return ps ?? '';
 }
 
 export function getCwdFromSession(lines: string[], tool: Tool): string {
@@ -151,7 +167,7 @@ export function getCwdFromSession(lines: string[], tool: Tool): string {
       if (d.type === 'session' && d.cwd) return d.cwd;
     } else if (tool === 'codex') {
       if (d.type === 'session_meta') {
-        const cwd = (d.payload as Record<string, unknown>)?.cwd as string;
+        const cwd = asJsonString(d.payload?.cwd);
         if (cwd) return cwd;
       }
     }
@@ -170,9 +186,8 @@ export function sessionBranch(lines: string[], tool: Tool): string {
     for (const line of lines) {
       const d = tryParseJson(line);
       if (d?.type !== 'session_meta') continue;
-      const git = (d.payload as Record<string, unknown> | undefined)?.git as Record<string, unknown> | undefined;
-      const b = git?.branch;
-      if (typeof b === 'string' && b) return b;
+      const b = asJsonString(asJsonObject(d.payload?.git)?.branch);
+      if (b) return b;
     }
     return '';
   }
@@ -180,8 +195,8 @@ export function sessionBranch(lines: string[], tool: Tool): string {
     let branch = '';
     for (const line of lines) {
       const d = tryParseJson(line);
-      const b = d?.gitBranch;
-      if (typeof b === 'string' && b) branch = b; // keep the last non-empty
+      const b = asJsonString(d?.gitBranch);
+      if (b) branch = b; // keep the last non-empty
     }
     return branch;
   }
@@ -210,9 +225,20 @@ export interface GenuineUserTurn {
  * transcript carries the parent sessionId, so its injected task prompt would
  * otherwise read as the human speaking mid-loop.
  */
-export function genuineUserTurnFromLine(v: unknown): GenuineUserTurn | null {
-  if (!v || typeof v !== 'object') return null;
-  const d = v as JsonLine;
+const userTurnLineSchema = z.object({
+  type: z.string().optional(),
+  isCompactSummary: z.boolean().optional(),
+  isSidechain: z.boolean().optional(),
+  promptSource: z.string().nullable().optional(),
+  sessionId: z.string().optional(),
+  timestamp: z.string().optional(),
+  message: z.union([z.string(), jsonObjectSchema]).optional(),
+});
+
+export function genuineUserTurnFromLine(input: JsonValue): GenuineUserTurn | null {
+  const parsed = userTurnLineSchema.safeParse(input);
+  if (!parsed.success) return null;
+  const d = parsed.data;
   if (d.isSidechain === true || !isUserMessage(d)) return null;
   const { sessionId, timestamp } = d;
   if (!sessionId || !timestamp) return null;
@@ -244,7 +270,7 @@ export function customTitle(lines: string[]): string {
     const d = tryParseJson(line);
     if (!d) continue;
     if (d.type === 'custom-title') {
-      title = ((d as Record<string, unknown>).customTitle as string) ?? '';
+      title = asJsonString(d.customTitle) ?? '';
     }
   }
   return title;
@@ -254,7 +280,7 @@ export function firstTimestamp(lines: string[]): string {
   for (const line of lines) {
     const d = tryParseJson(line);
     if (!d) continue;
-    const ts = d.timestamp as string | undefined;
+    const ts = asJsonString(d.timestamp);
     if (ts && ts[0] === '2') return ts.slice(0, 10);
   }
   return '?';
@@ -267,8 +293,7 @@ export function messageCount(lines: string[]): number {
     if (!d) continue;
     if (isUserMessage(d) || d.type === 'assistant') count++;
     else if (d.type === 'message') {
-      const msg = d.message;
-      if (typeof msg === 'object' && msg !== null && (msg as Record<string, unknown>).role === 'assistant') count++;
+      if (asJsonObject(d.message)?.role === 'assistant') count++;
     }
   }
   return count;
@@ -288,7 +313,7 @@ export function lastTimestamp(lines: string[]): string {
   for (let i = lines.length - 1; i >= 0; i--) {
     const d = tryParseJson(lines[i]!);
     if (!d) continue;
-    const ts = d.timestamp as string | undefined;
+    const ts = asJsonString(d.timestamp);
     if (ts && ts[0] === '2') return ts.slice(0, 10);
   }
   return '?';
@@ -338,21 +363,20 @@ const TOOL_SUMMARY_KEYS = [
 ];
 
 /** Reduce a tool_use input object to a single short, human-readable line. */
-function summarizeToolInput(input: unknown): string {
-  if (!input || typeof input !== 'object') return '';
-  const o = input as Record<string, unknown>;
+function summarizeToolInput(input: JsonValue | undefined): string {
+  const o = asJsonObject(input);
+  if (!o) return '';
   let val: string | undefined;
   for (const k of TOOL_SUMMARY_KEYS) {
-    const v = o[k];
-    if (typeof v === 'string' && v.trim()) {
+    const v = asJsonString(o[k]);
+    if (v?.trim()) {
       val = v;
       break;
     }
   }
-  if (val === undefined) {
-    const firstStr = Object.values(o).find((v) => typeof v === 'string' && v.trim());
-    if (typeof firstStr === 'string') val = firstStr;
-  }
+  val ??= Object.values(o)
+    .map(asJsonString)
+    .find((v) => v !== undefined && v.trim());
   if (!val) return '';
   const s = val.replace(/\s+/g, ' ').trim();
   return s.length > 120 ? s.slice(0, 120) + '…' : s;
@@ -364,52 +388,50 @@ function summarizeToolInput(input: unknown): string {
  * for shapes it doesn't model (most pi/codex tool calls), which is a display-only gap.
  */
 function extractToolUses(d: JsonLine): ToolUse[] {
-  const msg = d.message;
-  if (!msg || typeof msg !== 'object') return [];
-  const content = (msg as Record<string, unknown>).content;
+  const msg = asJsonObject(d.message);
+  if (!msg) return [];
+  const content = msg.content;
   if (!Array.isArray(content)) return [];
   const out: ToolUse[] = [];
   for (const c of content) {
-    if (c && typeof c === 'object' && (c as Record<string, unknown>).type === 'tool_use') {
-      const rec = c as Record<string, unknown>;
-      out.push({ name: typeof rec.name === 'string' ? rec.name : '?', summary: summarizeToolInput(rec.input) });
+    const rec = asJsonObject(c);
+    if (rec && rec.type === 'tool_use') {
+      out.push({ name: asJsonString(rec.name) ?? '?', summary: summarizeToolInput(rec.input) });
     }
   }
   return out;
 }
 
 function extractAssistantText(d: JsonLine): string {
+  const msg = asJsonObject(d.message);
   if (d.type === 'assistant') {
-    const msg = d.message;
-    if (typeof msg === 'string') return msg;
-    if (!msg || typeof msg !== 'object') return '';
-    const content = (msg as Record<string, unknown>).content;
-    if (typeof content === 'string') return content;
-    if (Array.isArray(content)) {
-      const texts: string[] = [];
-      for (const c of content) {
-        if (typeof c === 'object' && c !== null && (c as Record<string, unknown>).type === 'text') {
-          texts.push((c as Record<string, string>).text ?? '');
-        }
-      }
-      return texts.join(' ');
-    }
+    const msgString = asJsonString(d.message);
+    if (msgString !== undefined) return msgString;
+    if (!msg) return '';
+    return contentText(msg.content);
   }
   if (d.type === 'message') {
-    const msg = d.message;
-    if (typeof msg !== 'object' || msg === null) return '';
-    if ((msg as Record<string, unknown>).role !== 'assistant') return '';
-    const content = (msg as Record<string, unknown>).content;
-    if (typeof content === 'string') return content;
-    if (Array.isArray(content)) {
-      const texts: string[] = [];
-      for (const c of content) {
-        if (typeof c === 'object' && c !== null && (c as Record<string, unknown>).type === 'text') {
-          texts.push((c as Record<string, string>).text ?? '');
-        }
+    if (!msg || msg.role !== 'assistant') return '';
+    return contentText(msg.content);
+  }
+  return '';
+}
+
+/** The joined text of a message's `text` content blocks, or the string content itself. */
+function contentText(content: JsonValue | undefined): string {
+  const asString = asJsonString(content);
+  if (asString !== undefined) return asString;
+  if (Array.isArray(content)) {
+    const texts: string[] = [];
+    for (const c of content) {
+      const block = asJsonObject(c);
+      if (block && block.type === 'text') {
+        // No type gate on text: the old casts pushed the value raw and join
+        // stringified it; String() keeps that exact behavior.
+        texts.push(block.text === null || block.text === undefined ? '' : String(block.text));
       }
-      return texts.join(' ');
     }
+    return texts.join(' ');
   }
   return '';
 }
@@ -502,32 +524,35 @@ function isCodexTranscript(lines: string[]): boolean {
 }
 
 /** The text of a Codex payload's content blocks of `kind`, joined. */
-function codexText(payload: Record<string, unknown>, kind: 'input_text' | 'output_text'): string {
+function codexText(payload: JsonObject, kind: 'input_text' | 'output_text'): string {
   const content = payload['content'];
   if (!Array.isArray(content)) return '';
   const texts: string[] = [];
   for (const c of content) {
-    if (c && typeof c === 'object' && (c as Record<string, unknown>)['type'] === kind) {
-      texts.push((c as Record<string, string>)['text'] ?? '');
+    const block = asJsonObject(c);
+    if (block && block['type'] === kind) {
+      // Same String() parity as contentText: the old cast pushed the value raw.
+      texts.push(block['text'] === null || block['text'] === undefined ? '' : String(block['text']));
     }
   }
   return texts.join(' ');
 }
 
 /** A Codex tool call, whatever envelope it arrived in. */
-function codexToolUse(p: Record<string, unknown>): ToolUse {
-  const name = typeof p['name'] === 'string' ? p['name'] : String(p['type'] ?? '?');
+function codexToolUse(p: JsonObject): ToolUse {
+  const name = asJsonString(p['name']) ?? String(p['type'] ?? '?');
   // Codex ships arguments three ways: a JSON string (`function_call.arguments`), the raw
   // payload itself (`custom_tool_call.input` — a patch or a script), and an object.
   const raw = p['arguments'] ?? p['input'] ?? p['action'];
-  if (typeof raw === 'string') {
+  const rawString = asJsonString(raw);
+  if (rawString !== undefined) {
     try {
-      const o = JSON.parse(raw);
-      if (o && typeof o === 'object') return { name, summary: summarizeToolInput(o) };
+      const parsed = asJsonObject(JSON.parse(rawString));
+      if (parsed) return { name, summary: summarizeToolInput(parsed) };
     } catch {
       // Not JSON — it is the patch or script text itself, so summarize it directly.
     }
-    const s = raw.replace(/\s+/g, ' ').trim();
+    const s = rawString.replace(/\s+/g, ' ').trim();
     return { name, summary: s.length > 120 ? s.slice(0, 120) + '…' : s };
   }
   return { name, summary: summarizeToolInput(raw) };
@@ -557,8 +582,8 @@ function extractCodexMessages(lines: string[]): ExtractedMessage[] {
   for (const d of parsed) {
     if (!d?.payload) continue;
     if (d.type === 'event_msg' && d.payload['type'] === 'user_message') {
-      const m = d.payload['message'];
-      if (typeof m === 'string' && m.trim()) typed.add(m.trim());
+      const m = asJsonString(d.payload['message']);
+      if (m?.trim()) typed.add(m.trim());
     } else if (d.type === 'response_item' && d.payload['type'] === 'message' && d.payload['role'] === 'user') {
       const t = stripInjected(codexText(d.payload, 'input_text')).trim();
       if (t) userTexts.push(t);
@@ -741,16 +766,14 @@ function annotatePiBranches(messages: ExtractedMessage[], messageLines: number[]
 
 /** Thin projection of extractMessages — same messages, same numbering, no genuine flag. */
 export function getSessionMessages(lines: string[]): SessionMessage[] {
-  return extractMessages(lines).map(({ role, text, index, tools, branch, fork }) => ({
-    role,
-    text,
-    index,
-    tools,
-    // Conditional spreads keep unbranched output free of the keys entirely (the same
+  return extractMessages(lines).map(({ role, text, index, tools, branch, fork }) => {
+    const message: SessionMessage = { role, text, index, tools };
+    // Conditional assignment keeps unbranched output free of the keys entirely (the same
     // no-op purity annotatePiBranches guarantees on ExtractedMessage).
-    ...(branch ? { branch } : {}),
-    ...(fork ? { fork } : {}),
-  }));
+    if (branch) message.branch = branch;
+    if (fork) message.fork = fork;
+    return message;
+  });
 }
 
 /** Max length of each stored closing message (bounds the indexed columns). */
@@ -809,7 +832,12 @@ export function summarizeMessages(messages: ExtractedMessage[]): MessageSummary 
  * synthesis layer (Phase 2) can decide what the open thread is — the last
  * assistant turn alone is often a question or tool call, not an outcome.
  */
-export function closingMessages(lines: string[]): { user: string; assistant: string } {
+export interface ClosingMessages {
+  user: string;
+  assistant: string;
+}
+
+export function closingMessages(lines: string[]): ClosingMessages {
   const summary = summarizeMessages(extractMessages(lines));
   return { user: summary.closingUser, assistant: summary.closingAssistant };
 }

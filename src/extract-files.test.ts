@@ -1,11 +1,12 @@
 import { describe, test, expect } from 'bun:test';
 import { extractFiles, extractFilesRead, MAX_FILES } from './extract-files';
+import type { JsonObject, JsonValue } from './extract-util';
 
-function jsonl(...objs: Record<string, unknown>[]): string[] {
+function jsonl(...objs: JsonObject[]): string[] {
   return objs.map((o) => JSON.stringify(o));
 }
 
-function claudeToolUse(name: string, input: Record<string, unknown>): Record<string, unknown> {
+function claudeToolUse(name: string, input: JsonObject): JsonObject {
   return { type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', name, input }] } };
 }
 
@@ -49,7 +50,7 @@ describe('extractFiles — claude', () => {
 describe('extractFiles — codex', () => {
   // Envelope confirmed against real ~/.codex/sessions logs: a response_item whose
   // payload is a custom_tool_call named apply_patch, with payload.input holding the patch.
-  function applyPatch(input: string): Record<string, unknown> {
+  function applyPatch(input: string): JsonObject {
     return {
       type: 'response_item',
       payload: { type: 'custom_tool_call', status: 'completed', name: 'apply_patch', input },
@@ -88,10 +89,10 @@ describe('extractFiles — codex', () => {
 });
 
 describe('extractFiles — opencode', () => {
-  function ocAssistant(...content: Record<string, unknown>[]): Record<string, unknown> {
+  function ocAssistant(...content: JsonObject[]): JsonObject {
     return { type: 'message', message: { role: 'assistant', content } };
   }
-  function tool(name: string, input: Record<string, unknown>): Record<string, unknown> {
+  function tool(name: string, input: JsonObject): JsonObject {
     return { type: 'tool', tool: name, state: { status: 'completed', input } };
   }
 
@@ -148,7 +149,7 @@ describe('extractFiles — pi', () => {
 });
 
 test('read: claude Read/Grep targets, separate from edited files', () => {
-  const j = (o: unknown): string => JSON.stringify(o);
+  const j = (o: JsonValue): string => JSON.stringify(o);
   const lines = [
     j({
       type: 'assistant',

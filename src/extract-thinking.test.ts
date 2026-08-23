@@ -1,7 +1,8 @@
 import { test, expect } from 'bun:test';
 import { extractThinking } from './extract-thinking';
+import type { JsonValue } from './extract-util';
 
-const j = (o: unknown): string => JSON.stringify(o);
+const j = (o: JsonValue): string => JSON.stringify(o);
 
 test('claude: collects thinking block text', () => {
   const lines = [
