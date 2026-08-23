@@ -32,7 +32,12 @@ const SPREAD = 'Never leave a feature flag switched on after the rollout finishe
 
 let tmp: string;
 let repo: string;
-let paths: Record<'s1' | 's2' | 's3', string>;
+interface StreamPaths {
+  s1: string;
+  s2: string;
+  s3: string;
+}
+let paths: StreamPaths;
 
 let spreadTmp: string;
 let spreadRepoC: string;
@@ -42,6 +47,7 @@ function capture(argv: string[]): Promise<{ stdout: string; stderr: string }> {
 }
 
 function batchOf(result: { stdout: string }): MemoryRecord[] {
+  // SAFETY: result.stdout is the `mine --json` batch printed by this test process.
   return JSON.parse(result.stdout) as MemoryRecord[];
 }
 

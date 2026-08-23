@@ -238,13 +238,14 @@ export function classifyRecurrence(
         break;
       }
     }
-    repeats.push({
+    const repeat: RecurrenceRepeat = {
       cluster,
       sessions: cluster.evidence.sessions,
       firstDate: cluster.evidence.firstSeen,
       latestDate: cluster.evidence.lastSeen,
-      ...(candidateId ? { candidateId } : {}),
-    });
+    };
+    if (candidateId) repeat.candidateId = candidateId;
+    repeats.push(repeat);
   }
 
   const byCountThenId = <T extends { sessions: string[]; cluster: MemoryRecord }>(a: T, b: T): number =>

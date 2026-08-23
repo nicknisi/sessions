@@ -31,6 +31,8 @@ import { Database } from 'bun:sqlite';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
+import { z } from 'zod';
+
 import { getPiSessionsDir } from '../paths';
 import { collapseHome, claudeHome, projectsDir, projectSlug, statementsIn } from './documented';
 import { createContainerResolver, MAX_TEXT_LENGTH, MIN_TEXT_LENGTH } from './mine';
@@ -121,9 +123,10 @@ const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
  * dropped rather than carried into evidence, which validates dates strictly
  * (src/memory/record.ts).
  */
-function asDate(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined;
-  const day = value.slice(0, 10);
+function asDate(value: SqlColumnValue): string | undefined {
+  const parsed = z.string().safeParse(value);
+  if (!parsed.success) return undefined;
+  const day = parsed.data.slice(0, 10);
   return ISO_DATE.test(day) ? day : undefined;
 }
 
@@ -138,13 +141,16 @@ function latestDate(dates: (string | undefined)[]): string | null {
 
 // ——— pi-hermes ———
 
+/** What SQLite's dynamic typing can hand back for a column. */
+type SqlColumnValue = string | number | bigint | null | Uint8Array;
+
 interface HermesRow {
   project: string | null;
   target: string;
   category: string | null;
   content: string;
-  created: unknown;
-  last_referenced: unknown;
+  created: SqlColumnValue;
+  last_referenced: SqlColumnValue;
 }
 
 /**
@@ -242,7 +248,13 @@ function hermesMdKind(file: string): MemoryKind {
   return file === 'failures.md' ? 'instruction' : 'information';
 }
 
-function collectHermes(): { stores: AgentStore[]; entries: AgentMemoryEntry[] } {
+/** Everything discovered from one agent's memory world. */
+interface AgentCollection {
+  stores: AgentStore[];
+  entries: AgentMemoryEntry[];
+}
+
+function collectHermes(): AgentCollection {
   const dir = piHermesDir();
   const rows = readHermesDb(dir);
 
@@ -323,13 +335,18 @@ function readStatements(path: string): string[] {
   }
 }
 
+interface FileStoreResult {
+  store: AgentStore | null;
+  entries: AgentMemoryEntry[];
+}
+
 function fileStore(
   id: string,
   path: string,
   description: string,
   scope: MemoryScope,
   durable: boolean,
-): { store: AgentStore | null; entries: AgentMemoryEntry[] } {
+): FileStoreResult {
   if (!existsSync(path)) return { store: null, entries: [] };
   const statements = readStatements(path);
   if (statements.length === 0) return { store: null, entries: [] };
@@ -356,10 +373,10 @@ function fileStore(
   };
 }
 
-function collectClaude(cwd: string): { stores: AgentStore[]; entries: AgentMemoryEntry[] } {
+function collectClaude(cwd: string): AgentCollection {
   const stores: AgentStore[] = [];
   const entries: AgentMemoryEntry[] = [];
-  const push = (result: { store: AgentStore | null; entries: AgentMemoryEntry[] }): void => {
+  const push = (result: FileStoreResult): void => {
     if (result.store) stores.push(result.store);
     entries.push(...result.entries);
   };
@@ -493,10 +510,11 @@ export function parseCodexRule(line: string): { text: string; decision: 'allow' 
   if (!match) return null;
   const tokens = [...match[1]!.matchAll(/"((?:[^"\\]|\\.)*)"/g)].map((m) => m[1]);
   if (tokens.length === 0) return null;
+  // SAFETY: CODEX_RULE's second group is the literal alternation (allow|deny).
   return { text: `codex ${match[2]}: ${tokens.join(' ')}`, decision: match[2] as 'allow' | 'deny' };
 }
 
-function collectCodex(): { stores: AgentStore[]; entries: AgentMemoryEntry[] } {
+function collectCodex(): AgentCollection {
   const stores: AgentStore[] = [];
   const entries: AgentMemoryEntry[] = [];
   const home = codexHome();
@@ -580,7 +598,7 @@ function collectCodex(): { stores: AgentStore[]; entries: AgentMemoryEntry[] } {
 // ——— assembly ———
 
 /** Every store and entry visible from `cwd`, sorted deterministically. */
-export function collectAgentMemory(cwd: string): { stores: AgentStore[]; entries: AgentMemoryEntry[] } {
+export function collectAgentMemory(cwd: string): AgentCollection {
   const families = [collectHermes(), collectClaude(cwd), collectCodex()];
   const stores = families.flatMap((f) => f.stores);
   const entries = families.flatMap((f) => f.entries);
@@ -699,10 +717,12 @@ export function splitEntryToBand(text: string): SplitResult {
 }
 
 /** Entries whose text passes the content gate, and the ones it refuses, with findings. */
-export function splitByScan(entries: AgentMemoryEntry[]): {
+interface ScanSplit {
   clean: AgentMemoryEntry[];
   flagged: { entry: AgentMemoryEntry; findings: ScanFinding[] }[];
-} {
+}
+
+export function splitByScan(entries: AgentMemoryEntry[]): ScanSplit {
   const clean: AgentMemoryEntry[] = [];
   const flagged: { entry: AgentMemoryEntry; findings: ScanFinding[] }[] = [];
   for (const entry of entries) {

@@ -22,6 +22,17 @@ import { getMemoryDb, listMemories, setAlwaysOn, setScope, setState, upsertCandi
 import type { MemoryRecord } from './types';
 import { captureStreams, closeDatabases, makeTmp, setMemoryEnv, userTurn, writeSession } from './fixtures';
 
+// The CLI's --json envelope is the contract under test; capture() returns exactly
+// what the command printed, so the assertion restates that contract, not a guess.
+// SAFETY: stdout is the JSON the memory CLI just printed in this test process.
+const parseJson = <T>(stdout: string): T => JSON.parse(stdout) as T;
+
+/** The `report --json` fields these tests read. */
+interface RecurrenceReportJson {
+  violations: { memory: { id: string }; sessions: string[]; latestDate: string }[];
+  repeats: { cluster: { text: string } }[];
+}
+
 const FACT = 'Always run the whole test suite before you tell me a change is finished';
 
 let tmp: string;
@@ -112,7 +123,7 @@ describe('applyPersistedStates', () => {
 
   test('field order survives the overlay, which the determinism check compares', () => {
     const merged = applyPersistedStates([mined], new Map([[mined.id, { state: 'rejected', snoozedUntil: null }]]));
-    expect(Object.keys(merged[0] as object)).toEqual(Object.keys(mined as object));
+    expect(Object.keys(merged[0]!)).toEqual(Object.keys(mined));
   });
 });
 
@@ -128,17 +139,17 @@ describe('memory mine', () => {
     // rather than re-presented as a fresh candidate on every run. The row itself
     // survives — durability.test.ts asserts that a rejected memory keeps receiving
     // evidence refreshes — so only the batch narrows.
-    const first = JSON.parse((await capture(['mine', '--repo', repo, '--json'])).stdout) as MemoryRecord[];
+    const first = parseJson<MemoryRecord[]>((await capture(['mine', '--repo', repo, '--json'])).stdout);
     const mined = first.find((r) => r.text === FACT);
     expect(mined).toBeDefined();
     expect(mined!.state).toBe('candidate');
 
     setState(mined!.id, 'approved');
-    const second = JSON.parse((await capture(['mine', '--repo', repo, '--json'])).stdout) as MemoryRecord[];
+    const second = parseJson<MemoryRecord[]>((await capture(['mine', '--repo', repo, '--json'])).stdout);
     expect(second.find((r) => r.id === mined!.id)!.state).toBe('approved');
 
     setState(mined!.id, 'rejected');
-    const third = JSON.parse((await capture(['mine', '--repo', repo, '--json'])).stdout) as MemoryRecord[];
+    const third = parseJson<MemoryRecord[]>((await capture(['mine', '--repo', repo, '--json'])).stdout);
     expect(third.find((r) => r.id === mined!.id)).toBeUndefined();
     expect(listMemories().find((r) => r.id === mined!.id)!.state).toBe('rejected');
   });
@@ -177,7 +188,7 @@ describe('memory pending', () => {
   test('the count is the true total and the preview is capped, which is the whole point', async () => {
     const all = Array.from({ length: PENDING_PREVIEW + 2 }, (_, i) => candidate(i));
     upsertCandidates(all);
-    const batch = JSON.parse((await capture(['pending', '--json'])).stdout) as PendingBatch;
+    const batch = parseJson<PendingBatch>((await capture(['pending', '--json'])).stdout);
     expect(batch.count).toBe(PENDING_PREVIEW + 2);
     expect(batch.preview).toHaveLength(PENDING_PREVIEW);
     expect(batch.count).not.toBe(batch.preview.length);
@@ -188,7 +199,7 @@ describe('memory pending', () => {
     upsertCandidates([pendingOne!, approved!, rejected!]);
     setState(approved!.id, 'approved');
     setState(rejected!.id, 'rejected');
-    const batch = JSON.parse((await capture(['pending', '--json'])).stdout) as PendingBatch;
+    const batch = parseJson<PendingBatch>((await capture(['pending', '--json'])).stdout);
     expect(batch.count).toBe(1);
     expect(batch.preview[0]!.id).toBe(pendingOne!.id);
   });
@@ -249,10 +260,7 @@ describe('memory report', () => {
     upsertCandidates([memory]);
     setState(memory.id, 'approved');
 
-    const json = JSON.parse((await capture(['report', '--repo', repo, '--json'])).stdout) as {
-      violations: { memory: { id: string }; sessions: string[]; latestDate: string }[];
-      repeats: unknown[];
-    };
+    const json = parseJson<RecurrenceReportJson>((await capture(['report', '--repo', repo, '--json'])).stdout);
     const violation = json.violations.find((v) => v.memory.id === memory.id);
     expect(violation).toBeDefined();
     expect(violation!.sessions.length).toBeGreaterThanOrEqual(2);
@@ -266,10 +274,7 @@ describe('memory report', () => {
 
   test('an untriaged repeat shows under REPEATS, and a quiet corpus reports none', async () => {
     getMemoryDb().run('DELETE FROM memory');
-    const json = JSON.parse((await capture(['report', '--repo', repo, '--json'])).stdout) as {
-      violations: unknown[];
-      repeats: { cluster: { text: string } }[];
-    };
+    const json = parseJson<RecurrenceReportJson>((await capture(['report', '--repo', repo, '--json'])).stdout);
     expect(json.violations).toEqual([]);
     expect(json.repeats.some((r) => r.cluster.text === RECURRING)).toBe(true);
   });

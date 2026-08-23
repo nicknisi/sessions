@@ -169,8 +169,11 @@ function firstIssue(error: z.ZodError): string {
  * `fingerprint(normalizeText(text))` forever, so identity is RECOMPUTED rather than
  * trusted. This is cheap — one sha256 per memory — and it is the whole value of a
  * content-addressed id.
+ *
+ * The parameter is deliberately generic: this is the boundary validator, and a
+ * bundle from another machine can be anything until the schema rules on it.
  */
-export function fromPortable(bundle: unknown): PortableMemory[] {
+export function fromPortable<T>(bundle: T): PortableMemory[] {
   const parsed = bundleSchema.safeParse(bundle);
   if (!parsed.success) throw new PortableFormatError(firstIssue(parsed.error));
   for (const memory of parsed.data.memories) {

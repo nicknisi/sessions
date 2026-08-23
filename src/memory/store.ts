@@ -11,6 +11,7 @@
 
 import { Database } from 'bun:sqlite';
 import { mkdirSync } from 'node:fs';
+import { z } from 'zod';
 import { getDataDir, getMemoryDbPath } from '../paths';
 import { unionEvidence } from './record';
 import {
@@ -165,25 +166,27 @@ const EMPTY_EVIDENCE: MemoryEvidence = { distinctPhrasings: 0, sessions: [], fir
  * lie the type system cannot check — `JSON.parse` happily returns a number or null for a
  * hand-edited column, and `unionEvidence` would then throw on `.sessions` while merging.
  */
+// Field-degrading on purpose: a hand-edited column loses only the field that
+// fails to parse, not the whole blob. (zod numbers are finite by default.)
+const evidenceSchema = z.object({
+  distinctPhrasings: z.number().catch(0),
+  sessions: z.array(z.string()).catch([]),
+  firstSeen: z.string().catch(''),
+  lastSeen: z.string().catch(''),
+});
+
 function parseEvidence(raw: string): MemoryEvidence {
-  let parsed: unknown;
   try {
-    parsed = JSON.parse(raw);
+    return evidenceSchema.parse(JSON.parse(raw));
   } catch {
     return EMPTY_EVIDENCE;
   }
-  if (!parsed || typeof parsed !== 'object') return EMPTY_EVIDENCE;
-  const e = parsed as Partial<MemoryEvidence>;
-  return {
-    distinctPhrasings: typeof e.distinctPhrasings === 'number' ? e.distinctPhrasings : 0,
-    sessions: Array.isArray(e.sessions) ? e.sessions : [],
-    firstSeen: typeof e.firstSeen === 'string' ? e.firstSeen : '',
-    lastSeen: typeof e.lastSeen === 'string' ? e.lastSeen : '',
-  };
 }
 
 function rowToRecord(row: MemoryRow): MemoryRecord {
   const evidence = parseEvidence(row.evidence);
+  // SAFETY: kind/scope_type/state are written only by upsertMemory from
+  // already-typed MemoryRecord fields, so the columns hold the union members.
   return {
     v: row.v,
     id: row.id,
@@ -329,7 +332,10 @@ export function getPersistedStates(ids: string[]): Map<string, PersistedState> {
         `SELECT id, state, snoozed_until FROM memory WHERE id IN (${chunk.map(() => '?').join(',')})`,
       )
       .all(...chunk);
-    for (const row of rows) out.set(row.id, { state: row.state as MemoryState, snoozedUntil: row.snoozed_until });
+    for (const row of rows) {
+      // SAFETY: the state column is written only from MemoryState values by this store.
+      out.set(row.id, { state: row.state as MemoryState, snoozedUntil: row.snoozed_until });
+    }
   }
   return out;
 }

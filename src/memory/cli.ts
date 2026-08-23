@@ -392,11 +392,11 @@ export const IMPORT_SOURCES = ['pi-hermes', 'claude', 'codex', 'all'] as const;
 export type ImportSource = (typeof IMPORT_SOURCES)[number];
 
 /** ImportSource -> the agent family its entries carry. 'all' never reaches this map. */
-const SOURCE_AGENT: Record<Exclude<ImportSource, 'all'>, SourceAgent> = {
+const SOURCE_AGENT = {
   'pi-hermes': 'pi',
   claude: 'claude',
   codex: 'codex',
-};
+} satisfies Record<Exclude<ImportSource, 'all'>, SourceAgent>;
 
 export interface ImportArgs {
   /** Path to a bundle written by `memory export`. */
@@ -427,10 +427,12 @@ export function parseImportArgs(argv: string[]): ImportArgs {
     if (a === '--from') {
       const value = argv[++i];
       if (!value) throw new UsageError(`--from requires a source (${IMPORT_SOURCES.join(', ')})`);
-      if (!(IMPORT_SOURCES as readonly string[]).includes(value)) {
+      const sources: readonly string[] = IMPORT_SOURCES;
+      if (!sources.includes(value)) {
         throw new UsageError(`--from only accepts ${IMPORT_SOURCES.join(', ')}, got: ${value}`);
       }
       if (args.from !== undefined) throw new UsageError('--from was given twice');
+      // SAFETY: the includes() membership test above proves value is one of IMPORT_SOURCES.
       args.from = value as ImportSource;
     } else if (a === '--repo') {
       const value = argv[++i];
@@ -954,8 +956,8 @@ function runTriage(action: TriageAction, argv: string[]): void {
 }
 
 /** The message of a thrown value, without assuming it is an Error. */
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+function errorMessage(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause);
 }
 
 /**
@@ -1045,33 +1047,33 @@ function runImportFrom(source: ImportSource, repo: string | undefined): void {
   // boundaries. Splitting rather than skipping because pi-hermes consolidates many
   // facts into one ~1,100-char row — a hard skip would import nothing from the
   // store this flag exists for. See splitEntryToBand (src/memory/sources.ts).
-  interface Shaped {
+  interface BandedEntry {
     kind: MemoryKind;
     scope: MemoryScope;
     text: string;
     created?: string;
     lastUpdated?: string;
   }
-  const shaped: Shaped[] = [];
+  const banded: BandedEntry[] = [];
   let skippedLong = 0;
   let skippedShort = 0;
   for (const e of selected) {
     if (e.text.length >= MIN_TEXT_LENGTH && e.text.length <= MAX_TEXT_LENGTH) {
-      shaped.push(e);
+      banded.push(e);
       continue;
     }
     const split = splitEntryToBand(e.text);
     skippedLong += split.skippedLong;
     skippedShort += split.skippedShort;
-    for (const text of split.pieces) shaped.push({ ...e, text });
+    for (const text of split.pieces) banded.push({ ...e, text });
   }
 
   // The scan gate, same shape as the bundle path above: another tool's text is the
   // injection vector src/memory/scan.ts exists for, and a flagged piece is refused
   // LOUDLY rather than dropped, because a silent drop reads as a successful import.
-  const admitted: Shaped[] = [];
+  const admitted: BandedEntry[] = [];
   const flagged: { text: string; findings: ScanFinding[] }[] = [];
-  for (const s of shaped) {
+  for (const s of banded) {
     const findings = scanMemoryText(s.text);
     if (findings.length > 0) flagged.push({ text: s.text, findings });
     else admitted.push(s);

@@ -150,6 +150,7 @@ describe('the serve-side backstop', () => {
 
     const mcp = await import('../mcp');
     const result = await mcp.runGetMemory({ cwd: '/repos/anywhere' });
+    // SAFETY: structuredContent is the get_memory payload contract the test asserts.
     const payload = result.structuredContent as { results: unknown[]; count: number; alwaysOnBudget?: string };
     // Served in FULL: truncating a standing constraint is the exact silent
     // suppression the flag exists to prevent. The note is the correction path.
@@ -162,6 +163,7 @@ describe('the serve-side backstop', () => {
     approve(id, { alwaysOn: true });
     const mcp = await import('../mcp');
     const result = await mcp.runGetMemory({ cwd: '/repos/anywhere' });
+    // SAFETY: structuredContent is the get_memory payload contract the test asserts.
     expect((result.structuredContent as { alwaysOnBudget?: string }).alwaysOnBudget).toBeUndefined();
   });
 });

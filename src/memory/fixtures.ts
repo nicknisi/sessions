@@ -56,12 +56,14 @@ export async function captureStreams(run: () => Promise<void> | void): Promise<{
   const realErr = process.stderr.write;
   const sink =
     (into: string[]) =>
-    (chunk: unknown, cb?: unknown): boolean => {
+    (chunk: string | Uint8Array, cb?: () => void): boolean => {
       into.push(String(chunk));
-      if (typeof cb === 'function') (cb as () => void)();
+      cb?.();
       return true;
     };
+  // SAFETY: the stub implements only the (chunk, cb) overload the CLIs under test use.
   process.stdout.write = sink(out) as typeof process.stdout.write;
+  // SAFETY: same stub contract as stdout above.
   process.stderr.write = sink(err) as typeof process.stderr.write;
   try {
     await run();
@@ -73,7 +75,7 @@ export async function captureStreams(run: () => Promise<void> | void): Promise<{
 }
 
 /** A genuine typed human turn: `promptSource: 'typed'` is what parser.ts requires. */
-export function userTurn(text: string, timestamp: string): Record<string, unknown> {
+export function userTurn(text: string, timestamp: string) {
   return {
     type: 'user',
     timestamp,
@@ -84,7 +86,7 @@ export function userTurn(text: string, timestamp: string): Record<string, unknow
 
 /** A harness/skill injection: present-but-null promptSource, so parser.ts rejects it
  *  and it never reaches message_fts. */
-export function injectedTurn(text: string, timestamp: string): Record<string, unknown> {
+export function injectedTurn(text: string, timestamp: string) {
   return {
     type: 'user',
     timestamp,
@@ -93,7 +95,7 @@ export function injectedTurn(text: string, timestamp: string): Record<string, un
   };
 }
 
-export function assistantTurn(text: string, timestamp: string): Record<string, unknown> {
+export function assistantTurn(text: string, timestamp: string) {
   return {
     type: 'assistant',
     timestamp,
@@ -101,8 +103,13 @@ export function assistantTurn(text: string, timestamp: string): Record<string, u
   };
 }
 
+type JsonValue = string | number | boolean | null | JsonValue[] | JsonObject;
+interface JsonObject {
+  [key: string]: JsonValue;
+}
+
 /** Write a Claude transcript at <claudeDir>/proj/<id>.jsonl with `cwd` on every line. */
-export function writeSession(tmp: string, id: string, cwd: string, records: Record<string, unknown>[]): string {
+export function writeSession(tmp: string, id: string, cwd: string, records: JsonObject[]): string {
   const dir = join(claudeDir(tmp), 'proj');
   mkdirSync(dir, { recursive: true });
   const lines = records.map((r) => JSON.stringify({ ...r, cwd })).join('\n');

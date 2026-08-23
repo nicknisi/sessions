@@ -20,6 +20,7 @@ let originalCwd: string;
 /** path -> content, for every file in the tree. Compares presence AND bytes. */
 function snapshot(root: string): Map<string, string> {
   const out = new Map<string, string>();
+  // SAFETY: no encoding option is passed, so readdirSync yields path strings.
   for (const rel of readdirSync(root, { recursive: true }) as string[]) {
     const full = join(root, rel);
     if (statSync(full).isDirectory()) continue;

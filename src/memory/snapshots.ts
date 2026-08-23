@@ -11,6 +11,8 @@
 
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { z } from 'zod';
+
 import type { RecurrenceTrend, RecurrenceViolation } from './recurrence';
 
 export const SNAPSHOT_FILENAME = 'memory-recurrence-snapshots.jsonl';
@@ -26,6 +28,13 @@ export interface RecurrenceSnapshot {
   scope: string;
   counts: Record<string, number>;
 }
+
+const snapshotSchema = z.object({
+  v: z.literal(1),
+  date: z.string(),
+  scope: z.string(),
+  counts: z.record(z.string(), z.number()),
+});
 
 export function snapshotPath(dir: string): string {
   return join(dir, SNAPSHOT_FILENAME);
@@ -43,8 +52,8 @@ export function scopeLabel(scope: { repo?: string }): string {
  * carries `evidence.sessions` and no per-session dates, so sessions are the only
  * per-occurrence measure available.
  */
-export function snapshotCounts(violations: RecurrenceViolation[]): Record<string, number> {
-  const counts: Record<string, number> = {};
+export function snapshotCounts(violations: RecurrenceViolation[]): RecurrenceSnapshot['counts'] {
+  const counts: RecurrenceSnapshot['counts'] = {};
   for (const v of violations) counts[v.memory.id] = v.sessions.length;
   return counts;
 }
@@ -63,9 +72,7 @@ export function readSnapshots(dir: string): RecurrenceSnapshot[] {
   for (const line of readFileSync(path, 'utf-8').split('\n')) {
     if (!line.trim()) continue;
     try {
-      const parsed = JSON.parse(line) as RecurrenceSnapshot;
-      if (typeof parsed.counts !== 'object' || parsed.counts === null) throw new Error('no counts object');
-      snapshots.push(parsed);
+      snapshots.push(snapshotSchema.parse(JSON.parse(line)));
     } catch {
       process.stderr.write(`  skipping corrupt snapshot line in ${SNAPSHOT_FILENAME}: ${line.slice(0, 60)}\n`);
     }

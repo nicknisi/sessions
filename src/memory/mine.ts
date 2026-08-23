@@ -120,12 +120,12 @@ export const INTERRUPTION_MATCH = INTERRUPTION_TERMS.join(' OR ');
  * matters here is the migration order", while `why`/`should` cannot lead an imperative
  * and `describe`/`explain`/`walk me through` request output rather than state anything.
  */
-const QUESTION_SHAPED =
+const QUESTION_PATTERN =
   /(\?\s*$)|^(why|should|shall|would|could|can|do|does|did|is|are|was|were|describe|explain|walk me through)\b/i;
 
 /** True when a turn reads as a question or a request for output rather than a claim. */
-export function isQuestionShaped(text: string): boolean {
-  return QUESTION_SHAPED.test(text.trim());
+export function readsAsQuestion(text: string): boolean {
+  return QUESTION_PATTERN.test(text.trim());
 }
 
 export interface MineOptions {
@@ -223,10 +223,13 @@ export function createContainerResolver(
  * key, so `mine({ repo: <linked worktree> })` and `mine({ repo: <main worktree> })`
  * mine the same set.
  */
-export function repoScope(
-  repo: string,
-  resolve: (cwd: string) => RepoInfo | null = resolveRepo,
-): { container: string; roots: string[] } {
+/** A repo's canonical container key plus every path (main + worktrees) that maps to it. */
+export interface RepoScopeResult {
+  container: string;
+  roots: string[];
+}
+
+export function repoScope(repo: string, resolve: (cwd: string) => RepoInfo | null = resolveRepo): RepoScopeResult {
   let info: RepoInfo | null = null;
   try {
     info = resolve(repo);
@@ -275,7 +278,13 @@ interface Cluster {
 }
 
 /** The cwd predicate for a repo scope, plus the container every row must resolve to. */
-function scopeClause(repo: string | undefined): { container?: string; clause?: string; params: string[] } {
+interface ScopeSql {
+  container?: string;
+  clause?: string;
+  params: string[];
+}
+
+function scopeClause(repo: string | undefined): ScopeSql {
   if (!repo) return { params: [] };
   const scope = repoScope(repo);
   const params: string[] = [];
@@ -398,7 +407,7 @@ export async function mine(opts: MineOptions = {}): Promise<MemoryRecord[]> {
     // turn clears the raw floor in SQL and falls under it once collapsed.
     if (text.length < MIN_TEXT_LENGTH || text.length > MAX_TEXT_LENGTH) return null;
     // After normalization, so the `?` a raw turn ends with is still there to see.
-    if (isQuestionShaped(text)) return null;
+    if (readsAsQuestion(text)) return null;
     // Secret material, hijack phrasing, and invisible characters never become
     // candidates — not even flagged ones, because the batch is handed verbatim to
     // the triage agent and the injection case is an attack on exactly that reader.

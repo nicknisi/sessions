@@ -77,8 +77,23 @@ function seedStoredMemory(text: string, approved = true): string {
   return record.id;
 }
 
-function parse(res: { content: { text: string }[] }): Record<string, unknown> {
-  return JSON.parse(res.content[0]!.text);
+/** The review payload's memory entries, as far as these tests read them. */
+interface ReviewedMemoryJson {
+  id: string;
+  agent: string;
+  store: string;
+  scope: { type: string; key: string };
+  kind: string;
+  durable: boolean;
+  text: string;
+  similarTo?: string[];
+}
+
+function parse<T>(res: { content: { text: string }[] }): T {
+  // SAFETY: res.content[0].text is the tool's JSON payload — the in-process MCP
+  // harness carries the same envelope the wire would, and the payload contract is
+  // what each call site asserts.
+  return JSON.parse(res.content[0]!.text) as T;
 }
 
 describe('runGetMemorySources', () => {
@@ -96,10 +111,10 @@ describe('runGetMemorySources', () => {
     writeFileSync(join(tmp, 'CLAUDE.md'), '- A global instruction of sufficient length.\n');
 
     const res = await mcp.runGetMemorySources({ cwd: '/nowhere' });
-    const payload = parse(res) as {
+    const payload = parse<{
       sources: { id: string; agent: string; entries: number; durable: number; lastUpdated: string | null }[];
       count: number;
-    };
+    }>(res);
     expect(payload.count).toBe(3);
     expect(payload.sources.map((s) => s.id)).toEqual(['claude:global', 'codex:rules:default.rules', 'pi-hermes:db']);
     const hermes = payload.sources.find((s) => s.id === 'pi-hermes:db')!;
@@ -122,12 +137,7 @@ describe('runReviewAgentMemories', () => {
       { project: 'coherence', category: 'insight', content: 'This repo branches off canary, not main' },
     ]);
     const res = await mcp.runReviewAgentMemories({ cwd: '/nowhere' });
-    const payload = parse(res) as {
-      memories: Record<string, unknown>[];
-      count: number;
-      total: number;
-      truncated: boolean;
-    };
+    const payload = parse<{ memories: ReviewedMemoryJson[]; count: number; total: number; truncated: boolean }>(res);
     expect(payload.count).toBe(2);
     expect(payload.total).toBe(2);
     expect(payload.truncated).toBe(false);
@@ -150,7 +160,7 @@ describe('runReviewAgentMemories', () => {
     writeHermesDb([{ content: 'A pi-side fact of sufficient length to matter here' }]);
     writeFileSync(join(tmp, 'CLAUDE.md'), '- A claude-side instruction of sufficient length.\n');
     const res = await mcp.runReviewAgentMemories({ cwd: '/nowhere', agent: 'claude' });
-    const payload = parse(res) as { memories: { agent: string; text: string }[] };
+    const payload = parse<{ memories: ReviewedMemoryJson[] }>(res);
     expect(payload.memories.map((m) => m.text)).toEqual(['A claude-side instruction of sufficient length.']);
   });
 
@@ -160,7 +170,7 @@ describe('runReviewAgentMemories', () => {
       { content: 'Never commit directly to main on any repository' },
     ]);
     const narrowed = await mcp.runReviewAgentMemories({ cwd: '/nowhere', topic: 'run the migrations' });
-    const payload = parse(narrowed) as { memories: { text: string }[]; total: number };
+    const payload = parse<{ memories: ReviewedMemoryJson[]; total: number }>(narrowed);
     expect(payload.memories.map((m) => m.text)).toEqual(['Always run the migrations before starting the dev server']);
     expect(payload.total).toBe(1);
 
@@ -175,10 +185,7 @@ describe('runReviewAgentMemories', () => {
       { content: 'A perfectly clean fact of sufficient length to keep here' },
     ]);
     const res = await mcp.runReviewAgentMemories({ cwd: '/nowhere' });
-    const payload = parse(res) as {
-      memories: { text: string }[];
-      withheld?: { count: number; note: string };
-    };
+    const payload = parse<{ memories: ReviewedMemoryJson[]; withheld?: { count: number; note: string } }>(res);
     expect(payload.memories.map((m) => m.text)).toEqual(['A perfectly clean fact of sufficient length to keep here']);
     expect(payload.withheld).toMatchObject({ count: 1 });
     expect(payload.withheld!.note).toContain('prompt-injection');
@@ -195,7 +202,7 @@ describe('runReviewAgentMemories', () => {
       { content: 'An unrelated fact about formatting code with tabs' },
     ]);
     const res = await mcp.runReviewAgentMemories({ cwd: '/nowhere' });
-    const payload = parse(res) as { memories: { text: string; similarTo?: string[] }[] };
+    const payload = parse<{ memories: ReviewedMemoryJson[] }>(res);
     const [exact, fuzzy, unrelated] = payload.memories;
     expect(exact!.similarTo).toEqual([storedId]);
     expect(fuzzy!.similarTo).toEqual([storedId]);
@@ -208,7 +215,7 @@ describe('runReviewAgentMemories', () => {
     setState(id, 'rejected');
     writeHermesDb([{ content: 'Never rewrite the lockfile by hand, run the installer' }]);
     const res = await mcp.runReviewAgentMemories({ cwd: '/nowhere' });
-    const payload = parse(res) as { memories: { similarTo?: string[] }[] };
+    const payload = parse<{ memories: ReviewedMemoryJson[] }>(res);
     expect(payload.memories[0]!.similarTo).toBeUndefined();
   });
 
@@ -219,7 +226,7 @@ describe('runReviewAgentMemories', () => {
     );
     writeFileSync(join(tmp, 'CLAUDE.md'), bullets.join('\n') + '\n');
     const res = await mcp.runReviewAgentMemories({ cwd: '/nowhere' });
-    const payload = parse(res) as { memories: unknown[]; count: number; total: number; truncated: boolean };
+    const payload = parse<{ memories: ReviewedMemoryJson[]; count: number; total: number; truncated: boolean }>(res);
     expect(payload.count).toBe(MAX_REVIEW_ENTRIES);
     expect(payload.total).toBe(MAX_REVIEW_ENTRIES + 10);
     expect(payload.truncated).toBe(true);
