@@ -15,60 +15,58 @@
 //   - a recorded cost is trusted only when > 0: a $0 total for real tokens means Pi
 //     had no rate for the model, and passing it through would short-circuit
 //     computeCost and its unpriced-model warning (same split as opencode.ts).
+import { z } from 'zod';
+
 import type { UsageEvent } from './types.ts';
 import { readJsonlLines } from './util.ts';
 import { walkJsonl, type WalkOptions } from './walk.ts';
 import { dedupeEvents } from './claude-code.ts';
 
-interface PiSessionLine {
-  type: 'session';
-  id: string;
-  cwd?: string;
-}
-interface PiUsage {
-  input?: number;
-  output?: number;
-  cacheRead?: number;
-  cacheWrite?: number;
-  cacheWrite1h?: number;
-  cost?: { total?: number };
-}
-interface PiMessageLine {
-  type: 'message';
-  timestamp: string;
+const piSessionLineSchema = z.object({
+  type: z.literal('session'),
+  id: z.string(),
+  cwd: z.string().optional(),
+});
+const piUsageSchema = z.object({
+  input: z.number().optional(),
+  output: z.number().optional(),
+  cacheRead: z.number().optional(),
+  cacheWrite: z.number().optional(),
+  cacheWrite1h: z.number().optional(),
+  cost: z.object({ total: z.number().optional() }).optional(),
+});
+const piMessageLineSchema = z.object({
+  type: z.literal('message'),
+  timestamp: z.string(),
   // Current Pi nests provider/model/usage inside `message`; older logs put them at the top level.
-  message?: { role?: string; provider?: string; model?: string; usage?: PiUsage; responseId?: string };
-  provider?: string;
-  model?: string;
-  usage?: PiUsage;
-}
-interface PiModelChangeLine {
-  type: 'model_change';
-  provider?: string;
-  modelId?: string;
-}
+  message: z
+    .object({
+      role: z.string().optional(),
+      provider: z.string().optional(),
+      model: z.string().optional(),
+      usage: piUsageSchema.optional(),
+      responseId: z.string().optional(),
+    })
+    .optional(),
+  provider: z.string().optional(),
+  model: z.string().optional(),
+  usage: piUsageSchema.optional(),
+});
+const piModelChangeLineSchema = z.object({
+  type: z.literal('model_change'),
+  provider: z.string().optional(),
+  modelId: z.string().optional(),
+});
 // CompactionEntry / BranchSummaryEntry: `usage` is the LLM spend of generating the
 // summary — "included in session token and cost totals" per Pi's session-format doc.
-interface PiSummaryLine {
-  type: 'compaction' | 'branch_summary';
-  timestamp: string;
-  usage?: PiUsage;
-}
+const piSummaryLineSchema = z.object({
+  type: z.enum(['compaction', 'branch_summary']),
+  timestamp: z.string(),
+  usage: piUsageSchema.optional(),
+});
 
-function isSession(v: unknown): v is PiSessionLine {
-  return !!v && typeof v === 'object' && (v as { type?: unknown }).type === 'session';
-}
-function isMessage(v: unknown): v is PiMessageLine {
-  return !!v && typeof v === 'object' && (v as { type?: unknown }).type === 'message';
-}
-function isModelChange(v: unknown): v is PiModelChangeLine {
-  return !!v && typeof v === 'object' && (v as { type?: unknown }).type === 'model_change';
-}
-function isSummary(v: unknown): v is PiSummaryLine {
-  if (!v || typeof v !== 'object') return false;
-  const t = (v as { type?: unknown }).type;
-  return t === 'compaction' || t === 'branch_summary';
-}
+type PiSessionLine = z.infer<typeof piSessionLineSchema>;
+type PiUsage = z.infer<typeof piUsageSchema>;
 
 /** The agent type used for Pi subagent runs. Pi does not record the dispatched
  *  agent's name in the transcript path, so every dispatch shares this label. */
@@ -83,8 +81,10 @@ const SUBAGENT_RUN = new RegExp(
 );
 
 const totalTokens = (u: PiUsage): number => (u.input ?? 0) + (u.output ?? 0) + (u.cacheRead ?? 0) + (u.cacheWrite ?? 0);
+// The schema already proved total is a number when present; a $0 total for real
+// tokens means Pi had no rate for the model (see the header note).
 const recordedCost = (u: PiUsage): number | undefined =>
-  typeof u.cost?.total === 'number' && u.cost.total > 0 ? u.cost.total : undefined;
+  u.cost?.total !== undefined && u.cost.total > 0 ? u.cost.total : undefined;
 
 function toEvent(opts: {
   provider: string;
@@ -98,15 +98,13 @@ function toEvent(opts: {
 }): UsageEvent {
   const { usage } = opts;
   const cost = recordedCost(usage);
-  return {
+  const event: UsageEvent = {
     tool: 'pi',
     provider: opts.provider,
     model: opts.model,
     timestamp: opts.timestamp,
     sessionId: opts.sessionId,
     projectPath: opts.projectPath,
-    ...(opts.dedupKey ? { dedupKey: opts.dedupKey } : {}),
-    ...(opts.agent ? { agent: opts.agent } : {}),
     tokens: {
       input: usage.input ?? 0,
       output: usage.output ?? 0,
@@ -114,8 +112,11 @@ function toEvent(opts: {
       cacheWrite: usage.cacheWrite ?? 0,
       cacheWrite1h: usage.cacheWrite1h ?? 0,
     },
-    ...(cost !== undefined ? { costUSD: cost } : {}),
   };
+  if (opts.dedupKey) event.dedupKey = opts.dedupKey;
+  if (opts.agent) event.agent = opts.agent;
+  if (cost !== undefined) event.costUSD = cost;
+  return event;
 }
 
 export async function parsePi(root: string, opts: WalkOptions = {}): Promise<UsageEvent[]> {
@@ -143,60 +144,65 @@ export async function parsePiFile(path: string): Promise<UsageEvent[]> {
     let curProvider: string | undefined;
     let curModel: string | undefined;
     for await (const line of readJsonlLines(path)) {
-      if (isSession(line)) {
-        session = line;
+      const sessionLine = piSessionLineSchema.safeParse(line);
+      if (sessionLine.success) {
+        session = sessionLine.data;
         continue;
       }
-      if (isModelChange(line)) {
-        if (line.provider) curProvider = line.provider;
-        if (line.modelId) curModel = line.modelId;
+      const modelChange = piModelChangeLineSchema.safeParse(line);
+      if (modelChange.success) {
+        if (modelChange.data.provider) curProvider = modelChange.data.provider;
+        if (modelChange.data.modelId) curModel = modelChange.data.modelId;
         continue;
       }
-      if (isSummary(line)) {
-        const usage = line.usage;
+      const summary = piSummaryLineSchema.safeParse(line);
+      if (summary.success) {
+        const usage = summary.data.usage;
         if (!usage || !curProvider || !curModel || !session) continue;
         if (totalTokens(usage) === 0 && recordedCost(usage) === undefined) continue;
         events.push(
           toEvent({
             provider: curProvider,
             model: curModel,
-            timestamp: line.timestamp,
+            timestamp: summary.data.timestamp,
             sessionId: parentSessionId ?? session.id,
             projectPath: session.cwd,
             usage,
             // Fork/clone copies these entries verbatim (new entry id, same content),
             // so the stable identity is the entry's own timestamp + usage signature.
-            dedupKey: `pi|${line.type}|${line.timestamp}|${totalTokens(usage)}|${usage.cost?.total ?? ''}`,
+            dedupKey: `pi|${summary.data.type}|${summary.data.timestamp}|${totalTokens(usage)}|${usage.cost?.total ?? ''}`,
             agent,
           }),
         );
         continue;
       }
-      if (!isMessage(line)) continue;
-      if (line.message?.role !== 'assistant') continue;
+      const message = piMessageLineSchema.safeParse(line);
+      if (!message.success) continue;
+      const msg = message.data;
+      if (msg.message?.role !== 'assistant') continue;
       // Pi moved provider/model/usage from the top level into `message`.
       // Prefer the nested location; fall back to legacy top-level fields.
-      const provider = line.message?.provider ?? line.provider;
-      const model = line.message?.model ?? line.model;
-      const usage = line.message?.usage ?? line.usage;
+      const provider = msg.message?.provider ?? msg.provider;
+      const model = msg.message?.model ?? msg.model;
+      const usage = msg.message?.usage ?? msg.usage;
       if (!usage || !provider || !model || !session) continue;
       curProvider = provider;
       curModel = model;
       // Aborted/error turns log all-zero usage (and $0); Pi's own accounting skips
       // them, and counting them would inflate message/hour stats for free no-ops.
       if (totalTokens(usage) === 0 && recordedCost(usage) === undefined) continue;
-      const responseId = line.message?.responseId;
+      // One key per API response; the tool prefix keeps Pi keys from ever
+      // colliding with claude-code's `${message.id}|${requestId}` keys.
+      const responseId = msg.message?.responseId;
       events.push(
         toEvent({
           provider,
           model,
-          timestamp: line.timestamp,
+          timestamp: msg.timestamp,
           sessionId: parentSessionId ?? session.id,
           projectPath: session.cwd,
           usage,
-          // One key per API response; the tool prefix keeps Pi keys from ever
-          // colliding with claude-code's `${message.id}|${requestId}` keys.
-          ...(responseId ? { dedupKey: `pi|${responseId}` } : {}),
+          dedupKey: responseId ? `pi|${responseId}` : undefined,
           agent,
         }),
       );

@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, copyFileSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { asJsonObject, type JsonObject } from './extract-util';
 import { getHome } from './paths';
 
 // Where each client actually reads its MCP server list. Earlier versions of setup
@@ -62,7 +63,7 @@ export function detectClients(): McpClient[] {
 }
 
 /** The server entry each client expects. Pi's schema wants an explicit transport. */
-function serverEntry(id: ClientId, command: string): Record<string, unknown> {
+function serverEntry(id: ClientId, command: string): JsonObject {
   if (id === 'pi') return { type: 'stdio', command, args: ARGS };
   return { command, args: ARGS };
 }
@@ -75,7 +76,7 @@ function serverEntry(id: ClientId, command: string): Record<string, unknown> {
  * never replaced by ours.
  */
 export function wireJsonClient(path: string, id: ClientId, command: string): WireResult {
-  let config: Record<string, unknown> = {};
+  let config: JsonObject = {};
 
   if (existsSync(path)) {
     let raw: string;
@@ -85,26 +86,27 @@ export function wireJsonClient(path: string, id: ClientId, command: string): Wir
       return { status: 'failed', reason: `could not read it: ${String(err)}` };
     }
     try {
-      const parsed: unknown = JSON.parse(raw);
-      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      const parsed = asJsonObject(JSON.parse(raw));
+      if (!parsed) {
         return { status: 'refused', reason: 'it is not a JSON object' };
       }
-      config = parsed as Record<string, unknown>;
+      config = parsed;
     } catch {
       return { status: 'refused', reason: 'it is not valid JSON' };
     }
   }
 
-  const existing = config.mcpServers;
-  if (existing !== undefined && (typeof existing !== 'object' || existing === null || Array.isArray(existing))) {
+  const existing = asJsonObject(config.mcpServers);
+  if (config.mcpServers !== undefined && !existing) {
     return { status: 'refused', reason: 'its `mcpServers` is not an object' };
   }
 
-  const servers = (existing ?? {}) as Record<string, unknown>;
+  // asJsonObject detaches the subtree; config.mcpServers is re-attached before write.
+  const servers = existing ?? {};
   const current = servers.sessions;
   // Update the keys we own and keep the rest, the same way the Codex merge does:
   // a `cwd` or `env` the user added is theirs, and a re-run must not eat it.
-  const previous = typeof current === 'object' && current !== null && !Array.isArray(current) ? current : {};
+  const previous = asJsonObject(current) ?? {};
   const entry = { ...previous, ...serverEntry(id, command) };
   if (JSON.stringify(current) === JSON.stringify(entry)) return { status: 'unchanged' };
 
@@ -123,23 +125,24 @@ export function wireJsonClient(path: string, id: ClientId, command: string): Wir
 /** Drop our server from a JSON config, leaving the user's other servers alone. */
 export function unwireJsonClient(path: string): WireResult {
   if (!existsSync(path)) return { status: 'unchanged' };
-  let config: Record<string, unknown>;
+  let config: JsonObject;
   try {
-    const parsed: unknown = JSON.parse(readFileSync(path, 'utf-8'));
-    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    const parsed = asJsonObject(JSON.parse(readFileSync(path, 'utf-8')));
+    if (!parsed) {
       return { status: 'refused', reason: 'it is not a JSON object' };
     }
-    config = parsed as Record<string, unknown>;
+    config = parsed;
   } catch {
     return { status: 'refused', reason: 'it is not valid JSON' };
   }
 
-  const servers = config.mcpServers;
-  if (typeof servers !== 'object' || servers === null || Array.isArray(servers)) return { status: 'unchanged' };
-  const map = servers as Record<string, unknown>;
+  const map = asJsonObject(config.mcpServers);
+  if (!map) return { status: 'unchanged' };
   if (!('sessions' in map)) return { status: 'unchanged' };
 
   delete map.sessions;
+  // asJsonObject detaches the subtree — re-attach before serializing.
+  config.mcpServers = map;
   try {
     writeFileSync(path, JSON.stringify(config, null, 2) + '\n');
   } catch (err) {
@@ -224,7 +227,7 @@ function parseHeader(line: string): TomlHeader | null {
  * merge honest: inside a multi-line string or array, a line starting with `[`
  * is content, not a table header, and mistaking the two rewrites the wrong span.
  */
-function unsupportedShape(source: string, lines: string[]): string | null {
+function unmergeableToml(source: string, lines: string[]): string | null {
   if (/"""|'''/.test(source)) return 'it contains a multi-line string';
   for (const line of lines) {
     // An assignment whose array opens but does not close on the same line.
@@ -268,7 +271,7 @@ export type TomlMerge = { text: string; changed: boolean } | { refused: string }
 export function mergeCodexConfig(source: string, command: string): TomlMerge {
   const lines = source.split('\n');
 
-  const unsupported = unsupportedShape(source, lines);
+  const unsupported = unmergeableToml(source, lines);
   if (unsupported) return { refused: unsupported };
 
   const collected = collectHeaders(lines);
@@ -329,7 +332,7 @@ export function mergeCodexConfig(source: string, command: string): TomlMerge {
 export function removeCodexConfig(source: string): TomlMerge {
   const lines = source.split('\n');
 
-  const unsupported = unsupportedShape(source, lines);
+  const unsupported = unmergeableToml(source, lines);
   if (unsupported) return { refused: unsupported };
 
   const collected = collectHeaders(lines);
@@ -423,12 +426,12 @@ function deadConfigPaths(): string[] {
 
 function isOurDeadFile(raw: string): boolean {
   try {
-    const parsed: unknown = JSON.parse(raw);
-    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return false;
+    const parsed = asJsonObject(JSON.parse(raw));
+    if (!parsed) return false;
     const keys = Object.keys(parsed);
     if (keys.length !== 1 || keys[0] !== 'mcpServers') return false;
-    const servers = (parsed as { mcpServers: unknown }).mcpServers;
-    if (typeof servers !== 'object' || servers === null || Array.isArray(servers)) return false;
+    const servers = asJsonObject(parsed.mcpServers);
+    if (!servers) return false;
     const names = Object.keys(servers);
     return names.length === 1 && names[0] === 'sessions';
   } catch {

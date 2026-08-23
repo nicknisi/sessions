@@ -74,7 +74,7 @@ interface Painted {
 /** A 2D context that records instead of rasterizing. `measureText` models a
  *  half-em average advance, which is close enough that wrap and shrink converge
  *  the same way they would on a real face. */
-function makeCtx(): { ctx: Record<string, unknown>; painted: Painted[] } {
+function makeCtx() {
   const painted: Painted[] = [];
   const state = {
     font: '400 16px sans-serif',
@@ -155,8 +155,17 @@ function makeCtx(): { ctx: Record<string, unknown>; painted: Painted[] } {
   return { ctx, painted };
 }
 
+/** The recording 2D context produced by makeCtx. */
+type StubCtx = ReturnType<typeof makeCtx>['ctx'];
+
+/** The only event this harness dispatches: a click carrying its element. */
+interface StubEvent {
+  target: StubEl;
+}
+type StubListener = (e: StubEvent) => void;
+
 class StubEl {
-  listeners: Record<string, ((e: unknown) => void)[]> = {};
+  listeners: Record<string, StubListener[]> = {};
   attrs: Record<string, string> = {};
   props: Record<string, string> = {};
   style = { setProperty: (k: string, v: string) => (this.props[k] = v) };
@@ -164,14 +173,14 @@ class StubEl {
   width = 0;
   height = 0;
   classNames = new Set<string>();
-  ctx: Record<string, unknown> | null = null;
+  ctx: StubCtx | null = null;
   classList = {
     add: (c: string) => this.classNames.add(c),
     remove: (c: string) => this.classNames.delete(c),
     toggle: (c: string, on?: boolean) => (on ? this.classNames.add(c) : this.classNames.delete(c)),
     contains: (c: string) => this.classNames.has(c),
   };
-  addEventListener(ev: string, fn: (e: unknown) => void): void {
+  addEventListener(ev: string, fn: StubListener): void {
     (this.listeners[ev] ??= []).push(fn);
   }
   getAttribute(k: string): string | null {
@@ -180,7 +189,7 @@ class StubEl {
   setAttribute(k: string, v: string): void {
     this.attrs[k] = v;
   }
-  getContext(): Record<string, unknown> | null {
+  getContext(): StubCtx | null {
     return this.ctx;
   }
   toDataURL(): string {
@@ -194,14 +203,16 @@ class StubEl {
   }
 }
 
-function runPage(data: WrappedData): {
+interface StubPage {
   painted: Painted[];
   canvas: StubEl;
   byId: Map<string, StubEl>;
   seg: StubEl[];
   swatches: StubEl[];
   slide: StubEl;
-} {
+}
+
+function runPage(data: WrappedData): StubPage {
   const html = renderWrappedHtml(data);
   const script = /<script>([\s\S]*?)<\/script>/.exec(html);
   if (!script) throw new Error('no inline script found in the wrapped page');

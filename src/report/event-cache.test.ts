@@ -24,8 +24,13 @@ beforeEach(() => {
 
 const CLAUDE: Set<ToolId> = new Set<ToolId>(['claude-code']);
 
+type JsonValue = string | number | boolean | null | JsonValue[] | JsonObject;
+interface JsonObject {
+  [key: string]: JsonValue;
+}
+
 function line(opts: { id: string; input?: number; sessionId?: string; agentId?: string }): string {
-  const rec: Record<string, unknown> = {
+  const rec: JsonObject = {
     type: 'assistant',
     sessionId: opts.sessionId ?? 's1',
     cwd: '/Users/x/Developer/sessions',

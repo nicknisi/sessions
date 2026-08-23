@@ -19,8 +19,9 @@ import { extractFiles, extractFilesRead } from './extract-files';
 import { extractCommands } from './extract-commands';
 import { extractErrors } from './extract-errors';
 import { extractThinking } from './extract-thinking';
+import type { JsonValue } from './extract-util';
 
-const j = (o: unknown): string => JSON.stringify(o);
+const j = (o: JsonValue): string => JSON.stringify(o);
 
 let tmp: string;
 let dbPath: string;

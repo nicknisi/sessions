@@ -46,14 +46,20 @@ export interface WrappedOptions {
   roastRunner?: RoastRunner;
 }
 
-const ROAST_TOOLS: Record<string, RoastToolId> = { claude: 'claude', codex: 'codex', pi: 'pi' };
+interface RoastToolByName {
+  [name: string]: RoastToolId;
+}
+const ROAST_TOOLS: RoastToolByName = { claude: 'claude', codex: 'codex', pi: 'pi' };
 
 export interface WrappedResult {
   htmlPath?: string;
   json: string;
 }
 
-const TOOL_MAP: Record<string, ToolId> = { claude: 'claude-code', codex: 'codex', pi: 'pi', opencode: 'opencode' };
+interface ToolIdByName {
+  [name: string]: ToolId;
+}
+const TOOL_MAP: ToolIdByName = { claude: 'claude-code', codex: 'codex', pi: 'pi', opencode: 'opencode' };
 
 function die(msg: string): never {
   process.stderr.write(`error: ${msg}\n`);

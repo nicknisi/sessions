@@ -67,7 +67,10 @@ const data = {
     flavor: null,
   },
   extras: [],
-} as unknown as WrappedData;
+  longestGap: null,
+  modelsTried: 1,
+  loops: null,
+} satisfies WrappedData;
 
 describe('buildRoastPrompt', () => {
   test('includes stats but never raw transcript text', () => {

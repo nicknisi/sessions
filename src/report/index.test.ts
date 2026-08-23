@@ -36,14 +36,21 @@ const roots = { claudeCode: claudeDir, pi: join(tmp, 'no-pi'), codex: join(tmp, 
 // Separate fixture set for --here: three events across two projects plus one with no cwd.
 const hereClaudeDir = join(tmp, 'claude-here');
 mkdirSync(join(hereClaudeDir, 'proj'), { recursive: true });
-const hereEvent = (sessionId: string, cwd: string | undefined, input: number, output: number) =>
-  JSON.stringify({
+type JsonValue = string | number | boolean | null | JsonValue[] | JsonObject;
+interface JsonObject {
+  [key: string]: JsonValue;
+}
+
+const hereEvent = (sessionId: string, cwd: string | undefined, input: number, output: number) => {
+  const rec: JsonObject = {
     type: 'assistant',
     sessionId,
-    ...(cwd ? { cwd } : {}),
     timestamp: '2026-06-01T14:30:00Z',
     message: { model: 'claude-opus-4-6', usage: { input_tokens: input, output_tokens: output } },
-  }) + '\n';
+  };
+  if (cwd) rec.cwd = cwd;
+  return JSON.stringify(rec) + '\n';
+};
 writeFileSync(
   join(hereClaudeDir, 'proj', 'b.jsonl'),
   hereEvent('s1', '/Users/x/Developer/sessions', 1000, 500) +

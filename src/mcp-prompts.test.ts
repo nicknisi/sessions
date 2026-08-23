@@ -16,7 +16,10 @@ let mcp: typeof import('./mcp');
 /** Sorted, because prompts/list order is not a guarantee worth asserting. */
 const PROMPT_NAMES = ['context', 'recall', 'standup', 'weekly-summary'];
 
-const SKILL_KEYS: Record<string, string> = {
+interface SkillKeyByName {
+  [prompt: string]: string;
+}
+const SKILL_KEYS: SkillKeyByName = {
   standup: 'skills/standup/SKILL.md',
   'weekly-summary': 'skills/weekly-summary/SKILL.md',
   context: 'skills/context/SKILL.md',
@@ -24,7 +27,10 @@ const SKILL_KEYS: Record<string, string> = {
 };
 
 /** Valid arguments per prompt: `recall` requires a topic, the other three take none. */
-const VALID_ARGS: Record<string, Record<string, string>> = {
+interface ValidArgsByName {
+  [prompt: string]: Record<string, string>;
+}
+const VALID_ARGS: ValidArgsByName = {
   standup: {},
   'weekly-summary': {},
   context: {},
@@ -39,6 +45,7 @@ const VALID_ARGS: Record<string, Record<string, string>> = {
  */
 function textOf(content: { type: string }): string {
   if (content.type !== 'text') throw new Error(`expected text content, got ${content.type}`);
+  // SAFETY: the throw above establishes content is the text variant of the union.
   return (content as { type: 'text'; text: string }).text;
 }
 
@@ -87,7 +94,7 @@ describe('prompt surface', () => {
     // their tools already serve every client, and a count would not notice one appearing.
     expect(prompts.map((p) => p.name).sort()).toEqual(PROMPT_NAMES);
     for (const p of prompts) {
-      expect(typeof p.title).toBe('string');
+      expect(p.title).toBeTypeOf('string');
       expect(p.title!.length).toBeGreaterThan(0);
       expect(p.description!.length).toBeGreaterThan(40);
       // The description is lifted out of the skill's frontmatter, so it must not still be

@@ -1,5 +1,5 @@
 import type { Tool } from './types';
-import { tryParse } from './extract-util';
+import { tryParse, asJsonObject, asJsonString } from './extract-util';
 
 /** Total cap on a session's custom context, mirroring MAX_THINKING_LEN — recaps run
  *  ~2k, so 20k is generous while a pathological extension cannot bloat the FTS row. */
@@ -29,24 +29,28 @@ function collect(lines: string[]): string {
     const d = tryParse(line);
     if (!d) continue;
     if (d.type === 'custom') {
-      const data = d.data as Record<string, unknown> | undefined;
-      if (!data || typeof data !== 'object' || Array.isArray(data)) continue;
+      const data = asJsonObject(d.data);
+      if (!data) continue;
       if (d.customType === 'recap') {
-        if (typeof data.summary === 'string') parts.push(data.summary);
+        const summary = asJsonString(data.summary);
+        if (summary !== undefined) parts.push(summary);
       } else if (d.customType === 'web-search-results') {
         const urls = data.urls;
         if (!Array.isArray(urls)) continue;
         for (const u of urls) {
-          if (!u || typeof u !== 'object') continue;
-          const entry = u as Record<string, unknown>;
-          if (typeof entry.title === 'string') parts.push(entry.title);
-          if (typeof entry.content === 'string') parts.push(entry.content.slice(0, MAX_URL_CONTENT_LEN));
+          const entry = asJsonObject(u);
+          if (!entry) continue;
+          const title = asJsonString(entry.title);
+          if (title !== undefined) parts.push(title);
+          const content = asJsonString(entry.content);
+          if (content !== undefined) parts.push(content.slice(0, MAX_URL_CONTENT_LEN));
         }
       }
       // turn-duration and unknown customTypes: excluded (opt-in inclusion).
     } else if (d.type === 'custom_message') {
       // Any customType — bounded by the 20k cap below. Content is a plain string.
-      if (typeof d.content === 'string') parts.push(d.content);
+      const content = asJsonString(d.content);
+      if (content !== undefined) parts.push(content);
     }
   }
   return parts.join('\n').slice(0, MAX_CUSTOM_CONTEXT_LEN);

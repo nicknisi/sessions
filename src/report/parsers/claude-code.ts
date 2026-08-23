@@ -14,45 +14,49 @@
 // split accordingly: parseFile() extracts what one file knows, and
 // resolveAgentTypes() names the dispatches once every file has been seen. The
 // event cache relies on that split, since it parses files one at a time.
+import { z } from 'zod';
+
 import type { UsageEvent } from './types.ts';
 import { readJsonlLines } from './util.ts';
 import { walkJsonl, type WalkOptions } from './walk.ts';
 
-interface ClaudeAssistantLine {
-  type: 'assistant';
-  sessionId?: string;
-  cwd?: string;
-  timestamp?: string;
-  requestId?: string;
-  gitBranch?: string;
-  isSidechain?: boolean;
-  agentId?: string;
-  data?: { agentId?: string };
-  message?: {
-    id?: string;
-    model?: string;
-    usage?: {
-      input_tokens?: number;
-      output_tokens?: number;
-      cache_creation_input_tokens?: number;
-      cache_read_input_tokens?: number;
-      cache_creation?: { ephemeral_5m_input_tokens?: number; ephemeral_1h_input_tokens?: number };
-    };
-  };
-}
+const claudeAssistantLineSchema = z.object({
+  type: z.literal('assistant'),
+  sessionId: z.string().optional(),
+  cwd: z.string().optional(),
+  timestamp: z.string().optional(),
+  requestId: z.string().optional(),
+  gitBranch: z.string().optional(),
+  isSidechain: z.boolean().optional(),
+  agentId: z.string().optional(),
+  data: z.object({ agentId: z.string().optional() }).optional(),
+  message: z
+    .object({
+      id: z.string().optional(),
+      model: z.string().optional(),
+      usage: z
+        .object({
+          input_tokens: z.number().optional(),
+          output_tokens: z.number().optional(),
+          cache_creation_input_tokens: z.number().optional(),
+          cache_read_input_tokens: z.number().optional(),
+          cache_creation: z
+            .object({
+              ephemeral_5m_input_tokens: z.number().optional(),
+              ephemeral_1h_input_tokens: z.number().optional(),
+            })
+            .optional(),
+        })
+        .optional(),
+    })
+    .optional(),
+});
+type ClaudeAssistantLine = z.infer<typeof claudeAssistantLineSchema>;
 
-interface ClaudeUserLine {
-  type: 'user';
-  toolUseResult?: { agentId?: string; agentType?: string };
-}
-
-function isAssistantLine(v: unknown): v is ClaudeAssistantLine {
-  return !!v && typeof v === 'object' && (v as { type?: unknown }).type === 'assistant';
-}
-
-function isUserLine(v: unknown): v is ClaudeUserLine {
-  return !!v && typeof v === 'object' && (v as { type?: unknown }).type === 'user';
-}
+const claudeUserLineSchema = z.object({
+  type: z.literal('user'),
+  toolUseResult: z.object({ agentId: z.string().optional(), agentType: z.string().optional() }).optional(),
+});
 
 const SUBAGENT_PATH = /[/\\]subagents[/\\]/;
 // `agent-<id>.jsonl` — the id in the filename is the dispatch id, and is the only
@@ -97,12 +101,12 @@ function recordAgentId(line: ClaudeAssistantLine): string | undefined {
 // Read the agentType out of the `agent-<id>.meta.json` written next to a subagent
 // transcript. Missing or malformed metadata is not an error — the parent-record
 // map is the fallback.
+const agentMetaSchema = z.object({ agentType: z.string().min(1) });
+
 async function readAgentMeta(jsonlPath: string): Promise<string | undefined> {
   try {
-    const meta = (await Bun.file(jsonlPath.replace(/\.jsonl$/, '.meta.json')).json()) as unknown;
-    if (!meta || typeof meta !== 'object') return undefined;
-    const t = (meta as { agentType?: unknown }).agentType;
-    return typeof t === 'string' && t.length > 0 ? t : undefined;
+    const meta = agentMetaSchema.safeParse(await Bun.file(jsonlPath.replace(/\.jsonl$/, '.meta.json')).json());
+    return meta.success ? meta.data.agentType : undefined;
   } catch {
     return undefined;
   }
@@ -124,36 +128,33 @@ export async function parseClaudeCodeFile(path: string): Promise<ParsedFile> {
   }
 
   for await (const line of readJsonlLines(path)) {
-    if (isUserLine(line)) {
-      const r = line.toolUseResult;
+    const userLine = claudeUserLineSchema.safeParse(line);
+    if (userLine.success) {
+      const r = userLine.data.toolUseResult;
       if (r?.agentId && r.agentType && !agentTypes[r.agentId])
         agentTypes[r.agentId] = { type: r.agentType, strong: false };
       continue;
     }
-    if (!isAssistantLine(line)) continue;
-    const u = line.message?.usage;
-    const model = line.message?.model;
-    const ts = line.timestamp;
-    const sid = line.sessionId;
+    const assistantLine = claudeAssistantLineSchema.safeParse(line);
+    if (!assistantLine.success) continue;
+    const assistant = assistantLine.data;
+    const u = assistant.message?.usage;
+    const model = assistant.message?.model;
+    const ts = assistant.timestamp;
+    const sid = assistant.sessionId;
     if (!u || !model || !ts || !sid) continue;
     // A subagent message is one that says so (agentId / isSidechain) or one that
     // lives in a subagents/ transcript. The record's own id wins over the
     // filename so a transcript holding more than one dispatch stays correct.
-    const agentId = recordAgentId(line) ?? (line.isSidechain || inSubagentDir ? fileAgentId : undefined);
-    const id = line.message?.id;
-    events.push({
+    const agentId = recordAgentId(assistant) ?? (assistant.isSidechain || inSubagentDir ? fileAgentId : undefined);
+    const id = assistant.message?.id;
+    const event: UsageEvent = {
       tool: 'claude-code',
       provider: 'anthropic',
       model,
       timestamp: ts,
       sessionId: sid,
-      projectPath: line.cwd,
-      ...(line.gitBranch ? { branch: line.gitBranch } : {}),
-      // The same API response is rewritten into every resumed/forked session
-      // file; this key lets the merge count it once. Absent when the record has
-      // no message id, in which case it cannot be deduped.
-      ...(id ? { dedupKey: `${id}|${line.requestId ?? ''}` } : {}),
-      ...(agentId ? { agent: { id: agentId, type: UNKNOWN_AGENT_TYPE } } : {}),
+      projectPath: assistant.cwd,
       tokens: {
         input: u.input_tokens ?? 0,
         output: u.output_tokens ?? 0,
@@ -161,7 +162,14 @@ export async function parseClaudeCodeFile(path: string): Promise<ParsedFile> {
         cacheWrite: u.cache_creation_input_tokens ?? 0,
         cacheWrite1h: u.cache_creation?.ephemeral_1h_input_tokens ?? 0,
       },
-    });
+    };
+    if (assistant.gitBranch) event.branch = assistant.gitBranch;
+    // The same API response is rewritten into every resumed/forked session
+    // file; this key lets the merge count it once. Absent when the record has
+    // no message id, in which case it cannot be deduped.
+    if (id) event.dedupKey = `${id}|${assistant.requestId ?? ''}`;
+    if (agentId) event.agent = { id: agentId, type: UNKNOWN_AGENT_TYPE };
+    events.push(event);
   }
 
   return { events, agentTypes };

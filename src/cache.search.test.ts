@@ -3,8 +3,9 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from 'node:
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Database } from 'bun:sqlite';
+import { asJsonObject, type JsonValue } from './extract-util';
 
-const j = (o: unknown): string => JSON.stringify(o);
+const j = (o: JsonValue): string => JSON.stringify(o);
 
 // cache.ts now resolves SESSIONS_* env lazily, but the module instance is shared
 // across test files in one `bun test` run. So we (re)assert our env and reset the
@@ -21,10 +22,10 @@ function setEnv(): void {
   process.env.SESSIONS_OPENCODE_DB = join(tmp, 'opencode.db'); // absent → no OpenCode sessions leak in
 }
 
-function writeClaude(claudeDir: string, id: string, cwd: string, records: unknown[]): void {
+function writeClaude(claudeDir: string, id: string, cwd: string, records: JsonValue[]): void {
   const dir = join(claudeDir, 'proj');
   mkdirSync(dir, { recursive: true });
-  const lines = records.map((r) => j({ ...(r as object), cwd })).join('\n');
+  const lines = records.map((r) => j({ ...asJsonObject(r), cwd })).join('\n');
   writeFileSync(join(dir, `${id}.jsonl`), lines);
 }
 
@@ -532,7 +533,7 @@ test('grep: an invalid regex throws a friendly error', async () => {
 
 // ——— pi custom-type session-level indexing (schema v10) tests — additive ———
 
-function writePi(id: string, records: unknown[]): void {
+function writePi(id: string, records: JsonValue[]): void {
   const dir = join(process.env.SESSIONS_PI_DIR!, 'proj');
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, `${id}.jsonl`), records.map((r) => j(r)).join('\n'));

@@ -1,13 +1,16 @@
 // VENDORED VERBATIM from tokenmaxing/src/parsers/util.ts — do not edit logic here; keep in sync. Public contract: schemaVersion 2.
+// Local divergence: readJsonlLines yields JsonValue (sessions' typed JSON domain), not unknown.
 import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
+
+import type { JsonValue } from '../../extract-util.ts';
 
 export async function* walkJsonl(root: string): AsyncGenerator<string> {
   let entries;
   try {
     entries = await readdir(root, { withFileTypes: true });
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
+    if (err instanceof Error && 'code' in err && err.code === 'ENOENT') return;
     throw err;
   }
   for (const entry of entries) {
@@ -20,14 +23,15 @@ export async function* walkJsonl(root: string): AsyncGenerator<string> {
   }
 }
 
-export async function* readJsonlLines(path: string): AsyncGenerator<unknown> {
+export async function* readJsonlLines(path: string): AsyncGenerator<JsonValue> {
   const file = Bun.file(path);
   const text = await file.text();
   for (const raw of text.split('\n')) {
     const line = raw.trim();
     if (!line) continue;
     try {
-      yield JSON.parse(line);
+      // SAFETY: JSON.parse's range is exactly the JSON value domain.
+      yield JSON.parse(line) as JsonValue;
     } catch {
       // skip malformed line
     }

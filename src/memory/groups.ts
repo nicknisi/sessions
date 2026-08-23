@@ -15,6 +15,8 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { z } from 'zod';
+
 import { getDataDir } from '../paths';
 
 export interface GroupConfig {
@@ -104,18 +106,26 @@ export function groupsFor(container: string, config: GroupConfig): string[] {
   return matched.sort();
 }
 
-/** Narrow an unknown parse result to `Record<string, string[]>`, dropping what does not fit. */
-function readGroups(parsed: unknown): GroupConfig {
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return EMPTY_CONFIG;
-  const raw = (parsed as { groups?: unknown }).groups;
-  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return EMPTY_CONFIG;
+const groupsFileSchema = z.object({ groups: z.record(z.string(), z.unknown()) });
+// Non-string members degrade to null and drop out, matching the old typeof filter.
+const groupPatternsSchema = z
+  .array(z.string().nullable().catch(null))
+  .transform((patterns): string[] => patterns.filter((p): p is string => p !== null));
+
+/** Parse the groups.json text to `Record<string, string[]>`, dropping what does not fit. */
+function readGroups(text: string): GroupConfig {
+  let parsed: z.infer<typeof groupsFileSchema>;
+  try {
+    parsed = groupsFileSchema.parse(JSON.parse(text));
+  } catch {
+    return EMPTY_CONFIG;
+  }
   const groups: Record<string, string[]> = {};
-  for (const [name, patterns] of Object.entries(raw as Record<string, unknown>)) {
+  for (const [name, patterns] of Object.entries(parsed.groups)) {
     // Per-entry rather than all-or-nothing: one mistyped group must not disable the
     // others, for the same reason a missing file must not disable retrieval.
-    if (!Array.isArray(patterns)) continue;
-    const strings = patterns.filter((p): p is string => typeof p === 'string');
-    if (strings.length > 0) groups[name] = strings;
+    const strings = groupPatternsSchema.safeParse(patterns);
+    if (strings.success && strings.data.length > 0) groups[name] = strings.data;
   }
   return { groups };
 }
@@ -145,7 +155,7 @@ export function loadGroupConfig(): GroupConfig {
   const path = getGroupConfigPath();
   if (!existsSync(path)) return EMPTY_CONFIG;
   try {
-    return readGroups(JSON.parse(readFileSync(path, 'utf-8')));
+    return readGroups(readFileSync(path, 'utf-8'));
   } catch {
     return EMPTY_CONFIG;
   }

@@ -44,7 +44,11 @@ export const C = {
   },
 } as const;
 
-export const toolColor: Record<string, string> = {
+export interface ToolColors {
+  [tool: string]: string;
+}
+
+export const toolColor: ToolColors = {
   claude: C.purple,
   pi: C.green,
   codex: C.blue,

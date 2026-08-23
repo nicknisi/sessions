@@ -96,6 +96,7 @@ export function parseArgs(argv: string[]): CliArgs {
         if (!argv[i] || !VALID_TOOLS.has(argv[i]!)) {
           die(`--tool requires one of: claude, codex, pi, opencode`);
         }
+        // SAFETY: VALID_TOOLS.has() above proves argv[i] is a Tool.
         args.toolFilter = argv[i] as Tool;
         break;
       case '--here':
@@ -133,7 +134,12 @@ export function getRepoRoot(scopeHere: boolean): string {
 }
 
 /** The single mapping from CLI args to a searchSessions() call (keeps the CLI a thin shell). */
-export function toSearchOptions(args: CliArgs, repoRoot: string): { query: string; opts: SearchOptions } {
+interface SearchCall {
+  query: string;
+  opts: SearchOptions;
+}
+
+export function toSearchOptions(args: CliArgs, repoRoot: string): SearchCall {
   return {
     query: args.searchQuery,
     opts: { tool: args.toolFilter, project: repoRoot, errored: args.errored, files: args.files, limit: 1000 },

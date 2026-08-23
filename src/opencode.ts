@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname, basename } from 'node:path';
 import { type Tool } from './types';
-import { tryParse } from './extract-util';
+import { tryParse, asJsonObject, asJsonString, asJsonNumber, type JsonObject } from './extract-util';
 
 // OpenCode stores sessions in a single SQLite database (it migrated off the old
 // file-per-session `storage/` layout). Everything else in this codebase reads one
@@ -61,13 +61,19 @@ export function closeOpencodeDb(): void {
   _conn = null;
 }
 
+/** A discovered session as a synthetic file path (OpenCode keeps a DB, not files). */
+interface DiscoveredSession {
+  path: string;
+  tool: Tool;
+}
+
 /** Top-level sessions (subagents fold into their parent), as synthetic file_paths for discovery. */
-export function discoverOpencodeSessions(): { path: string; tool: Tool }[] {
+export function discoverOpencodeSessions(): DiscoveredSession[] {
   const d = db();
   if (!d) return [];
   try {
     const rows = d.query<{ id: string }, []>('SELECT id FROM session WHERE parent_id IS NULL').all();
-    return rows.map((r) => ({ path: opencodeFilePath(r.id), tool: 'opencode' as Tool }));
+    return rows.map((r) => ({ path: opencodeFilePath(r.id), tool: 'opencode' }));
   } catch {
     return [];
   }
@@ -127,7 +133,7 @@ export function readOpencodeSession(filePath: string): string[] {
   for (const m of messages) {
     const md = tryParse(m.data);
     const role = md?.role === 'assistant' ? 'assistant' : 'user';
-    const ts = isoTime((md?.time as { created?: number } | undefined)?.created ?? session.time_created);
+    const ts = isoTime(asJsonNumber(asJsonObject(md?.time)?.created) ?? session.time_created);
     const content = buildContent(partsByMessage.get(m.id) ?? []);
     if (content.length === 0) continue; // e.g. a synthetic/empty turn with no renderable parts
     lines.push(JSON.stringify({ type: 'message', timestamp: ts, message: { role, content } }));
@@ -153,7 +159,7 @@ export function collectOpencodeSubagentText(filePath: string): string {
       .all(id);
     return rows
       .map((r) => r.text)
-      .filter((t): t is string => typeof t === 'string' && t.length > 0)
+      .filter((t) => t !== null && t.length > 0)
       .join('\n');
   } catch {
     return '';
@@ -163,8 +169,8 @@ export function collectOpencodeSubagentText(filePath: string): string {
 // ——— helpers ———
 
 /** All parts of a session grouped by message id, preserving stable chronological order. */
-function partsBySession(d: Database, sessionId: string): Map<string, unknown[]> {
-  const byMessage = new Map<string, unknown[]>();
+function partsBySession(d: Database, sessionId: string): Map<string, JsonObject[]> {
+  const byMessage = new Map<string, JsonObject[]>();
   const rows = d
     .query<{ message_id: string; data: string }, [string]>(
       'SELECT message_id, data FROM part WHERE session_id = ? ORDER BY time_created ASC, id ASC',
@@ -181,22 +187,30 @@ function partsBySession(d: Database, sessionId: string): Map<string, unknown[]> 
 }
 
 /** Map OpenCode message parts to content blocks: text→text, reasoning→thinking, tool→tool, patch→patch. */
-function buildContent(parts: unknown[]): Record<string, unknown>[] {
-  const blocks: Record<string, unknown>[] = [];
-  for (const part of parts) {
-    if (!part || typeof part !== 'object') continue;
-    const p = part as Record<string, unknown>;
+function buildContent(parts: JsonObject[]): JsonObject[] {
+  const blocks: JsonObject[] = [];
+  for (const p of parts) {
     switch (p.type) {
-      case 'text':
-        if (typeof p.text === 'string' && p.text.trim()) blocks.push({ type: 'text', text: p.text });
+      case 'text': {
+        const text = asJsonString(p.text);
+        if (text?.trim()) blocks.push({ type: 'text', text });
         break;
-      case 'reasoning':
-        if (typeof p.text === 'string' && p.text.trim()) blocks.push({ type: 'thinking', thinking: p.text });
+      }
+      case 'reasoning': {
+        const text = asJsonString(p.text);
+        if (text?.trim()) blocks.push({ type: 'thinking', thinking: text });
         break;
-      case 'tool':
+      }
+      case 'tool': {
         // Faithful to the source `state` (input/output/status/error) so the extractors read one shape.
-        blocks.push({ type: 'tool', tool: p.tool, state: p.state });
+        // Keys stay ABSENT when the source lacks them (undefined would vanish in JSON,
+        // null would not — and the transcript byte-compares matter).
+        const block: JsonObject = { type: 'tool' };
+        if (p.tool !== undefined) block.tool = p.tool;
+        if (p.state !== undefined) block.state = p.state;
+        blocks.push(block);
         break;
+      }
       case 'patch':
         if (Array.isArray(p.files)) blocks.push({ type: 'patch', files: p.files });
         break;
@@ -207,6 +221,6 @@ function buildContent(parts: unknown[]): Record<string, unknown>[] {
 
 /** Epoch-ms → ISO-8601, or '' for a missing/invalid time (parser skips '' timestamps). */
 function isoTime(ms: number | undefined): string {
-  if (typeof ms !== 'number' || !Number.isFinite(ms)) return '';
+  if (ms === undefined || !Number.isFinite(ms)) return '';
   return new Date(ms).toISOString();
 }

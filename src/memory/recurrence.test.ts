@@ -323,6 +323,7 @@ describe('trend snapshots (G4: the two-run delta instrument)', () => {
     closeDatabases();
 
     // First run: no previous run, every violation is (new), one snapshot line lands.
+    // SAFETY: stdout is the `report --json` envelope printed by this test process.
     const first = JSON.parse((await capture(['report', '--repo', repo, '--json'])).stdout) as TrendJson;
     expect(first.trendNote).toBe('first snapshot — no previous run');
     expect(first.trend.every((t) => t.delta === null && t.previous === null)).toBe(true);
@@ -335,6 +336,7 @@ describe('trend snapshots (G4: the two-run delta instrument)', () => {
     writeSession(tmp, 's4', repo, [userTurn(SECOND, '2026-06-04T10:00:00Z')]);
     closeDatabases();
 
+    // SAFETY: stdout is the `report --json` envelope printed by this test process.
     const next = JSON.parse((await capture(['report', '--repo', repo, '--json'])).stdout) as TrendJson;
     // The unchanged memory deltas exactly 0; the mutated corpus' addition is the
     // ONLY (new) row — the whole G4 claim: the diff shows exactly the new violation

@@ -29,8 +29,13 @@ const event = (sessionId: string, timestamp: string, model = 'claude-opus-4-6', 
     },
   }) + '\n';
 
+type JsonValue = string | number | boolean | null | JsonValue[] | JsonObject;
+interface JsonObject {
+  [key: string]: JsonValue;
+}
+
 /** A user-role line for the loop pass; extra fields ride through as-is. */
-const userLine = (sessionId: string, timestamp: string, content: unknown, extra: Record<string, unknown> = {}) =>
+const userLine = (sessionId: string, timestamp: string, content: JsonValue, extra: JsonObject = {}) =>
   JSON.stringify({ type: 'user', sessionId, timestamp, message: { role: 'user', content }, ...extra }) + '\n';
 
 writeFileSync(

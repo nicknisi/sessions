@@ -20,7 +20,11 @@ function walk(dir: string): string[] {
 const files = walk(pluginDir);
 let out = '// Auto-generated from plugin/ directory. Do not edit manually.\n';
 out += '// Regenerate with: bun run generate-plugin-embed\n\n';
-out += 'export const PLUGIN_FILES: Record<string, string> = {\n';
+out += '/** Plugin file contents keyed by repo-relative path. */\n';
+out += 'export interface PluginFileMap {\n';
+out += '  [path: string]: string;\n';
+out += '}\n\n';
+out += 'export const PLUGIN_FILES: PluginFileMap = {\n';
 
 for (const f of files.sort()) {
   const rel = relative(pluginDir, f);

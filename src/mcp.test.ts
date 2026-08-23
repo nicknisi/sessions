@@ -3,10 +3,12 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync, existsSync
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { Database } from 'bun:sqlite';
 import type { ZodType } from 'zod';
 import { version as pkgVersion } from '../package.json';
+import { asJsonObject, asJsonString, type JsonObject, type JsonValue } from './extract-util';
 import { buildRecord } from './memory/record';
 import { getMemoryDbPath } from './paths';
 import { closeMemoryDb, setState, upsertCandidates } from './memory/store';
@@ -24,7 +26,36 @@ import {
   SearchSessionsOutput,
 } from './mcp-schemas';
 
-const j = (o: unknown): string => JSON.stringify(o);
+const j = (o: JsonValue): string => JSON.stringify(o);
+
+/** The first text block of a tool result; fails loudly when the result carries none.
+ *  `content` is unknown-typed through the SDK's loose `[x: string]: unknown` catchall. */
+/** What client.callTool resolves to (a standard result or a task wrapper). */
+type ToolCallOutcome = Awaited<ReturnType<Client['callTool']>>;
+
+function firstText(res: ToolCallOutcome | undefined): string {
+  const content = res?.content;
+  if (!Array.isArray(content)) throw new Error('no content blocks');
+  const first = asJsonObject(content[0]);
+  if (first?.type !== 'text') throw new Error('expected a text content block');
+  const text = asJsonString(first.text);
+  if (text === undefined) throw new Error('text block without text');
+  return text;
+}
+
+/** A callTool result's structuredContent, bridged from the SDK's loose catchall typing. */
+function structuredOf(res: ToolCallOutcome | undefined): JsonValue | undefined {
+  // SAFETY: structuredContent is a JSON record by the SDK's own schema; the loose
+  // catchall typing on the SDK's result union erases it to unknown at access.
+  return res?.structuredContent as JsonValue | undefined;
+}
+
+/** Parse a tool result's compact-JSON text block. Throws on non-objects. */
+function payloadOf(res: { content: { text: string }[] }): JsonObject {
+  const parsed = asJsonObject(JSON.parse(res.content[0]!.text));
+  if (!parsed) throw new Error('tool payload is not a JSON object');
+  return parsed;
+}
 
 // cache.ts resolves SESSIONS_* env lazily, but the module instance is shared across
 // test files in one `bun test` run. So we (re)assert our env and reset the cached DB
@@ -422,7 +453,7 @@ test('get_session_messages omits tools by default (back-compat shape)', async ()
 
 // ——— pi fork surfaces (pi first-class phase 2) — additive ———
 
-function writePiFixture(id: string, records: Record<string, unknown>[]): string {
+function writePiFixture(id: string, records: JsonObject[]): string {
   const dir = join(tmp, 'pi', 'proj');
   mkdirSync(dir, { recursive: true });
   const file = join(dir, `${id}.jsonl`);
@@ -432,7 +463,7 @@ function writePiFixture(id: string, records: Record<string, unknown>[]): string 
 
 // Pi fixture shapes mirror src/parser.test.ts: id/parentId on every line, the header
 // is the root, the header-adjacent model_change has parentId: null.
-const piHeader = (extra: Record<string, unknown> = {}) => ({
+const piHeader = (extra: JsonObject = {}) => ({
   type: 'session',
   id: 's1',
   timestamp: '2026-08-04T17:00:00.000Z',
@@ -457,7 +488,7 @@ const piAssistant = (id: string, parentId: string, text: string) => ({
 
 // The canonical one-fork shape: /tree hops back to u1 (abandoning u2/a2), then back
 // to a1 to resume the live conversation. 6 extracted messages, 1 fork marker.
-function branchedPiRecords(): Record<string, unknown>[] {
+function branchedPiRecords(): JsonObject[] {
   return [
     piHeader(),
     piModelChange,
@@ -477,10 +508,16 @@ test('search_sessions: pi results carry branches and a basename-only forkedFrom'
   writePiFixture('pifork', [piHeader({ parentSession: PI_PARENT }), piModelChange, piUser('u1', 'm1', 'continued')]);
   await cache.refreshIndex();
   const res = await mcp.runSearchSessions({ tool: 'pi' });
-  const parsed = JSON.parse(res.content[0]!.text);
-  const byId = new Map<string, Record<string, unknown>>(
-    parsed.results.map((r: Record<string, unknown>) => [r.sessionId as string, r]),
-  );
+  const parsed = payloadOf(res);
+  const results = parsed.results;
+  const byId = new Map<string, JsonObject>();
+  if (Array.isArray(results)) {
+    for (const r of results) {
+      const row = asJsonObject(r);
+      const id = row ? asJsonString(row.sessionId) : undefined;
+      if (row && id !== undefined) byId.set(id, row);
+    }
+  }
   expect(byId.get('pibranch')).toMatchObject({ branches: 1, forkedFrom: '' });
   // Basename only — agents don't need (and shouldn't act on) the absolute parent path.
   expect(byId.get('pifork')).toMatchObject({ branches: 0, forkedFrom: 'parent-file.jsonl' });
@@ -493,16 +530,21 @@ test("get_session_messages: the fork marker is a field on the branch's first mes
   // The core invariant: a marker is a FIELD, never a synthetic message row — `total`
   // must equal the unbranched message count, or every search-hit offset drifts.
   expect(parsed.total).toBe(6);
-  const msgs = parsed.messages;
-  expect(msgs.map((m: Record<string, unknown>) => m.branch ?? '')).toEqual(['', '', 'abandoned', 'abandoned', '', '']);
-  expect(msgs.filter((m: Record<string, unknown>) => m.fork)).toHaveLength(1);
+  const msgs = payloadOf(res).messages;
+  if (!Array.isArray(msgs)) throw new Error('messages missing');
+  expect(msgs.map((m) => asJsonObject(m)?.branch ?? '')).toEqual(['', '', 'abandoned', 'abandoned', '', '']);
+  expect(msgs.filter((m) => asJsonObject(m)?.fork)).toHaveLength(1);
   // The marker hangs on the branch's first message (index 2) and names the active
   // message it forked from (index 0, from u1).
-  expect(msgs[2].fork).toMatchObject({ fromIndex: 0, abandonedCount: 2, firstUserText: 'hello world' });
-  expect(msgs[2].fork.marker).toBe('⑂ forked from msg #0 — abandoned branch, 2 messages: "hello world"');
+  const markerMsg = asJsonObject(msgs[2]);
+  const fork = asJsonObject(markerMsg?.fork);
+  expect(fork).toMatchObject({ fromIndex: 0, abandonedCount: 2, firstUserText: 'hello world' });
+  expect(fork?.marker).toBe('⑂ forked from msg #0 — abandoned branch, 2 messages: "hello world"');
   // Active messages carry no branch/fork keys at all (zero token cost).
-  expect('branch' in msgs[0]).toBe(false);
-  expect('fork' in msgs[0]).toBe(false);
+  const firstMsg = asJsonObject(msgs[0]);
+  if (!firstMsg) throw new Error('message 0 missing');
+  expect('branch' in firstMsg).toBe(false);
+  expect('fork' in firstMsg).toBe(false);
 });
 
 test('get_session_messages: markers and branch fields appear with includeTools on too', async () => {
@@ -531,14 +573,14 @@ test('schema conformance: fork fields survive tools/call output validation (not 
 
   const msgRes = await client.callTool({ name: 'get_session_messages', arguments: { filePath: file } });
   expect(msgRes.isError).toBeFalsy();
-  expect(conforms('get_session_messages', GetSessionMessagesOutput, msgRes.structuredContent)).toBe('ok');
+  expect(conforms('get_session_messages', GetSessionMessagesOutput, structuredOf(msgRes))).toBe('ok');
   const msgs = GetSessionMessagesOutput.parse(msgRes.structuredContent);
   expect(msgs.messages[2]!.branch).toBe('abandoned');
   expect(msgs.messages[2]!.fork?.marker).toContain('abandoned branch');
 
   const searchRes = await client.callTool({ name: 'search_sessions', arguments: { tool: 'pi' } });
   expect(searchRes.isError).toBeFalsy();
-  expect(conforms('search_sessions', SearchSessionsOutput, searchRes.structuredContent)).toBe('ok');
+  expect(conforms('search_sessions', SearchSessionsOutput, structuredOf(searchRes))).toBe('ok');
   const search = SearchSessionsOutput.parse(searchRes.structuredContent);
   const forked = search.results.find((r) => r.sessionId === 'pifork2');
   expect(forked?.forkedFrom).toBe('parent-file.jsonl');
@@ -609,7 +651,7 @@ const TOOL_NAMES = [
 
 /** Fold the failure detail into the compared value: a bare `success` boolean tells you a
  *  tool drifted from its schema but not which field. */
-function conforms(name: string, schema: ZodType, structuredContent: unknown): string {
+function conforms(name: string, schema: ZodType, structuredContent: JsonValue | undefined): string {
   const parsed = schema.safeParse(structuredContent);
   return parsed.success ? 'ok' : `${name}: ${parsed.error.message}`;
 }
@@ -631,7 +673,7 @@ test('tool surface: 11 tools, each with a title, annotations, and an object outp
   expect(tools.map((t) => t.name).sort()).toEqual(TOOL_NAMES);
 
   for (const t of tools) {
-    expect(typeof t.title).toBe('string');
+    expect(t.title).toBeTypeOf('string');
     expect(t.title!.length).toBeGreaterThan(0);
     expect(t.description!.length).toBeGreaterThan(80); // the tuned prose survived the migration
     expect(t.annotations).toEqual({ readOnlyHint: true, openWorldHint: false });
@@ -667,9 +709,9 @@ describe('input bounds', () => {
    * result carrying `isError: true` and the -32602 text. Asserting on a rejection would
    * therefore pass for any tool that merely threw, and fail for the behavior we want.
    */
-  async function refused(client: Client, name: string, args: Record<string, unknown>): Promise<string> {
+  async function refused(client: Client, name: string, args: JsonObject): Promise<string> {
     const res = await client.callTool({ name, arguments: args });
-    const text = (res.content as { type: string; text: string }[])[0]!.text;
+    const text = firstText(res);
     expect({ tool: name, args, isError: res.isError }).toEqual({ tool: name, args, isError: true });
     // Structurally an input rejection, not a handler that happened to fail downstream.
     expect(text).toMatch(/-32602|Input validation error/);
@@ -702,7 +744,7 @@ describe('input bounds', () => {
   test('every paged tool bounds its size, not just search_sessions', async () => {
     const client = await connect();
     const sessionB = join(tmp, 'claude', 'proj', 'b.jsonl');
-    const overs: { name: string; args: Record<string, unknown> }[] = [
+    const overs: { name: string; args: JsonObject }[] = [
       { name: 'grep_sessions', args: { pattern: 'retry', limit: mcp.MAX_GREP_HITS + 1 } },
       { name: 'grep_sessions', args: { pattern: 'retry', limit: -1 } },
       { name: 'get_session_messages', args: { filePath: sessionB, limit: mcp.MAX_MESSAGES_PER_PAGE + 1 } },
@@ -719,8 +761,14 @@ describe('input bounds', () => {
   test('the declared ceilings reach the client in tools/list, so a model can read them', async () => {
     const client = await connect();
     const { tools } = await client.listTools();
-    const limitOf = (name: string): Record<string, unknown> =>
-      (tools.find((t) => t.name === name)!.inputSchema.properties as Record<string, Record<string, unknown>>).limit!;
+    const limitOf = (name: string): JsonObject => {
+      // SAFETY: the SDK ships inputSchema.properties as an untyped record; tools/list
+      // output is JSON-schema objects, and asJsonObject narrows before use.
+      const props = asJsonObject(tools.find((t) => t.name === name)!.inputSchema.properties as JsonValue | undefined);
+      const limit = props ? asJsonObject(props['limit']) : undefined;
+      if (!limit) throw new Error(`no limit on ${name}`);
+      return limit;
+    };
 
     expect(limitOf('search_sessions')).toMatchObject({ type: 'integer', minimum: 1, maximum: mcp.MAX_SEARCH_RESULTS });
     expect(limitOf('grep_sessions')).toMatchObject({ maximum: mcp.MAX_GREP_HITS });
@@ -745,7 +793,7 @@ describe('input bounds', () => {
 test('schema conformance: every tool validates against its declared outputSchema', async () => {
   const client = await connect();
   const sessionB = join(tmp, 'claude', 'proj', 'b.jsonl');
-  const calls: { name: string; args: Record<string, unknown>; schema: ZodType }[] = [
+  const calls: { name: string; args: JsonObject; schema: ZodType }[] = [
     { name: 'get_memory', args: { cwd: '/repoA' }, schema: GetMemoryOutput },
     // all:true — the fixture's sessions span several projects, and a repo-scoped call
     // here would test scope resolution, not the schema.
@@ -782,9 +830,9 @@ test('schema conformance: every tool validates against its declared outputSchema
     const res = await client.callTool({ name, arguments: args });
     expect(res.isError).toBeFalsy();
     expect(res.structuredContent).toBeDefined();
-    expect(conforms(name, schema, res.structuredContent)).toBe('ok');
+    expect(conforms(name, schema, structuredOf(res))).toBe('ok');
     // The text block is the same payload, for clients that ignore structured output.
-    const text = (res.content as { type: string; text: string }[])[0]!.text;
+    const text = firstText(res);
     if (text.startsWith('{')) expect(JSON.parse(text)).toEqual(res.structuredContent);
     got.set(name, res.structuredContent);
   }
@@ -887,7 +935,7 @@ describe('empty results', () => {
   test('empty results: all 11 tools return a conforming payload alongside their sentinel', async () => {
     const client = await connect();
     const repoRoot = join(import.meta.dir, '..'); // a real git repo with no indexed sessions
-    const calls: { name: string; args: Record<string, unknown>; schema: ZodType; text?: string }[] = [
+    const calls: { name: string; args: JsonObject; schema: ZodType; text?: string }[] = [
       { name: 'get_memory', args: { cwd: '/nowhere' }, schema: GetMemoryOutput, text: 'No memories for this repo.' },
       // No text assertion: get_memory runs earlier in this table and CREATES the
       // empty store, so this exercises the populated-but-empty report. The true
@@ -944,9 +992,9 @@ describe('empty results', () => {
       // isError on an empty result would be a validation bypass, not a design.
       expect(res.isError).toBeFalsy();
       expect(res.structuredContent).toBeDefined();
-      expect(conforms(name, schema, res.structuredContent)).toBe('ok');
+      expect(conforms(name, schema, structuredOf(res))).toBe('ok');
       // The sentinel prose survives: it tells a model something the payload does not.
-      if (text) expect((res.content as { text: string }[])[0]!.text).toBe(text);
+      if (text) expect(firstText(res)).toBe(text);
     }
     await client.close();
   });
@@ -960,8 +1008,8 @@ describe('empty results', () => {
     const client = await connect();
     const res = await client.callTool({ name: 'get_memory_recurrence', arguments: {} });
     expect(res.isError).toBeFalsy();
-    expect((res.content as { text: string }[])[0]!.text).toBe('No memory store — run `sessions memory mine` first.');
-    expect(conforms('get_memory_recurrence', GetMemoryRecurrenceOutput, res.structuredContent)).toBe('ok');
+    expect(firstText(res)).toBe('No memory store — run `sessions memory mine` first.');
+    expect(conforms('get_memory_recurrence', GetMemoryRecurrenceOutput, structuredOf(res))).toBe('ok');
     expect(existsSync(getMemoryDbPath())).toBe(false);
     await client.close();
   });
@@ -970,8 +1018,8 @@ describe('empty results', () => {
     const client = await connect();
     const res = await client.callTool({ name: 'get_context_primer', arguments: { cwd: emptyTmp } });
     expect(res.isError).toBeFalsy();
-    expect((res.content as { text: string }[])[0]!.text).toBe('Not inside a git repository.');
-    expect(conforms('get_context_primer', GetContextPrimerOutput, res.structuredContent)).toBe('ok');
+    expect(firstText(res)).toBe('Not inside a git repository.');
+    expect(conforms('get_context_primer', GetContextPrimerOutput, structuredOf(res))).toBe('ok');
     expect(res.structuredContent).toEqual({
       repoLabel: '',
       toolFilter: '',
@@ -990,10 +1038,10 @@ describe('empty results', () => {
       name: 'get_memory',
       arguments: { cwd: '/nowhere', topic: 'kubernetes helm chart rollout' },
     });
-    const text = (res.content as { text: string }[])[0]!.text;
+    const text = firstText(res);
     expect(text).toContain('No memory matched this topic');
     expect(text).not.toBe('No memories for this repo.');
-    expect(conforms('get_memory', GetMemoryOutput, res.structuredContent)).toBe('ok');
+    expect(conforms('get_memory', GetMemoryOutput, structuredOf(res))).toBe('ok');
     await client.close();
   });
 });

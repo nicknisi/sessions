@@ -45,7 +45,10 @@ export interface ReportResult {
   json: string;
 }
 
-const TOOL_MAP: Record<string, ToolId> = { claude: 'claude-code', codex: 'codex', pi: 'pi', opencode: 'opencode' };
+interface ToolIdByName {
+  [name: string]: ToolId;
+}
+const TOOL_MAP: ToolIdByName = { claude: 'claude-code', codex: 'codex', pi: 'pi', opencode: 'opencode' };
 
 function die(msg: string): never {
   process.stderr.write(`error: ${msg}\n`);
@@ -113,6 +116,7 @@ export function parseReportArgs(argv: string[]): ReportOptions {
       case '--this-month':
       case '--last-month':
       case '--this-year':
+        // SAFETY: the case labels above constrain `a` to '--'+PeriodPreset members.
         opts.preset = a.slice(2) as PeriodPreset;
         break;
       case '--month':

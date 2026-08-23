@@ -6,14 +6,24 @@
 // anyway — LIKE over stored text is exact and case-insensitive for ASCII.
 
 import type { Database } from 'bun:sqlite';
+import { z } from 'zod';
+
 import { getIndexDb } from '../cache.ts';
 import { significanceScore, isTrivia, hasArtifact } from '../significance.ts';
 import { resolveProject } from '../report/project.ts';
 import { junkCwdSql } from './exclude.ts';
 import type { PhraseStat, WrappedContentStats, WrappedSessionOfYear } from './types.ts';
 
+/** Named SQLite bind parameters: keys are `$name` placeholders. */
+interface SqlParams {
+  [name: string]: string;
+}
+
 /** Index tool names ('claude') differ from report ToolIds ('claude-code'). */
-const INDEX_TOOL: Record<string, string> = { 'claude-code': 'claude', codex: 'codex', pi: 'pi', opencode: 'opencode' };
+interface IndexToolNames {
+  [toolId: string]: string;
+}
+const INDEX_TOOL: IndexToolNames = { 'claude-code': 'claude', codex: 'codex', pi: 'pi', opencode: 'opencode' };
 
 interface PhraseSpec {
   id: string;
@@ -112,7 +122,7 @@ function phraseCounts(db: Database, from: string, to: string, tool: string | nul
   const out: PhraseStat[] = [];
   for (const spec of PHRASES) {
     const likes = spec.patterns.map((_, i) => `m.text LIKE $p${i}`).join(' OR ');
-    const params: Record<string, string> = { $from: from, $to: to, $role: spec.role };
+    const params: SqlParams = { $from: from, $to: to, $role: spec.role };
     spec.patterns.forEach((p, i) => {
       params[`$p${i}`] = p;
     });
@@ -242,10 +252,13 @@ interface SessionRow {
   closing_assistant: string;
 }
 
+// Stored arrays were written by this index from string columns, but the JSON
+// is untrusted at read time: non-string elements degrade to null and drop out.
+const stringListSchema = z.array(z.string().nullable().catch(null)).catch([]);
+
 function parseArr(json: string): string[] {
   try {
-    const v = JSON.parse(json);
-    return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+    return stringListSchema.parse(JSON.parse(json)).filter((x): x is string => x !== null);
   } catch {
     return [];
   }
@@ -267,7 +280,7 @@ export async function computeContentStats(opts: ContentOptions): Promise<
 > {
   const db = await getIndexDb();
   const tool = opts.tool ? (INDEX_TOOL[opts.tool] ?? opts.tool) : null;
-  const params: Record<string, string> = { $from: opts.from, $to: opts.to };
+  const params: SqlParams = { $from: opts.from, $to: opts.to };
   let toolWhere = '';
   if (tool) {
     toolWhere = ' AND s.tool = $tool';

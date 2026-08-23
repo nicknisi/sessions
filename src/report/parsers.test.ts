@@ -9,8 +9,13 @@ import { parsePi } from './parsers/pi.ts';
 const tmp = mkdtempSync(join(tmpdir(), 'sessions-parsers-'));
 afterAll(() => rmSync(tmp, { recursive: true, force: true }));
 
+type JsonValue = string | number | boolean | null | JsonValue[] | JsonObject;
+interface JsonObject {
+  [key: string]: JsonValue;
+}
+
 function claudeLine(opts: { id?: string; requestId?: string; input?: number }): string {
-  const message: Record<string, unknown> = {
+  const message: JsonObject = {
     model: 'claude-opus-4-8',
     usage: {
       input_tokens: opts.input ?? 1000,
@@ -20,7 +25,7 @@ function claudeLine(opts: { id?: string; requestId?: string; input?: number }): 
     },
   };
   if (opts.id !== undefined) message.id = opts.id;
-  const line: Record<string, unknown> = {
+  const line: JsonObject = {
     type: 'assistant',
     sessionId: 's1',
     cwd: '/Users/x/Developer/sessions',
@@ -262,7 +267,7 @@ function piAssistant(opts: {
   provider?: string;
   timestamp?: string;
 }): string {
-  const usage: Record<string, unknown> = {
+  const usage: JsonObject = {
     input: opts.input ?? 100,
     output: opts.output ?? 50,
     cacheRead: opts.cacheRead ?? 0,
@@ -270,7 +275,7 @@ function piAssistant(opts: {
   };
   if (opts.cacheWrite1h !== undefined) usage.cacheWrite1h = opts.cacheWrite1h;
   if (opts.cost !== undefined) usage.cost = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: opts.cost };
-  const message: Record<string, unknown> = {
+  const message: JsonObject = {
     role: 'assistant',
     provider: opts.provider ?? 'anthropic',
     model: opts.model ?? 'claude-opus-4-8',
@@ -389,16 +394,18 @@ describe('parsePi zero-usage turns', () => {
 });
 
 describe('parsePi compaction and branch_summary usage', () => {
-  const compaction = (usage?: Record<string, unknown>): string =>
-    JSON.stringify({
+  const compaction = (usage?: JsonObject): string => {
+    const rec: JsonObject = {
       type: 'compaction',
       id: 'c1',
       parentId: 'p1',
       timestamp: '2026-06-01T10:10:00Z',
       summary: 'earlier work…',
       tokensBefore: 50000,
-      ...(usage ? { usage } : {}),
-    });
+    };
+    if (usage) rec.usage = usage;
+    return JSON.stringify(rec);
+  };
 
   test('counts summary usage, attributed to the current provider/model', async () => {
     const root = join(tmp, 'pi-compaction');

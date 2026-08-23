@@ -1,20 +1,63 @@
+import { z } from 'zod';
+
+/** A parsed JSON value; the raw material every extractor narrows from. */
+export type JsonValue = string | number | boolean | null | JsonValue[] | JsonObject;
+export interface JsonObject {
+  [key: string]: JsonValue;
+}
+
+// The canonical JSON boundary: recursive, so a parsed line's contents are all
+// JsonValue without any per-site casts.
+const jsonValueSchema: z.ZodType<JsonValue> = z.lazy(() =>
+  z.union([z.string(), z.number(), z.boolean(), z.null(), z.array(jsonValueSchema), jsonObjectSchema]),
+);
+export const jsonObjectSchema = z.record(z.string(), jsonValueSchema);
+
+/** Narrow to a JSON object: primitives and arrays fall out. */
+export function asJsonObject(v: JsonValue | undefined): JsonObject | undefined {
+  if (v === null || v === undefined || Array.isArray(v)) return undefined;
+  const parsed = jsonObjectSchema.safeParse(v);
+  return parsed.success ? parsed.data : undefined;
+}
+
+/** Narrow to a string; anything else falls out. */
+export function asJsonString(v: JsonValue | undefined): string | undefined {
+  const parsed = z.string().safeParse(v);
+  return parsed.success ? parsed.data : undefined;
+}
+
+/** Narrow to a number; anything else falls out. */
+export function asJsonNumber(v: JsonValue | undefined): number | undefined {
+  const parsed = z.number().safeParse(v);
+  return parsed.success ? parsed.data : undefined;
+}
+
+/** The string members of a JSON array; non-arrays and non-strings fall out. */
+export function jsonStrings(v: JsonValue | undefined): string[] {
+  if (!Array.isArray(v)) return [];
+  return v.flatMap((x) => {
+    const s = asJsonString(x);
+    return s === undefined ? [] : [s];
+  });
+}
+
 /**
  * The minimal message-line shape the shared user-turn helpers below read. Kept
  * structural (rather than parser.ts's JsonLine) so both parser.ts and pi-tree.ts
  * can use them without an import cycle between those two modules.
  */
 export type MessageLine = {
-  type?: string;
-  isCompactSummary?: boolean;
-  promptSource?: string | null;
-  message?: Record<string, unknown> | string;
+  type?: JsonValue;
+  isCompactSummary?: JsonValue;
+  promptSource?: JsonValue;
+  message?: JsonValue;
 };
 
-/** Parse one JSONL line to a record, or null — never throws, never yields a bare primitive. */
-export function tryParse(line: string): Record<string, unknown> | null {
+/** Parse one JSONL line to an object, or null — never throws, never yields a bare primitive. */
+export function tryParse(line: string): JsonObject | null {
   try {
-    const v = JSON.parse(line);
-    return v && typeof v === 'object' ? (v as Record<string, unknown>) : null;
+    const parsed = jsonObjectSchema.safeParse(JSON.parse(line));
+    return parsed.success ? parsed.data : null;
   } catch {
     return null;
   }
@@ -46,23 +89,23 @@ export function stripInjected(text: string): string {
 
 /** The joined, injection-stripped text of a user-role line's message content. */
 export function extractUserText(d: MessageLine): string {
-  const msg = d.message;
-  if (!msg || typeof msg !== 'object') return '';
-  const content = (msg as Record<string, unknown>).content;
+  const msg = asJsonObject(d.message);
+  if (!msg) return '';
+  const content = msg.content;
   const texts: string[] = [];
 
   if (Array.isArray(content)) {
     for (const c of content) {
-      if (
-        typeof c === 'object' &&
-        c !== null &&
-        ((c as Record<string, unknown>).type === 'text' || (c as Record<string, unknown>).type === 'input_text')
-      ) {
-        texts.push((c as Record<string, string>).text ?? '');
+      const block = asJsonObject(c);
+      if (block && (block.type === 'text' || block.type === 'input_text')) {
+        // No type gate on text: the old casts pushed the value raw and join
+        // stringified it; String() keeps that exact behavior.
+        texts.push(block.text === null || block.text === undefined ? '' : String(block.text));
       }
     }
-  } else if (typeof content === 'string') {
-    texts.push(content);
+  } else {
+    const text = asJsonString(content);
+    if (text !== undefined) texts.push(text);
   }
   return stripInjected(texts.join(' '));
 }
@@ -71,8 +114,7 @@ export function extractUserText(d: MessageLine): string {
 export function isUserMessage(d: MessageLine): boolean {
   if (d.type === 'user') return true;
   if (d.type === 'message') {
-    const msg = d.message;
-    return typeof msg === 'object' && msg !== null && (msg as Record<string, unknown>).role === 'user';
+    return asJsonObject(d.message)?.role === 'user';
   }
   return false;
 }
@@ -109,23 +151,23 @@ export function isGenuineUserTurn(d: MessageLine, strippedText: string): boolean
  * OpenCode extractors (files, commands, errors) share their traversal of the
  * synthesized `{type:'message', message:{role:'assistant', content:[…]}}` shape.
  */
-export function opencodeAssistantBlocks(lines: string[]): Record<string, unknown>[] {
-  const blocks: Record<string, unknown>[] = [];
+export function opencodeAssistantBlocks(lines: string[]): JsonObject[] {
+  const blocks: JsonObject[] = [];
   for (const line of lines) {
     const d = tryParse(line);
     if (!d || d.type !== 'message') continue;
-    const msg = d.message as Record<string, unknown> | undefined;
+    const msg = asJsonObject(d.message);
     if (!msg || msg.role !== 'assistant' || !Array.isArray(msg.content)) continue;
     for (const block of msg.content) {
-      if (block && typeof block === 'object') blocks.push(block as Record<string, unknown>);
+      const parsed = asJsonObject(block);
+      if (parsed) blocks.push(parsed);
     }
   }
   return blocks;
 }
 
-/** A tool block's `state.input` as a record (empty when absent). I.e. { command, filePath, pattern }. */
-export function toolInput(block: Record<string, unknown>): Record<string, unknown> {
-  const state = block.state as Record<string, unknown> | undefined;
-  const input = state?.input;
-  return input && typeof input === 'object' ? (input as Record<string, unknown>) : {};
+/** A tool block's `state.input` as an object (empty when absent). I.e. { command, filePath, pattern }. */
+export function toolInput(block: JsonObject): JsonObject {
+  const state = asJsonObject(block.state);
+  return asJsonObject(state?.input) ?? {};
 }

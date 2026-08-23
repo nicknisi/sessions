@@ -45,7 +45,7 @@ export function detectRoastTool(preferred?: RoastToolId): RoastTool | null {
 // A compact, STATS-ONLY digest — counts, names, and already-computed stats that
 // already appear on the page. Deliberately excludes free-text (session titles,
 // message snippets): the model gets numbers to riff on, never transcript prose.
-function roastDigest(d: WrappedData): Record<string, unknown> {
+function roastDigest(d: WrappedData) {
   return {
     year: d.year,
     tokens: d.totals.tokens,
@@ -90,13 +90,14 @@ ${digest}`;
 
 /** Extract the first JSON array from CLI output (which may wrap it in prose or
  *  a ```json fence). Greedy to the last ] so nested objects survive. */
-export function extractJsonArray(out: string): unknown {
+export function extractJsonArray(out: string): unknown[] | null {
   const stripped = out.replace(/```json/gi, '').replace(/```/g, '');
   const start = stripped.indexOf('[');
   const end = stripped.lastIndexOf(']');
   if (start < 0 || end <= start) return null;
   try {
-    return JSON.parse(stripped.slice(start, end + 1));
+    const parsed: unknown = JSON.parse(stripped.slice(start, end + 1));
+    return Array.isArray(parsed) ? parsed : null;
   } catch {
     return null;
   }
@@ -153,7 +154,7 @@ export async function runRoast(d: WrappedData, opts: RoastOptions = {}): Promise
     return [];
   }
 
-  const slides = coerceExtras(extractJsonArray(out));
+  const slides = coerceExtras(extractJsonArray(out) ?? []);
   if (slides.length === 0) {
     log(`warning: --roast: ${tool.label} returned nothing usable; skipping roast`);
     return [];

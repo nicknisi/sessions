@@ -6,18 +6,29 @@
 // unset for the downstream pricing engine — the same split Pi vs Claude/Codex make.
 import { Database } from 'bun:sqlite';
 import { existsSync } from 'node:fs';
-import type { UsageEvent } from './types.ts';
-import type { ProviderId } from '../types.ts';
+import { z } from 'zod';
 
-interface OpencodeMessage {
-  role?: string;
-  modelID?: string;
-  providerID?: string;
-  cost?: number;
-  time?: { created?: number; completed?: number };
-  path?: { cwd?: string };
-  tokens?: { input?: number; output?: number; reasoning?: number; cache?: { read?: number; write?: number } };
-}
+import type { UsageEvent } from './types.ts';
+
+// Message rows come from OpenCode's own DB; per-field catch keeps a malformed
+// optional field from discarding an otherwise usable row.
+const opencodeMessageSchema = z.object({
+  role: z.string().optional(),
+  modelID: z.string().optional().catch(undefined),
+  providerID: z.string().optional().catch(undefined),
+  cost: z.number().optional().catch(undefined),
+  time: z.object({ created: z.number().optional(), completed: z.number().optional() }).optional().catch(undefined),
+  path: z.object({ cwd: z.string().optional() }).optional().catch(undefined),
+  tokens: z
+    .object({
+      input: z.number().optional(),
+      output: z.number().optional(),
+      reasoning: z.number().optional(),
+      cache: z.object({ read: z.number().optional(), write: z.number().optional() }).optional(),
+    })
+    .optional()
+    .catch(undefined),
+});
 
 export async function parseOpencode(dbPath: string): Promise<UsageEvent[]> {
   if (!existsSync(dbPath)) return [];
@@ -46,11 +57,11 @@ export async function parseOpencode(dbPath: string): Promise<UsageEvent[]> {
       if (!modelID || !providerID || !tokens) continue;
 
       const created = msg.time?.completed ?? msg.time?.created;
-      if (typeof created !== 'number') continue;
+      if (created === undefined) continue;
 
       const event: UsageEvent = {
         tool: 'opencode',
-        provider: providerID as ProviderId,
+        provider: providerID,
         model: modelID,
         timestamp: new Date(created).toISOString(),
         sessionId: row.session_id,
@@ -64,7 +75,7 @@ export async function parseOpencode(dbPath: string): Promise<UsageEvent[]> {
         },
       };
       // Trust OpenCode's own cost only when it computed one; otherwise price downstream.
-      if (typeof msg.cost === 'number' && msg.cost > 0) event.costUSD = msg.cost;
+      if (msg.cost !== undefined && msg.cost > 0) event.costUSD = msg.cost;
       events.push(event);
     }
   } catch {
@@ -78,10 +89,10 @@ export async function parseOpencode(dbPath: string): Promise<UsageEvent[]> {
 /** JSON.parse a message row to a typed shape, or null on malformed/non-object data.
  *  Deliberately local (not src/extract-util's): the report/ subtree stays self-contained
  *  and types its rows. */
-function tryParse(text: string): OpencodeMessage | null {
+function tryParse(text: string): z.infer<typeof opencodeMessageSchema> | null {
   try {
-    const v = JSON.parse(text);
-    return v && typeof v === 'object' ? (v as OpencodeMessage) : null;
+    const parsed = opencodeMessageSchema.safeParse(JSON.parse(text));
+    return parsed.success ? parsed.data : null;
   } catch {
     return null;
   }

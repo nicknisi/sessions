@@ -18,7 +18,7 @@ const esc = (s: string): string =>
 
 /** JSON destined for a <script> block: `<` is the only character that can close
  *  the block early, so it is the only one that has to go. */
-const jsonForScript = (v: unknown): string => JSON.stringify(v).replace(/</g, '\\u003c');
+const jsonForScript = <T>(v: T): string => JSON.stringify(v).replace(/</g, '\\u003c');
 
 const fmtInt = (n: number): string => n.toLocaleString('en-US');
 /** "1 day" / "2 days" — never "1 days". */

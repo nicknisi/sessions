@@ -17,8 +17,9 @@ import {
   sessionParentSession,
 } from './parser';
 import { buildPiTree } from './pi-tree';
+import type { JsonObject } from './extract-util';
 
-function jsonl(...objs: Record<string, unknown>[]): string[] {
+function jsonl(...objs: JsonObject[]): string[] {
   return objs.map((o) => JSON.stringify(o));
 }
 

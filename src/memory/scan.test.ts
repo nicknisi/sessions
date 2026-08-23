@@ -203,6 +203,7 @@ describe('serve gate', () => {
     // payload the withholding exists to stop.
     const mcp = await import('../mcp');
     const result = await mcp.runGetMemory({ cwd: '/repos/anywhere' });
+    // SAFETY: structuredContent is the get_memory payload contract the test asserts.
     const payload = result.structuredContent as {
       results: { text: string }[];
       withheld?: { count: number; ids: string[]; note: string };

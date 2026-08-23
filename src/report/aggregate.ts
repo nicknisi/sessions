@@ -24,13 +24,16 @@ import { computeCost } from './pricing.ts';
 import { localDate, localHour, weekEnding } from './parsers/util.ts';
 import { resolveProject } from './project.ts';
 
-const TOOL_LABEL: Record<ToolId, string> = {
+const TOOL_LABEL = {
   'claude-code': 'Claude Code',
   pi: 'Pi',
   codex: 'Codex',
   opencode: 'OpenCode', // sessions-local extension — not in upstream tokenmaxing (see header)
-};
-const PROVIDER_LABEL: Record<string, string> = {
+} satisfies Record<ToolId, string>;
+interface ProviderLabels {
+  [provider: string]: string;
+}
+const PROVIDER_LABEL: ProviderLabels = {
   anthropic: 'Anthropic',
   openai: 'OpenAI',
   baseten: 'Baseten',
@@ -244,6 +247,8 @@ function deriveTopLevel(daily: DailyEntry[]) {
     totalSessions += d.sessions; // sum-across-days approximation; cross-midnight sessions counted twice
     for (let h = 0; h < 24; h++) hourCounts[h]! += d.hourCounts[h] ?? 0;
 
+    // SAFETY: d.byTool is built below from Map<ToolId, …> keys, so its own
+    // keys are ToolId; Object.entries only loses that in the type.
     for (const [k, v] of Object.entries(d.byTool) as [ToolId, ToolDailySlot][]) {
       const slot = byToolMap.get(k) ?? { tokens: 0, costUSD: 0, sessions: 0, messages: 0 };
       slot.tokens += v.tokens;
@@ -329,7 +334,12 @@ function deriveTopLevel(daily: DailyEntry[]) {
   };
 }
 
-function computeStreaks(activeDates: Set<string>, todayLocal: string): { current: number; longest: number } {
+interface StreakCount {
+  current: number;
+  longest: number;
+}
+
+function computeStreaks(activeDates: Set<string>, todayLocal: string): StreakCount {
   if (activeDates.size === 0) return { current: 0, longest: 0 };
   const sorted = [...activeDates].sort();
   let longest = 1,
@@ -426,6 +436,8 @@ export function computeInsights(daily: DailyEntry[], prs: PullRequest[], tz: str
     s.costUSD += d.costUSD;
     s.sessions += d.sessions;
     s.messages += d.messages;
+    // SAFETY: d.byTool is a Partial<Record<ToolId, ToolDailySlot>> built from
+    // Map<ToolId, …> keys; Object.entries only loses that in the type.
     for (const [k, v] of Object.entries(d.byTool) as [ToolId, ToolDailySlot][]) {
       const t = s.byTool.get(k) ?? { tokens: 0, costUSD: 0 };
       t.tokens += v.tokens;

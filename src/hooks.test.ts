@@ -2,6 +2,7 @@ import { describe, test, expect, afterAll, beforeEach } from 'bun:test';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, rmSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { asJsonObject, asJsonString, type JsonObject, type JsonValue } from './extract-util';
 
 // Point the hook at a hermetic temp config dir BEFORE importing the module.
 const fixtureRoot = realpathSync(mkdtempSync(join(tmpdir(), 'sessions-hooks-')));
@@ -22,21 +23,32 @@ beforeEach(() => {
   if (existsSync(settingsFile)) rmSync(settingsFile);
 });
 
-function readSettings(): Record<string, unknown> {
-  return JSON.parse(readFileSync(settingsFile, 'utf-8')) as Record<string, unknown>;
+function readSettings(): JsonObject {
+  const parsed = asJsonObject(JSON.parse(readFileSync(settingsFile, 'utf-8')));
+  if (!parsed) throw new Error('settings file is not a JSON object');
+  return parsed;
 }
 
-function sessionStartGroups(s: Record<string, unknown>): unknown[] {
-  const hooks = (s.hooks ?? {}) as Record<string, unknown>;
-  return Array.isArray(hooks.SessionStart) ? (hooks.SessionStart as unknown[]) : [];
+function sessionStartGroups(s: JsonObject): JsonValue[] {
+  const groups = asJsonObject(s.hooks)?.SessionStart;
+  return Array.isArray(groups) ? groups : [];
 }
 
 /** Count matcher-groups whose hooks array contains our tagged command. */
-function ourEntryCount(s: Record<string, unknown>): number {
+function ourEntryCount(s: JsonObject): number {
   return sessionStartGroups(s).filter((g) => {
-    const hooks = (g as { hooks?: { command?: string }[] }).hooks ?? [];
-    return hooks.some((h) => h.command === HOOK_COMMAND);
+    const hooks = asJsonObject(g)?.hooks;
+    if (!Array.isArray(hooks)) return false;
+    return hooks.some((h) => asJsonObject(h)?.command === HOOK_COMMAND);
   }).length;
+}
+
+/** The command strings of every hook in a matcher-group list. */
+function groupCommands(groups: JsonValue[]): (string | undefined)[] {
+  return groups.flatMap((g) => {
+    const hooks = asJsonObject(g)?.hooks;
+    return Array.isArray(hooks) ? hooks.map((h) => asJsonString(asJsonObject(h)?.command)) : [];
+  });
 }
 
 describe('enableSessionHook', () => {
@@ -75,7 +87,7 @@ describe('enableSessionHook', () => {
     expect(groups).toHaveLength(2); // the user's + ours
     expect(ourEntryCount(readSettings())).toBe(1);
     // The user's hook is untouched.
-    const flatCommands = groups.flatMap((g) => (g as { hooks: { command: string }[] }).hooks.map((h) => h.command));
+    const flatCommands = groupCommands(groups);
     expect(flatCommands).toContain('other-tool-hook');
   });
 
@@ -88,8 +100,8 @@ describe('enableSessionHook', () => {
     );
     enableSessionHook('claude');
     const s = readSettings();
-    const sessionEnd = (s.hooks as Record<string, unknown>).SessionEnd as unknown[];
-    expect(sessionEnd).toHaveLength(1);
+    const sessionEnd = asJsonObject(s.hooks)?.SessionEnd;
+    expect(Array.isArray(sessionEnd) ? sessionEnd : []).toHaveLength(1);
     expect(ourEntryCount(s)).toBe(1);
   });
 
@@ -118,7 +130,7 @@ describe('disableSessionHook', () => {
 
     const groups = sessionStartGroups(readSettings());
     expect(ourEntryCount(readSettings())).toBe(0);
-    const flatCommands = groups.flatMap((g) => (g as { hooks: { command: string }[] }).hooks.map((h) => h.command));
+    const flatCommands = groupCommands(groups);
     expect(flatCommands).toContain('other-tool-hook'); // user's hook survives
   });
 
@@ -132,8 +144,8 @@ describe('disableSessionHook', () => {
   test('drops an empty SessionStart array after removing our only entry', () => {
     enableSessionHook('claude');
     disableSessionHook('claude');
-    const hooks = (readSettings().hooks ?? {}) as Record<string, unknown>;
-    expect(hooks.SessionStart).toBeUndefined();
+    const hooks = asJsonObject(readSettings().hooks);
+    expect(hooks?.SessionStart).toBeUndefined();
   });
 
   test('is idempotent: disabling when absent is a no-op', () => {

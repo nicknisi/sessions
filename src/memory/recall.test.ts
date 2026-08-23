@@ -15,18 +15,19 @@ import { readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { mine } from './mine';
 import { normalizeText } from './record';
+import { z } from 'zod';
+
 import { assistantTurn, closeDatabases, makeTmp, setMemoryEnv, userTurn, writeSession } from './fixtures';
 
-interface GoldenEntry {
-  text: string;
-  label: 'correction' | 'not';
-  source: string;
-}
-
-const GOLDEN = JSON.parse(readFileSync(join(import.meta.dir, 'fixtures', 'corrections-golden.json'), 'utf8')) as {
-  _comment: string;
-  entries: GoldenEntry[];
-};
+// The golden fixture is version-controlled input; parse failures point at fixture
+// drift, not at the code under test.
+const goldenSchema = z.object({
+  _comment: z.string(),
+  entries: z.array(z.object({ text: z.string(), label: z.enum(['correction', 'not']), source: z.string() })),
+});
+const GOLDEN = goldenSchema.parse(
+  JSON.parse(readFileSync(join(import.meta.dir, 'fixtures', 'corrections-golden.json'), 'utf8')),
+);
 
 const CORRECTIONS = GOLDEN.entries.filter((e) => e.label === 'correction');
 const NOTS = GOLDEN.entries.filter((e) => e.label === 'not');

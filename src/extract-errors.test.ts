@@ -1,7 +1,8 @@
 import { test, expect } from 'bun:test';
 import { extractErrors } from './extract-errors';
+import type { JsonValue } from './extract-util';
 
-const j = (o: unknown): string => JSON.stringify(o);
+const j = (o: JsonValue): string => JSON.stringify(o);
 
 test('claude: tool_result is_error flags an errored session', () => {
   const lines = [

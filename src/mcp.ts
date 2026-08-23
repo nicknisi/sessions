@@ -1,6 +1,6 @@
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
+import { ErrorCode, McpError, type CallToolResult, type GetPromptResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { basename } from 'node:path';
 import {
@@ -14,6 +14,7 @@ import {
 } from './cache';
 import { formatResult, buildResumeCommand } from './search-format';
 import { getSessionMessages, type PiForkMarker } from './parser';
+import { asJsonObject, asJsonString, type JsonValue } from './extract-util';
 import { buildSessionDigest, clip, renderDigestMarkdown } from './digest';
 import { resolveRepo } from './repo';
 import { readSessionLines } from './session-io';
@@ -94,7 +95,9 @@ function pageSize(def: number, max: number, description: string) {
  */
 type ToolResult = {
   content: { type: 'text'; text: string }[];
-  structuredContent?: Record<string, unknown>;
+  // The SDK owns this contract (a string-keyed record of unknown); payloads are
+  // JSON objects built inline, and each tool's outputSchema does the real validation.
+  structuredContent?: CallToolResult['structuredContent'];
   isError?: boolean;
 };
 
@@ -106,13 +109,10 @@ type ToolResult = {
  * `structuredContent` is present, so the duplicate costs local pipe bytes and zero
  * model-context tokens — while still rendering on a client that ignores structured output.
  */
-function toolResult(payload: object): ToolResult {
+function toolResult(payload: NonNullable<CallToolResult['structuredContent']>): ToolResult {
   return {
     content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
-    // The SDK types structuredContent as a string-keyed record. These payloads are plain
-    // JSON-serializable objects, but TypeScript gives `interface` types no implicit index
-    // signature, so the widening must be explicit. The real check is the outputSchema.
-    structuredContent: payload as Record<string, unknown>,
+    structuredContent: payload,
   };
 }
 
@@ -122,16 +122,21 @@ function toolResult(payload: object): ToolResult {
  * Never solve an empty result with `isError`; that bypasses validation rather than
  * satisfying it, and these calls did succeed.
  */
-function sentinel(text: string, payload: object): ToolResult {
+function sentinel(text: string, payload: NonNullable<CallToolResult['structuredContent']>): ToolResult {
   // Built directly rather than spreading toolResult(): that would JSON.stringify the
   // payload only for the sentence below to throw the string away.
-  return { content: [{ type: 'text' as const, text }], structuredContent: payload as Record<string, unknown> };
+  return { content: [{ type: 'text' as const, text }], structuredContent: payload };
 }
 
 /** An unrecoverable call. `isError` results are exempt from output validation. */
 function toolError(message: string): ToolResult {
   return { content: [{ type: 'text' as const, text: message }], isError: true };
 }
+
+/** One memory row in the review_agent_memories payload (schema-derived). */
+type ReviewedMemoryPayload = z.infer<typeof ReviewAgentMemoriesOutput>['memories'][number];
+/** One message row in the get_session_messages payload (schema-derived). */
+type SessionMessagePayload = z.infer<typeof GetSessionMessagesOutput>['messages'][number];
 
 // Exported, testable seam: the search_sessions tool delegates to this so its behavior
 // (errored filter, per-result metadata, resumeCommand) can be unit-tested without MCP.
@@ -271,7 +276,7 @@ export async function runReviewAgentMemories(args: {
     const id = fingerprint(e.text);
     const similar = new Set(similarStoredIds(e.text, stored));
     if (storedIds.has(id)) similar.add(id); // an exact duplicate flags even below the token floor
-    return {
+    const memory: ReviewedMemoryPayload = {
       id,
       agent: e.agent,
       store: e.store,
@@ -279,8 +284,9 @@ export async function runReviewAgentMemories(args: {
       kind: e.kind,
       durable: e.durable,
       text: e.text,
-      ...(similar.size > 0 ? { similarTo: [...similar].sort() } : {}),
     };
+    if (similar.size > 0) memory.similarTo = [...similar].sort();
+    return memory;
   });
 
   const payload: z.infer<typeof ReviewAgentMemoriesOutput> = {
@@ -330,7 +336,9 @@ export async function runGetMemoryRecurrence(args: { repo?: string; all?: boolea
     };
     return sentinel('No memory store — run `sessions memory mine` first.', empty);
   }
-  return toolResult(run.report);
+  // Spread into a fresh literal: TS gives named interfaces no implicit index
+  // signature, and the SDK's structuredContent contract is an index-signature record.
+  return toolResult({ ...run.report });
 }
 
 // Exported, testable seam: the grep_sessions tool delegates here so its exhaustive-match
@@ -409,19 +417,19 @@ export async function runGetSessionMessages(args: {
     total: allMessages.length,
     offset,
     returned: page.length,
-    messages: page.map((m) => ({
-      role: m.role,
-      text: m.text,
+    messages: page.map((m) => {
+      const message: SessionMessagePayload = { role: m.role, text: m.text };
       // Rendered as `Name(summary)` one-liners; a turn's tool calls fold in here
       // (pure-tool-use turns have no index of their own).
-      ...(includeTools ? { tools: m.tools.map((t) => (t.summary ? `${t.name}(${t.summary})` : t.name)) } : {}),
+      if (includeTools) message.tools = m.tools.map((t) => (t.summary ? `${t.name}(${t.summary})` : t.name));
       // Pi branch labels and fork markers are FIELDS, orthogonal to include_tools and
       // present in both modes. A marker is never a synthetic message row — that would
       // change `total` and drift every messageHits offset this tool's contract pins.
-      // Conditional spreads keep unbranched sessions key-free (zero token cost).
-      ...(m.branch ? { branch: m.branch } : {}),
-      ...(m.fork ? { fork: { ...m.fork, marker: renderForkMarker(m.fork) } } : {}),
-    })),
+      // Conditional assignment keeps unbranched sessions key-free (zero token cost).
+      if (m.branch) message.branch = m.branch;
+      if (m.fork) message.fork = { ...m.fork, marker: renderForkMarker(m.fork) };
+      return message;
+    }),
   };
 
   return toolResult(result);
@@ -443,7 +451,8 @@ export async function runGetSessionDigest(args: { filePath: string }): Promise<T
     return toolError(`Could not read session: ${args.filePath}`);
   }
 
-  return toolResult(buildSessionDigest(lines));
+  // Spread: named interfaces get no implicit index signature; the SDK contract needs one.
+  return toolResult({ ...buildSessionDigest(lines) });
 }
 
 /**
@@ -672,8 +681,9 @@ function registerTools(server: McpServer): void {
     async ({ startDate, endDate, tool, project, detail }) => {
       const digest = await getActivityDigest(startDate, endDate, tool ?? '', project ?? '', detail);
       // An empty digest is already schema-conforming — zero counts and empty tiers.
-      if (digest.totalSessions === 0) return sentinel('No sessions found in that date range.', digest);
-      return toolResult(digest);
+      // Spread: named interfaces get no implicit index signature; the SDK contract needs one.
+      if (digest.totalSessions === 0) return sentinel('No sessions found in that date range.', { ...digest });
+      return toolResult({ ...digest });
     },
   );
 
@@ -694,8 +704,9 @@ function registerTools(server: McpServer): void {
     },
     async ({ startDate, endDate, tool, project }) => {
       const metrics = await getSessionMetrics(startDate, endDate, tool ?? '', project ?? '');
-      if (metrics.totalSessions === 0) return sentinel('No sessions found in that date range.', metrics);
-      return toolResult(metrics);
+      // Spread: named interfaces get no implicit index signature; the SDK contract needs one.
+      if (metrics.totalSessions === 0) return sentinel('No sessions found in that date range.', { ...metrics });
+      return toolResult({ ...metrics });
     },
   );
 
@@ -740,11 +751,13 @@ function registerTools(server: McpServer): void {
           memoryTotal: 0,
           isEmpty: true,
         };
-        return sentinel('Not inside a git repository.', none);
+        // Spread: named interfaces get no implicit index signature; the SDK contract needs one.
+        return sentinel('Not inside a git repository.', { ...none });
       }
       const primer = await getContextPrimer(repo, { limit, days, tool: tool ?? '', worktreeOnly: worktree });
-      if (primer.isEmpty) return sentinel('No past sessions found for this repo.', primer);
-      return toolResult(primer);
+      // Spread: named interfaces get no implicit index signature; the SDK contract needs one.
+      if (primer.isEmpty) return sentinel('No past sessions found for this repo.', { ...primer });
+      return toolResult({ ...primer });
     },
   );
 }
@@ -901,7 +914,12 @@ type PromptName = keyof typeof PROMPT_SKILLS;
  * Split a leading `---`-delimited YAML frontmatter block off a skill body. Returns the whole
  * input as `body` when there is none, so a skill that loses its frontmatter still serves.
  */
-function splitFrontmatter(raw: string): { frontmatter: string; body: string } {
+interface FrontmatterSplit {
+  frontmatter: string;
+  body: string;
+}
+
+function splitFrontmatter(raw: string): FrontmatterSplit {
   if (!raw.startsWith('---\n')) return { frontmatter: '', body: raw };
   // Search from 3 so an empty block (`---\n---\n`) still terminates.
   const end = raw.indexOf('\n---\n', 3);
@@ -913,12 +931,14 @@ function splitFrontmatter(raw: string): { frontmatter: string; body: string } {
  *  own field, and leaving it in the body would open every message with YAML noise. */
 function frontmatterDescription(frontmatter: string): string {
   try {
-    const parsed = Bun.YAML.parse(frontmatter);
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      const description = (parsed as Record<string, unknown>).description;
+    // SAFETY: YAML is a JSON superset at the values we write here — simple
+    // `key: value` frontmatter lines parse into the JSON domain.
+    const parsed = asJsonObject(Bun.YAML.parse(frontmatter) as JsonValue);
+    const description = asJsonString(parsed?.description);
+    if (description !== undefined) {
       // Folded scalars (`description: >-`) arrive with hard newlines; a prompt description
       // is a single sentence in a picker.
-      if (typeof description === 'string') return description.replace(/\s+/g, ' ').trim();
+      return description.replace(/\s+/g, ' ').trim();
     }
   } catch {
     // A malformed block is not worth refusing to serve the prompt over — the body is what
@@ -933,7 +953,12 @@ function frontmatterDescription(frontmatter: string): string {
  * Throws on a missing key. Every caller runs inside createServer(), so a renamed skill fails
  * the server's first start loudly instead of registering a prompt that returns nothing.
  */
-function skillPrompt(name: PromptName): { body: string; description: string } {
+interface SkillPromptContent {
+  body: string;
+  description: string;
+}
+
+function skillPrompt(name: PromptName): SkillPromptContent {
   const path = PROMPT_SKILLS[name];
   const raw = PLUGIN_FILES[path];
   if (!raw) {
@@ -948,12 +973,7 @@ function skillPrompt(name: PromptName): { body: string; description: string } {
  * instruction. The bodies are written for Claude Code, where a skill's argument arrives as
  * trailing user text — this is the same shape over MCP.
  */
-function promptResult(
-  body: string,
-  note: string,
-): {
-  messages: { role: 'user'; content: { type: 'text'; text: string } }[];
-} {
+function promptResult(body: string, note: string): GetPromptResult {
   const text = note ? `${body.trimEnd()}\n\n${note}\n` : body;
   return { messages: [{ role: 'user' as const, content: { type: 'text' as const, text } }] };
 }

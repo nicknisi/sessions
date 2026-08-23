@@ -160,6 +160,8 @@ if (lineage) {
 }
 process.stderr.write('\n');
 
+// SAFETY: the TSV field was written by formatLine from a SessionResult's Tool, and the
+// find() above matched it back to that same result.
 const resumeCmd = buildResumeCommand(tool as Tool, fullPath, sessionId);
 
 if (exists === 'deleted') {

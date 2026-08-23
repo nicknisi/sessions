@@ -118,8 +118,8 @@ export async function runRecurrence(opts: {
     lastMinedAt: lastMinedAt(),
     ...report,
     trend,
-    ...(trendSince ? { trendSince } : {}),
-    ...(trendNote ? { trendNote } : {}),
   };
+  if (trendSince) envelope.trendSince = trendSince;
+  if (trendNote) envelope.trendNote = trendNote;
   return { scope, report: envelope };
 }

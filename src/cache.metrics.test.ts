@@ -10,8 +10,9 @@ import { test, expect, beforeAll, afterAll, beforeEach } from 'bun:test';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import type { JsonValue } from './extract-util';
 
-const j = (o: unknown): string => JSON.stringify(o);
+const j = (o: JsonValue): string => JSON.stringify(o);
 
 let tmp: string;
 let cache: typeof import('./cache');

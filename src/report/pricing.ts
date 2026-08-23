@@ -11,6 +11,8 @@
 // that has tokens but no price match is recorded in a drainable warning
 // collector and surfaced loudly — never silently zeroed.
 
+import { z } from 'zod';
+
 import { PRICING as GENERATED_PRICING } from './pricing-data.generated.ts';
 
 export interface ModelPricing {
@@ -50,7 +52,12 @@ export interface PricingWarning {
 // Models the LiteLLM snapshot tends to lag on (newest releases). The embedded
 // snapshot is the base; these fill or override entries it lacks.
 // ---------------------------------------------------------------------------
-export const BUILTIN_OVERRIDES: Record<string, ModelPricing> = {
+/** Per-model pricing keyed by normalized model id. */
+export interface PricingMap {
+  [model: string]: ModelPricing;
+}
+
+export const BUILTIN_OVERRIDES: PricingMap = {
   // Anthropic — Claude (ccusage put_builtin_pricing)
   'claude-opus-4-8': {
     inputPerToken: 5e-6,
@@ -122,12 +129,12 @@ export const BUILTIN_OVERRIDES: Record<string, ModelPricing> = {
 // Embedded snapshot is the base; BUILTIN_OVERRIDES fills/overrides entries the
 // snapshot lacks. A runtime live fetch (Phase 2) is merged over the top via
 // mergeRuntimePricing — live wins over snapshot + overrides.
-const baseMap = (): Record<string, ModelPricing> => ({ ...GENERATED_PRICING, ...BUILTIN_OVERRIDES });
-const PRICING_MAP: Record<string, ModelPricing> = baseMap();
+const baseMap = (): PricingMap => ({ ...GENERATED_PRICING, ...BUILTIN_OVERRIDES });
+const PRICING_MAP: PricingMap = baseMap();
 
 // Overlay runtime-fetched records onto the in-memory map (live wins). Mutates the
 // shared map in place since find()/computeCost read the module singleton.
-export function mergeRuntimePricing(records: Record<string, ModelPricing>): void {
+export function mergeRuntimePricing(records: PricingMap): void {
   Object.assign(PRICING_MAP, records);
   findCache.clear();
   familyCache.clear();
@@ -148,49 +155,48 @@ export function resetPricing(): void {
 // Cache defaults are applied lazily in computeCost, not here, so the snapshot
 // stays a near-direct copy of LiteLLM.
 // ---------------------------------------------------------------------------
-interface LiteLLMEntry {
-  input_cost_per_token?: number;
-  output_cost_per_token?: number;
-  cache_creation_input_token_cost?: number;
-  cache_read_input_token_cost?: number;
-  input_cost_per_token_above_200k_tokens?: number;
-  output_cost_per_token_above_200k_tokens?: number;
-  cache_creation_input_token_cost_above_200k_tokens?: number;
-  cache_read_input_token_cost_above_200k_tokens?: number;
-}
+// zod v4 numbers are finite by default, matching the old isFiniteNumber gate.
+// Input/output rates are required (skip specs/embeddings/etc.); every other
+// field degrades to absent when malformed.
+const liteLLMEntrySchema = z.object({
+  input_cost_per_token: z.number(),
+  output_cost_per_token: z.number(),
+  cache_creation_input_token_cost: z.number().optional().catch(undefined),
+  cache_read_input_token_cost: z.number().optional().catch(undefined),
+  input_cost_per_token_above_200k_tokens: z.number().optional().catch(undefined),
+  output_cost_per_token_above_200k_tokens: z.number().optional().catch(undefined),
+  cache_creation_input_token_cost_above_200k_tokens: z.number().optional().catch(undefined),
+  cache_read_input_token_cost_above_200k_tokens: z.number().optional().catch(undefined),
+});
+const liteLLMFileSchema = z.record(z.string(), z.unknown());
 
-const isFiniteNumber = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
-
-export function parseLiteLLMPricing(json: string): Record<string, ModelPricing> {
-  let raw: unknown;
+export function parseLiteLLMPricing(json: string): PricingMap {
+  let raw: z.infer<typeof liteLLMFileSchema>;
   try {
-    raw = JSON.parse(json);
+    raw = liteLLMFileSchema.parse(JSON.parse(json));
   } catch {
     return {};
   }
-  if (raw === null || typeof raw !== 'object') return {};
 
-  const out: Record<string, ModelPricing> = {};
-  for (const [model, value] of Object.entries(raw as Record<string, unknown>)) {
-    if (value === null || typeof value !== 'object') continue;
-    const e = value as LiteLLMEntry;
-    // Require both input and output per-token rates; skip specs/embeddings/etc.
-    if (!isFiniteNumber(e.input_cost_per_token) || !isFiniteNumber(e.output_cost_per_token)) continue;
+  const out: PricingMap = {};
+  for (const [model, value] of Object.entries(raw)) {
+    const entry = liteLLMEntrySchema.safeParse(value);
+    if (!entry.success) continue;
+    const e = entry.data;
 
     const pricing: ModelPricing = {
       inputPerToken: e.input_cost_per_token,
       outputPerToken: e.output_cost_per_token,
     };
-    if (isFiniteNumber(e.cache_read_input_token_cost)) pricing.cacheReadPerToken = e.cache_read_input_token_cost;
-    if (isFiniteNumber(e.cache_creation_input_token_cost))
-      pricing.cacheWritePerToken = e.cache_creation_input_token_cost;
-    if (isFiniteNumber(e.input_cost_per_token_above_200k_tokens))
+    if (e.cache_read_input_token_cost !== undefined) pricing.cacheReadPerToken = e.cache_read_input_token_cost;
+    if (e.cache_creation_input_token_cost !== undefined) pricing.cacheWritePerToken = e.cache_creation_input_token_cost;
+    if (e.input_cost_per_token_above_200k_tokens !== undefined)
       pricing.inputPerTokenAbove200k = e.input_cost_per_token_above_200k_tokens;
-    if (isFiniteNumber(e.output_cost_per_token_above_200k_tokens))
+    if (e.output_cost_per_token_above_200k_tokens !== undefined)
       pricing.outputPerTokenAbove200k = e.output_cost_per_token_above_200k_tokens;
-    if (isFiniteNumber(e.cache_read_input_token_cost_above_200k_tokens))
+    if (e.cache_read_input_token_cost_above_200k_tokens !== undefined)
       pricing.cacheReadPerTokenAbove200k = e.cache_read_input_token_cost_above_200k_tokens;
-    if (isFiniteNumber(e.cache_creation_input_token_cost_above_200k_tokens))
+    if (e.cache_creation_input_token_cost_above_200k_tokens !== undefined)
       pricing.cacheWritePerTokenAbove200k = e.cache_creation_input_token_cost_above_200k_tokens;
 
     out[model] = pricing;

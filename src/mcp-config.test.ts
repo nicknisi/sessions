@@ -230,16 +230,20 @@ SESSIONS_DEBUG = "1"
 
   test('round-trips: merge then remove restores the original byte for byte', () => {
     const merged = mergeCodexConfig(REAL_CONFIG, CMD);
-    const removed = removeCodexConfig((merged as { text: string }).text);
-    expect((removed as { text: string }).text).toBe(REAL_CONFIG);
+    if (!('text' in merged)) throw new Error(`merge refused: ${merged.refused}`);
+    const removed = removeCodexConfig(merged.text);
+    if (!('text' in removed)) throw new Error(`remove refused: ${removed.refused}`);
+    expect(removed.text).toBe(REAL_CONFIG);
   });
 
   test('leaves blank runs the user wrote elsewhere in the file alone', () => {
     // Two blank lines before a later table: the user's formatting, not our seam.
     const spaced = `model = "gpt-5.6-sol"\n\n\n[plugins."github"]\nenabled = true\n`;
     const merged = mergeCodexConfig(spaced, CMD);
-    const removed = removeCodexConfig((merged as { text: string }).text);
-    expect((removed as { text: string }).text).toBe(spaced);
+    if (!('text' in merged)) throw new Error(`merge refused: ${merged.refused}`);
+    const removed = removeCodexConfig(merged.text);
+    if (!('text' in removed)) throw new Error(`remove refused: ${removed.refused}`);
+    expect(removed.text).toBe(spaced);
   });
 });
 

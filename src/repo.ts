@@ -11,7 +11,12 @@ export interface RepoInfo {
   branches: Map<string, string>;
 }
 
-function git(cwd: string, args: string[]): { ok: boolean; out: string } {
+interface GitResult {
+  ok: boolean;
+  out: string;
+}
+
+function git(cwd: string, args: string[]): GitResult {
   try {
     const result = Bun.spawnSync(['git', '-C', cwd, ...args]);
     if (result.exitCode !== 0) return { ok: false, out: '' };

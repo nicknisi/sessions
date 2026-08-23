@@ -266,11 +266,13 @@ function subagentReport(events: UsageEvent[], costOf: (e: UsageEvent) => number,
   };
 }
 
-function sessionCosts(
-  events: UsageEvent[],
-  costOf: (e: UsageEvent) => number,
-  tz: string,
-): { top: SessionCost[]; total: number; allCosts: number[] } {
+interface SessionCostBreakdown {
+  top: SessionCost[];
+  total: number;
+  allCosts: number[];
+}
+
+function sessionCosts(events: UsageEvent[], costOf: (e: UsageEvent) => number, tz: string): SessionCostBreakdown {
   interface Slot {
     tool: ToolId;
     sessionId: string;
@@ -369,11 +371,12 @@ function addWeeks(weekEndingYmd: string, n: number): string {
 
 /** Weekly cost per model, dense between the first and last active week so the
  *  series draws without gaps, plus the models in draw order (cost desc). */
-function modelMix(
-  events: UsageEvent[],
-  costOf: (e: UsageEvent) => number,
-  tz: string,
-): { weeks: ModelWeek[]; order: string[] } {
+interface ModelMixResult {
+  weeks: ModelWeek[];
+  order: string[];
+}
+
+function modelMix(events: UsageEvent[], costOf: (e: UsageEvent) => number, tz: string): ModelMixResult {
   const weeks = new Map<string, Map<string, number>>();
   const totals = new Map<string, number>();
   for (const e of events) {

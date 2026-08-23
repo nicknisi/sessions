@@ -27,6 +27,7 @@ import { existsSync } from 'node:fs';
 import { Glob } from 'bun';
 import { extractMessages } from './parser';
 import { buildPiTree } from './pi-tree';
+import { asJsonObject, asJsonString, type JsonObject } from './extract-util';
 
 const ENABLED = process.env.SESSIONS_LIVE_CORPUS === '1';
 const describeCorpus = ENABLED ? describe : describe.skip;
@@ -136,25 +137,25 @@ describeCorpus('live corpus', () => {
 /** Mirrors the parser's message-ness for the pi shape: a user/assistant message line
  *  whose text is non-empty. Injection-tag stripping is a Claude/Codex phenomenon and
  *  never fires on pi corpus text, so the oracle compares raw text. */
-function piMessageText(d: Record<string, unknown>): { role: string; text: string } | null {
+function piMessageText(d: JsonObject): { role: string; text: string } | null {
   let role: string | undefined;
   if (d.type === 'user') role = 'user';
   else if (d.type === 'message') {
-    const m = d.message as Record<string, unknown> | undefined;
-    const r = m?.role;
+    const r = asJsonObject(d.message)?.role;
     if (r === 'user' || r === 'assistant') role = r;
   }
   if (!role) return null;
-  const m = d.message as Record<string, unknown> | undefined;
+  const m = asJsonObject(d.message);
   const content = m?.content;
   const texts: string[] = [];
-  if (typeof content === 'string') texts.push(content);
+  const contentString = asJsonString(content);
+  if (contentString !== undefined) texts.push(contentString);
   else if (Array.isArray(content)) {
     for (const c of content) {
-      if (!c || typeof c !== 'object') continue;
-      const b = c as Record<string, unknown>;
+      const b = asJsonObject(c);
+      if (!b) continue;
       if (b.type === 'text' || (role === 'user' && b.type === 'input_text')) {
-        texts.push(typeof b.text === 'string' ? b.text : '');
+        texts.push(asJsonString(b.text) ?? '');
       }
     }
   }
@@ -168,22 +169,28 @@ interface OracleEntry {
   producesMessage: boolean;
 }
 
+interface PiTopologyResult {
+  entries: OracleEntry[];
+  active: Set<number>;
+  forks: number[][];
+}
+
 /** Independent topology walk: entries, the active set, and each fork's subtree. */
-function piTopology(lines: string[]): { entries: OracleEntry[]; active: Set<number>; forks: number[][] } {
+function piTopology(lines: string[]): PiTopologyResult {
   const entries: OracleEntry[] = [];
   lines.forEach((l, i) => {
-    let d: Record<string, unknown> | null = null;
+    let d: JsonObject | undefined;
     try {
-      const v: unknown = JSON.parse(l);
-      if (v && typeof v === 'object') d = v as Record<string, unknown>;
+      d = asJsonObject(JSON.parse(l));
     } catch {
       return;
     }
-    if (!d || typeof d.id !== 'string') return;
+    const id = asJsonString(d?.id);
+    if (!d || id === undefined) return;
     const msg = piMessageText(d);
     entries.push({
-      id: d.id,
-      parentId: typeof d.parentId === 'string' ? d.parentId : null,
+      id,
+      parentId: asJsonString(d.parentId) ?? null,
       line: i,
       producesMessage: msg !== null && msg.text.trim().length > 0,
     });
@@ -234,17 +241,17 @@ describeCorpus('live corpus — pi', () => {
     let files = 0;
     for await (const lines of transcripts(PI_ROOT, '**/*.jsonl', 5000)) {
       files++;
-      // Detection is shape-based: a file carrying id+parentId lines must be recognized.
-      const hasTreeShape = lines.slice(0, 20).some((l) => {
+      // Detection is id-based: a file carrying id+parentId lines must be recognized.
+      const hasTreeIds = lines.slice(0, 20).some((l) => {
         try {
-          const d = JSON.parse(l);
-          return d && typeof d.id === 'string' && 'parentId' in d;
+          const d = asJsonObject(JSON.parse(l));
+          return d !== undefined && asJsonString(d.id) !== undefined && 'parentId' in d;
         } catch {
           return false;
         }
       });
       const tree = buildPiTree(lines); // must not throw, whatever the file holds
-      if (hasTreeShape) expect(tree).not.toBeNull();
+      if (hasTreeIds) expect(tree).not.toBeNull();
     }
     if (files === 0) return; // no pi corpus on this machine
   });
@@ -258,15 +265,17 @@ describeCorpus('live corpus — pi', () => {
       files++;
       const seen = new Set<string>();
       for (const l of lines) {
-        let d: Record<string, unknown>;
+        let d: JsonObject | undefined;
         try {
-          d = JSON.parse(l);
+          d = asJsonObject(JSON.parse(l));
         } catch {
           continue;
         }
-        if (!d || typeof d.id !== 'string') continue;
-        if (typeof d.parentId === 'string') expect(seen.has(d.parentId)).toBe(true);
-        seen.add(d.id);
+        const id = asJsonString(d?.id);
+        if (id === undefined) continue;
+        const parentId = asJsonString(d?.parentId);
+        if (parentId !== undefined) expect(seen.has(parentId)).toBe(true);
+        seen.add(id);
       }
     }
     if (files === 0) return;
