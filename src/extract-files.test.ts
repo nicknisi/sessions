@@ -136,15 +136,65 @@ describe('extractFiles — opencode', () => {
 });
 
 describe('extractFiles — pi', () => {
-  // TODO: Pi's edited-file shape is unconfirmed — no captured Pi session with file
-  // edits exists yet. Per the spec's Open Items this branch returns [] until real
-  // fixtures land. This test pins the documented current behavior.
-  test('returns [] (branch deferred pending real fixtures)', () => {
+  // Fixture blocks are sanitized lines lifted from a real ~/.pi/agent/sessions log
+  // (2026-08-04): assistant `type:'message'` lines whose content[] carry
+  // `{type:'toolCall', name, arguments:{path}}` blocks.
+  function piAssistant(...content: Record<string, unknown>[]): Record<string, unknown> {
+    return { type: 'message', message: { role: 'assistant', content } };
+  }
+  function toolCall(name: string, args: Record<string, unknown>): Record<string, unknown> {
+    return { type: 'toolCall', id: `${name}_1`, name, arguments: args };
+  }
+
+  test('collects edit + write arguments.path, deduped and in first-seen order', () => {
     const lines = jsonl(
-      { type: 'session', cwd: '/repo' },
-      { type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: 'done' }] } },
+      piAssistant(
+        { type: 'text', text: 'fixing' },
+        toolCall('edit', { path: '/Users/x/Developer/arc/src/cli.ts', edits: [] }),
+      ),
+      piAssistant(toolCall('write', { path: '/Users/x/Developer/arc/package.json', content: '{}' })),
+      piAssistant(toolCall('edit', { path: '/Users/x/Developer/arc/src/cli.ts', edits: [] })), // duplicate
+    );
+    expect(extractFiles(lines, 'pi')).toEqual([
+      '/Users/x/Developer/arc/src/cli.ts',
+      '/Users/x/Developer/arc/package.json',
+    ]);
+  });
+
+  test('accepts toolName as well as name (result-block key)', () => {
+    const lines = jsonl(
+      piAssistant({ type: 'toolCall', id: 'edit_1', toolName: 'edit', arguments: { path: '/repo/a.ts' } }),
+    );
+    expect(extractFiles(lines, 'pi')).toEqual(['/repo/a.ts']);
+  });
+
+  test('ignores read/other tools and malformed blocks (no arguments)', () => {
+    const lines = jsonl(
+      piAssistant(
+        toolCall('read', { path: '/repo/read.ts' }),
+        toolCall('bash', { command: 'ls' }),
+        { type: 'toolCall', id: 'edit_2', name: 'edit' }, // no arguments
+      ),
     );
     expect(extractFiles(lines, 'pi')).toEqual([]);
+  });
+
+  test('caps the result at MAX_FILES', () => {
+    const lines = Array.from({ length: MAX_FILES + 10 }, (_, i) =>
+      JSON.stringify(piAssistant(toolCall('edit', { path: `/repo/f${i}.ts` }))),
+    );
+    expect(extractFiles(lines, 'pi')).toHaveLength(MAX_FILES);
+  });
+
+  test('read targets: the read tool arguments.path, separate from edited files', () => {
+    const lines = jsonl(
+      piAssistant(
+        toolCall('read', { path: '/repo/read.ts' }),
+        toolCall('edit', { path: '/repo/edited.ts', edits: [] }),
+      ),
+    );
+    expect(extractFilesRead(lines, 'pi')).toEqual(['/repo/read.ts']);
+    expect(extractFiles(lines, 'pi')).toEqual(['/repo/edited.ts']);
   });
 });
 

@@ -52,6 +52,8 @@ describe('extractSessionMetadata', () => {
       // No standalone helper to compare against: startedAt is the same instant as
       // createdAt with the time kept, and only this one-pass extractor produces it.
       startedAt: '2026-03-15T10:00:00Z',
+      // endedAt is the last full timestamp, the end-of-session counterpart to startedAt.
+      endedAt: '2026-03-17T10:00:00Z',
       messageCount: messageCount(lines),
       branch: sessionBranch(lines, 'claude'),
     });
@@ -70,6 +72,17 @@ describe('extractSessionMetadata', () => {
   test('startedAt is empty when no line carries a timestamp', () => {
     const lines = jsonl({ type: 'user', cwd: '/repo', message: { content: 'undated' } });
     expect(extractSessionMetadata(lines, 'claude').startedAt).toBe('');
+  });
+
+  test('endedAt is the last full timestamp; empty when none is present', () => {
+    const lines = jsonl(
+      { type: 'user', cwd: '/repo', timestamp: '2026-06-02T21:47:13.500Z', message: { content: 'start' } },
+      { type: 'assistant', cwd: '/repo', timestamp: '2026-06-03T01:02:03Z', message: { content: 'mid' } },
+      { type: 'assistant', cwd: '/repo', timestamp: '2026-06-03T02:30:00Z', message: { content: 'end' } },
+    );
+    expect(extractSessionMetadata(lines, 'claude').endedAt).toBe('2026-06-03T02:30:00Z');
+    const undated = jsonl({ type: 'user', cwd: '/repo', message: { content: 'undated' } });
+    expect(extractSessionMetadata(undated, 'claude').endedAt).toBe('');
   });
 
   test('counts Codex response_item messages, excluding developer framing', () => {

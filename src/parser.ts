@@ -61,6 +61,14 @@ export interface SessionMetadata {
    * each transcript from disk purely to read line 1's clock.
    */
   startedAt: string;
+  /**
+   * The last timestamp in full, not truncated to a day like `date`.
+   *
+   * Correlation (sessions why) needs a session's end instant to test whether a
+   * commit's authored time falls inside its window. '' when the transcript carries
+   * no full ISO timestamp; callers fall back to end-of-day of `date`.
+   */
+  endedAt: string;
   messageCount: number;
   branch: string;
 }
@@ -76,6 +84,7 @@ export function extractSessionMetadata(lines: string[], tool: Tool): SessionMeta
   let title = '';
   let firstDate = '?';
   let firstTs = '';
+  let lastTs = '';
   let lastDate = '?';
   let count = 0;
   let branch = '';
@@ -103,6 +112,7 @@ export function extractSessionMetadata(lines: string[], tool: Tool): SessionMeta
         firstDate = date;
         firstTs = d.timestamp;
       }
+      lastTs = d.timestamp;
       lastDate = date;
     }
 
@@ -134,6 +144,7 @@ export function extractSessionMetadata(lines: string[], tool: Tool): SessionMeta
     date: lastDate,
     createdAt: firstDate,
     startedAt: firstTs,
+    endedAt: lastTs,
     messageCount: count,
     branch,
   };

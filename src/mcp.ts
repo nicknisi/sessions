@@ -40,7 +40,9 @@ import {
   GrepSessionsOutput,
   ReviewAgentMemoriesOutput,
   SearchSessionsOutput,
+  WhyDidThisChangeOutput,
 } from './mcp-schemas';
+import { why, MAX_SESSIONS } from './why/correlate';
 
 const INSTRUCTIONS =
   'Searchable history of every past AI coding session (Claude Code, Codex, Pi, OpenCode) on this machine — the conversations behind the commits. Decisions, rationale, abandoned approaches, and unfinished threads live here, not in git. ' +
@@ -51,7 +53,8 @@ const INSTRUCTIONS =
   'Two read-only windows into what OTHER agents remember: get_memory_sources inventories every agent memory store on this machine (pi-hermes, Claude Code, Codex), and review_agent_memories reads their contents with provenance — use them to audit what another harness knows, to spot redundancy against get_memory, or before porting conventions between agents. get_memory_recurrence reports what recurs against that store — approved memories still being violated, untriaged repeats, and fuzzy paraphrase pairs awaiting triage confirmation.';
 
 /**
- * Correct for all 11 tools: every one reads the local index and mutates nothing.
+ * Correct for all 12 tools: every one reads the local index and mutates nothing.
+ * why_did_this_change reads git READ-ONLY (log/blame/show) and never writes to a repo.
  * get_memory included — it reads stored memory, it does not record it. The two
  * agent-source tools read other harnesses' stores but only ever open them readonly.
  * get_memory_recurrence MINES — real work, an index read per call — but writes
@@ -160,6 +163,20 @@ export async function runSearchSessions(args: {
   // An object envelope, not the bare array: structuredContent must be a JSON object.
   const payload = { results: formatted, count: formatted.length };
   if (formatted.length === 0) return sentinel('No sessions found.', payload);
+  return toolResult(payload);
+}
+
+// Exported, testable seam: the why_did_this_change tool delegates here so target parsing,
+// correlation, and the empty/error paths can be unit-tested without MCP.
+export async function runWhy(args: { target: string; cwd?: string; limit?: number }): Promise<ToolResult> {
+  const outcome = await why(args.target, args.cwd ?? process.cwd(), args.limit);
+  // A non-repo cwd or unknown ref/path is an unrecoverable call for this target.
+  if (outcome.kind === 'error') return toolError(outcome.message);
+  const payload = outcome.evidence;
+  // A structured empty (sessions: []) is a successful result, not an error.
+  if (payload.sessions.length === 0) {
+    return sentinel('No sessions correlate to this target.', payload as unknown as Record<string, unknown>);
+  }
   return toolResult(payload);
 }
 
@@ -456,7 +473,7 @@ export async function runGetSessionDigest(args: { filePath: string }): Promise<T
 }
 
 /**
- * All 11 tool registrations. Extracted alongside createServer() so a test can drive
+ * All 12 tool registrations. Extracted alongside createServer() so a test can drive
  * `tools/list` and `tools/call` over an in-memory transport — the only path that runs
  * the SDK's output validation. The exported `run*` seams stay the handlers' bodies, but
  * they bypass that validation, which is exactly why they cannot cover this surface.
@@ -577,6 +594,30 @@ function registerTools(server: McpServer): void {
     },
     async ({ query, tool, project, errored, files, limit }) =>
       runSearchSessions({ query, tool, project, errored, files, limit }),
+  );
+
+  server.registerTool(
+    'why_did_this_change',
+    {
+      title: 'Why does this code exist?',
+      description:
+        'Correlate a file, line, commit, or topic to the AI coding sessions behind it — the conversations that explain WHY code looks the way it does, which git alone cannot answer. Pass `target` as a repo-relative path ("src/cache.ts"), a path:line ("src/cache.ts:142") to pin one line via git blame, a commit-ish (sha, tag, HEAD~2), or free text for a topic search. Returns the resolved commit (subject, author time, files, trailers; null for the free-text form) and the sessions that produced it, each ranked by confidence: "files+time" (the session edited the committed files inside its time window) above "time-only" (same repo and window, no file overlap). Every session carries excerpts, an overlapping-files list, and a ready-to-run resume command; pass a session\'s filePath to get_session_messages for the full exchange. Read-only on both git and the index — it never writes to any repository (no hooks, no trailers, no branches). Empty when nothing correlates; that is a result, not an error.',
+      inputSchema: {
+        target: z
+          .string()
+          .min(1)
+          .describe('A repo-relative path, path:line, commit-ish (sha/tag/HEAD~n), or free-text topic.'),
+        cwd: z.string().optional().describe('Repo path to scope to. Defaults to the server process cwd.'),
+        limit: pageSize(
+          MAX_SESSIONS,
+          MAX_SESSIONS,
+          `Max correlated sessions to return (default ${MAX_SESSIONS}, max ${MAX_SESSIONS}).`,
+        ),
+      },
+      outputSchema: WhyDidThisChangeOutput,
+      annotations: READ_ONLY,
+    },
+    async ({ target, cwd, limit }) => runWhy({ target, cwd, limit }),
   );
 
   server.registerTool(

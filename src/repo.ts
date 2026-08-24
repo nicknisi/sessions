@@ -89,3 +89,88 @@ export function globPrefix(root: string): string {
 export function branchLabel(cwd: string, branches: Map<string, string>): string {
   return branches.get(cwd) ?? basename(cwd);
 }
+
+// ——— read-only git readers for `sessions why` ———
+//
+// Every reader here goes through the private git() above (exit-code checked, {ok:false}
+// on any failure or throw) and returns a null/[] safe value rather than throwing. None of
+// them ever write to a repository — no hooks, no trailers, no branches.
+
+/** A commit reduced to what correlation needs: identity, time, subject, files, trailers. */
+export interface CommitInfo {
+  sha: string;
+  subject: string;
+  /** ISO author time (%aI). */
+  authoredAt: string;
+  /** Repo-relative paths from --name-only. */
+  files: string[];
+  /** Co-Authored-By and other trailers, verbatim — annotation only, never a confidence tier. */
+  trailers: string[];
+}
+
+// RS between commits, US between header fields (and between joined trailers). Both are
+// control characters git will never emit inside a subject or a path, so the parse is
+// unambiguous without escaping.
+const RS = '\x1e';
+const US = '\x1f';
+const COMMIT_FORMAT = `${RS}%H${US}%aI${US}%s${US}%(trailers:only,unfold,separator=${US})`;
+
+/** Parse the RS/US-delimited `--name-only` output of log/show into commits. */
+function parseCommits(out: string): CommitInfo[] {
+  const commits: CommitInfo[] = [];
+  for (const chunk of out.split(RS)) {
+    if (!chunk.trim()) continue;
+    const nl = chunk.indexOf('\n');
+    const headerLine = nl >= 0 ? chunk.slice(0, nl) : chunk;
+    const rest = nl >= 0 ? chunk.slice(nl + 1) : '';
+    const fields = headerLine.split(US);
+    const sha = fields[0] ?? '';
+    if (!sha) continue;
+    const authoredAt = fields[1] ?? '';
+    const subject = fields[2] ?? '';
+    const trailers = fields.slice(3).filter((t) => t.trim());
+    const files = rest
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0);
+    commits.push({ sha, subject, authoredAt, files, trailers });
+  }
+  return commits;
+}
+
+/** Commits that touched `relPath` (most recent first), following renames, capped at `limit`. */
+export function logForFile(repo: RepoInfo, relPath: string, limit = 20): CommitInfo[] {
+  const res = git(repo.currentWorktree, [
+    'log',
+    '--follow',
+    `--format=${COMMIT_FORMAT}`,
+    '--name-only',
+    '-n',
+    String(limit),
+    '--',
+    relPath,
+  ]);
+  if (!res.ok || !res.out) return [];
+  return parseCommits(res.out);
+}
+
+/** The commit sha that last touched `line` of `relPath`, or null (uncommitted / new file). */
+export function blameLine(repo: RepoInfo, relPath: string, line: number): string | null {
+  const res = git(repo.currentWorktree, ['blame', '-L', `${line},${line}`, '--porcelain', '--', relPath]);
+  if (!res.ok || !res.out) return null;
+  const sha = res.out.split(/\s/, 1)[0];
+  return sha && /^[0-9a-f]{7,40}$/i.test(sha) ? sha : null;
+}
+
+/** One commit's full info by ref (sha, tag, HEAD~2, …), or null when the ref is unknown. */
+export function showCommit(repo: RepoInfo, ref: string): CommitInfo | null {
+  const res = git(repo.currentWorktree, ['show', '--name-only', `--format=${COMMIT_FORMAT}`, ref]);
+  if (!res.ok || !res.out) return null;
+  return parseCommits(res.out)[0] ?? null;
+}
+
+/** Whether `ref` names a commit object in this repo (used to disambiguate a target). */
+export function isCommitRef(repo: RepoInfo, ref: string): boolean {
+  const res = git(repo.currentWorktree, ['cat-file', '-t', ref]);
+  return res.ok && res.out.trim() === 'commit';
+}

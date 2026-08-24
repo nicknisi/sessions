@@ -93,7 +93,9 @@ function getCodexDir(): string {
 // /tree fork count, the PiFork[] JSON, and the /fork parent path) — and pi
 // custom/custom_message content joins session_fts.context_text. Both need a
 // re-parse of every transcript, which the user_version drop+rebuild below provides.
-const SCHEMA_VERSION = 10;
+// v11: adds sessions.ended_at (the full last timestamp), so correlation (sessions why)
+// can test a commit's authored time against each session's window without re-parsing.
+const SCHEMA_VERSION = 11;
 let _db: Database | null = null;
 let _refreshPromise: Promise<RefreshResult> | null = null;
 let _lastRefreshAt = 0;
@@ -167,6 +169,10 @@ function openDb(): Database {
       -- the active-hours histogram needs the clock, and reading it from here is what
       -- lets getSessionMetrics skip a second pass over every transcript on disk.
       started_at TEXT NOT NULL DEFAULT '',
+      -- The full last timestamp (v11). started_at's end-of-session counterpart: the
+      -- session window started_at..ended_at is what sessions why overlaps commit times
+      -- against. '' when the transcript carries no full ISO timestamp.
+      ended_at TEXT NOT NULL DEFAULT '',
       first_prompt TEXT NOT NULL,
       custom_title TEXT NOT NULL DEFAULT '',
       message_count INTEGER NOT NULL DEFAULT 0,
@@ -467,8 +473,8 @@ function writeSessionRow(
   }
   db.run('DELETE FROM ignored_files WHERE file_path = ?', [filePath]);
   db.run(
-    `INSERT OR REPLACE INTO sessions (file_path, mtime, size, cwd, tool, session_id, date, created_at, started_at, first_prompt, custom_title, message_count, files_touched, files_read, commands, errored, error_count, closing_user, closing_assistant, branch, branches, fork_points, forked_from)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT OR REPLACE INTO sessions (file_path, mtime, size, cwd, tool, session_id, date, created_at, started_at, ended_at, first_prompt, custom_title, message_count, files_touched, files_read, commands, errored, error_count, closing_user, closing_assistant, branch, branches, fork_points, forked_from)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       filePath,
       stat.mtimeMs,
@@ -479,6 +485,7 @@ function writeSessionRow(
       metadata.date,
       metadata.createdAt,
       metadata.startedAt,
+      metadata.endedAt,
       summary.firstPrompt,
       metadata.customTitle,
       metadata.messageCount,
@@ -1696,4 +1703,79 @@ export async function recentSessionsForRepo(
     .get(...scope.params);
 
   return { rows, totalCount: total?.n ?? 0 };
+}
+
+/** One indexed session projected to what correlation (sessions why) needs. */
+export interface CandidateSessionRow {
+  file_path: string;
+  cwd: string;
+  tool: string;
+  session_id: string;
+  date: string;
+  started_at: string;
+  ended_at: string;
+  first_prompt: string;
+  custom_title: string;
+  files_touched: string;
+}
+
+/**
+ * Repo-scoped sessions whose `date` falls in `[after, before]` (inclusive, YYYY-MM-DD).
+ *
+ * The coarse date bound keeps the scan O(window) rather than O(corpus) — `sessions why`
+ * derives the bound from a commit's authored day plus a buffer, then applies the precise
+ * `started_at <= authoredAt <= (ended_at | end-of-day) + slack` rule in JS. Same
+ * boundary-aware repo scope as the primer, so linked worktrees aggregate while a
+ * same-prefix sibling stays out.
+ */
+export async function candidateSessionsForRepoWindow(
+  repo: RepoInfo,
+  after: string,
+  before: string,
+): Promise<CandidateSessionRow[]> {
+  const db = getDb();
+  await ensureIndexFresh();
+
+  const scope = repoScopeClause(repoRoots(repo));
+  const where = `WHERE ${scope.clause} AND date >= ? AND date <= ?`;
+
+  return db
+    .query<CandidateSessionRow, any[]>(
+      `SELECT file_path, cwd, tool, session_id, date, started_at, ended_at, first_prompt, custom_title, files_touched
+       FROM sessions ${where}
+       ORDER BY started_at DESC, date DESC`,
+    )
+    .all(...scope.params, after, before);
+}
+
+/** Read up to `limit` best FTS message hits for one session, scoped by its file_path. */
+export interface SessionExcerptRow {
+  msg_index: number;
+  role: string;
+  snippet: string;
+}
+
+/**
+ * The best `limit` message excerpts for one session matching `terms` (already an FTS
+ * query string). Scoped to the session's `file_path` — the same message_fts MATCH shape
+ * searchSessions uses. Returns [] on an empty/blank term set or an FTS syntax error;
+ * evidence without quotes is never an error.
+ */
+export function sessionExcerpts(filePath: string, ftsQuery: string, limit: number): SessionExcerptRow[] {
+  if (!ftsQuery) return [];
+  const db = getDb();
+  try {
+    return db
+      .query<SessionExcerptRow, [string, string, number]>(
+        `SELECT msg_index, role, snippet(message_fts, 3, '', '', '\u2026', 32) AS snippet
+         FROM message_fts
+         WHERE file_path = ? AND message_fts MATCH ?
+         ORDER BY bm25(message_fts, ${MESSAGE_FTS_COLUMN_WEIGHTS.join(', ')})
+         LIMIT ?`,
+      )
+      .all(filePath, ftsQuery, limit)
+      .filter((r) => r.msg_index >= 0);
+  } catch {
+    return [];
+  }
 }

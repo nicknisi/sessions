@@ -32,6 +32,9 @@ ${C.bold}Commands:${C.reset}
   context          Print a context primer for the current repo (markdown)
                    --full widens detail; --limit/--days/--tool filter; --worktree
                    narrows to the current worktree; --out <path> writes to a file
+  why <target>     Why does this code exist? Correlate a file, file:line, commit-ish,
+                   or free-text topic to the AI sessions behind it. Read-only on git
+                   and the index; --json emits the structured evidence
   digest <session> Print the arc of one session as compact markdown (~8k chars):
                    each genuine user turn with its exchange's final assistant
                    reply. Accepts a JSONL file path or an indexed session id
