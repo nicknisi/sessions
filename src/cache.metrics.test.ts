@@ -23,6 +23,7 @@ function setEnv(): void {
   process.env.SESSIONS_PI_DIR = join(tmp, 'pi');
   process.env.SESSIONS_CODEX_DIR = join(tmp, 'codex');
   process.env.SESSIONS_OPENCODE_DB = join(tmp, 'opencode.db'); // absent → nothing leaks in
+  process.env.SESSIONS_ARCHIVE_DIR = join(tmp, 'archive'); // hermetic vault; keep off the real ~/.local/share
   // Re-index on every call. The default 5s freshness window would hide a fixture written
   // partway through this file, making the assertion pass against a stale index.
   process.env.SESSIONS_REFRESH_INTERVAL_MS = '0';

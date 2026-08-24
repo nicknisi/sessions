@@ -12,6 +12,7 @@ const claudeDir = join(fixtureRoot, 'claude');
 const piDir = join(fixtureRoot, 'pi');
 const codexDir = join(fixtureRoot, 'codex');
 const cacheDir = join(fixtureRoot, 'cache');
+const archiveDir = join(fixtureRoot, 'archive'); // hermetic vault; keep off the real ~/.local/share
 const opencodeDb = join(fixtureRoot, 'opencode.db'); // absent → no OpenCode sessions leak in
 for (const d of [claudeDir, piDir, codexDir, cacheDir]) mkdirSync(d, { recursive: true });
 
@@ -20,6 +21,7 @@ process.env.SESSIONS_PI_DIR = piDir;
 process.env.SESSIONS_CODEX_DIR = codexDir;
 process.env.SESSIONS_CACHE_DIR = cacheDir;
 process.env.SESSIONS_OPENCODE_DB = opencodeDb;
+process.env.SESSIONS_ARCHIVE_DIR = archiveDir;
 
 const cache = await import('./cache');
 
@@ -32,6 +34,7 @@ beforeEach(() => {
   process.env.SESSIONS_CODEX_DIR = codexDir;
   process.env.SESSIONS_CACHE_DIR = cacheDir;
   process.env.SESSIONS_OPENCODE_DB = opencodeDb;
+  process.env.SESSIONS_ARCHIVE_DIR = archiveDir;
   cache.closeDb();
 });
 

@@ -422,6 +422,29 @@ To clear the index and force a full rebuild:
 sessions --clear-cache
 ```
 
+### Transcript vault
+
+The search index is a disposable cache: it prunes rows when source transcripts vanish, and any schema change drops every table and rebuilds from whatever files still exist. Vendors garbage-collect transcripts on a rolling schedule (Claude Code deletes them after 30 days by default), so left to the index alone, history is lost.
+
+The **vault** is the durable copy. On every index refresh, each parseable transcript is archived to `~/.local/share/sessions/archive/` (raw bytes, one file per session, latest snapshot per file). This directory is the same durable-data convention that `sessions uninstall` already leaves alone, and it is **on by default** — the point is that archiving happens before anyone remembers to enable it. Set `SESSIONS_ARCHIVE_DIR` to relocate it.
+
+The vault is also a **discovery source**: a session whose source file is gone is re-indexed from its vault copy under its original path, so search, resume commands, and message reads keep working. OpenCode is the one exception to raw-bytes archiving — its sessions are SQLite rows with no files, so a normalized JSONL export (the same shape the parser reads) is archived instead.
+
+Inspect the archive:
+
+```sh
+sessions vault status              # per-tool counts, total bytes, vault-only sessions
+sessions vault inspect <target>    # one session by original path or session id
+```
+
+`status` reports how many archived sessions are vault-only (their source file is already gone). `inspect` takes either the original file path or the session id and prints the manifest entry plus whether the session is live, archived, or both.
+
+To rebuild the search index from scratch (the vault is untouched, so archived history survives):
+
+```sh
+sessions --clear-cache
+```
+
 ### Scoping with `--here`
 
 When `--here` is passed, `sessions` resolves the current git repo root and only shows sessions whose working directory falls under that root. This works with bare repo worktrees — if a `.git` file points to a `.bare` directory, the parent is used as the repo root.

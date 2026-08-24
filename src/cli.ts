@@ -62,6 +62,10 @@ ${C.bold}Commands:${C.reset}
                    triage state; there is no transport, the file is the seam
   memory import    Merge another author's bundle in as candidates to triage.
                    Never overwrites your own approve/reject decisions
+  vault status     Show the durable transcript archive: per-tool counts, total
+                   bytes, and how many sessions are vault-only (source gone)
+  vault inspect    Show one archived session by original path or session id
+                   (<target>); prints whether it is live, archived, or both
   setup            Install plugin and configure MCP for detected tools
                    --hooks opts in to SessionStart auto-injection (off by
                    default); without it, an interactive prompt asks when on a TTY

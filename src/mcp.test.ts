@@ -85,6 +85,8 @@ function setEnv(): void {
   // Required now that tools/call reaches get_memory from this file: without it the memory
   // store would open (and create) the developer's real ~/.local/share/sessions/memory.db.
   process.env.SESSIONS_DATA_DIR = join(tmp, 'data');
+  // Shadow any leaked SESSIONS_ARCHIVE_DIR (it overrides the DATA_DIR default).
+  process.env.SESSIONS_ARCHIVE_DIR = join(tmp, 'data', 'archive');
 }
 
 beforeAll(async () => {
@@ -893,6 +895,7 @@ describe('empty results', () => {
     process.env.SESSIONS_CODEX_DIR = join(emptyTmp, 'codex');
     process.env.SESSIONS_OPENCODE_DB = join(emptyTmp, 'opencode.db');
     process.env.SESSIONS_DATA_DIR = join(emptyTmp, 'data');
+    process.env.SESSIONS_ARCHIVE_DIR = join(emptyTmp, 'data', 'archive');
   }
 
   beforeAll(async () => {

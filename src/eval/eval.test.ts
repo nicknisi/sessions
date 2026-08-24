@@ -29,6 +29,7 @@ beforeAll(async () => {
   process.env.SESSIONS_PI_DIR = join(tmp, 'pi');
   process.env.SESSIONS_CODEX_DIR = join(tmp, 'codex');
   process.env.SESSIONS_OPENCODE_DB = join(tmp, 'opencode.db'); // absent → no OpenCode sessions leak in
+  process.env.SESSIONS_ARCHIVE_DIR = join(tmp, 'archive'); // hermetic vault; keep off the real ~/.local/share
   mkdirSync(join(tmp, 'claude'), { recursive: true });
   mkdirSync(join(tmp, 'pi'), { recursive: true });
   mkdirSync(join(tmp, 'codex'), { recursive: true });

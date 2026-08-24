@@ -5,6 +5,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { assistantTurn, closeDatabases, makeTmp, setMemoryEnv, userTurn, writeSession } from './memory/fixtures';
 import { resolveRepo } from './repo';
+import { getArchiveDir, loadManifest } from './vault/archive';
 
 // The resource surface is pure protocol: `resources/list` accepts no parameters and
 // `resources/read` has no run* seam, so an in-memory Client over createServer() is the only
@@ -275,7 +276,11 @@ describe('resources template', () => {
     process.env.SESSIONS_REFRESH_INTERVAL_MS = '600000';
     try {
       await mcp.listRepoSessions({ cwd: mainRepo }); // forces the scan, stamps the window
+      // The scan also archived this transcript into the vault, which is a durable read
+      // fallback — so to reach the genuinely-unreadable branch both copies must be gone.
+      const vaultCopy = loadManifest(getArchiveDir())[path]?.vaultPath;
       rmSync(path);
+      if (vaultCopy) rmSync(vaultCopy, { force: true });
       const client = await connect();
       const res = await client.readResource({ uri: `sessions://${UNREADABLE_ID}` });
       const text = textOf(res.contents[0]!);

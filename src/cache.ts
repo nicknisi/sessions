@@ -18,7 +18,7 @@ import {
   type PrimerMemory,
 } from './types';
 import { activeMemoryFor } from './memory/retrieve';
-import { getPiSessionsDir } from './paths';
+import { getPiSessionsDir, getArchiveDir } from './paths';
 import type { MemoryRecord } from './memory/types';
 import {
   extractMessages,
@@ -34,8 +34,9 @@ import { extractCommands } from './extract-commands';
 import { extractErrors } from './extract-errors';
 import { extractThinking } from './extract-thinking';
 import { extractCustomContext } from './extract-custom';
-import { discoverOpencodeSessions, collectOpencodeSubagentText, closeOpencodeDb } from './opencode';
+import { discoverOpencodeSessions, collectOpencodeSubagentText, closeOpencodeDb, opencodeStat } from './opencode';
 import { readSessionLines, statSession } from './session-io';
+import { archiveFile, listArchived, loadManifest, saveManifest, type Manifest } from './vault/archive';
 // The same cap the search projection uses. Aliased at the import so the name reads as the
 // primer's projection cap rather than being confused with extract-files.ts's own MAX_FILES
 // (50 — the bound on the indexed files_touched column, a different number for a different job).
@@ -317,6 +318,15 @@ async function discoverFiles(): Promise<FileEntry[]> {
   // Returns [] when the DB is absent.
   entries.push(...discoverOpencodeSessions());
 
+  // Vault-only sessions: transcripts whose live source is gone but whose archived
+  // copy survives. Appended under their ORIGINAL path so they re-index with the same
+  // identity; parsing reads through the session-io vault fallback. Skip any path a
+  // live source already produced — a vendor-restored file wins over its vault entry.
+  const live = new Set(entries.map((e) => e.path));
+  for (const archived of listArchived(getArchiveDir())) {
+    if (!live.has(archived.path)) entries.push({ path: archived.path, tool: archived.tool });
+  }
+
   return entries;
 }
 
@@ -350,49 +360,77 @@ function collectSubagentText(filePath: string, tool: Tool): string {
   return '';
 }
 
-function indexFile(db: Database, filePath: string, tool: Tool): boolean {
-  // Deliberately re-stat rather than trusting refreshIndex's pre-lock snapshot: a
-  // candidate may have waited behind another MCP process at BEGIN IMMEDIATE, and
-  // this is where we observe that process's completed write (or a transcript
-  // append) and skip the parse. A file that vanished during the wait stats as
-  // null and is left entirely alone — pruning, not ignoring, is its owner.
-  const stat = statSession(filePath, tool);
-  if (!stat) return false;
+// Refresh-scoped state threaded through indexFile: the vault manifest (mutated in
+// place, saved once at the end) and a one-shot warn flag so a failing archive dir
+// (disk full, EACCES) warns once and never blocks indexing.
+interface RefreshCtx {
+  manifest: Manifest;
+  dir: string;
+  warned: boolean;
+}
 
-  const existing = db
-    .query<{ mtime: number; size: number }, [string]>('SELECT mtime, size FROM sessions WHERE file_path = ?')
-    .get(filePath);
-
-  if (existing && existing.mtime === stat.mtimeMs && existing.size === stat.size) {
-    return false;
-  }
-  const ignored = db
-    .query<{ mtime: number; size: number }, [string]>('SELECT mtime, size FROM ignored_files WHERE file_path = ?')
-    .get(filePath);
-  if (ignored && ignored.mtime === stat.mtimeMs && ignored.size === stat.size) {
-    return false;
-  }
-
-  const ignore = (): false => {
-    if (existing) {
-      db.run('DELETE FROM sessions WHERE file_path = ?', [filePath]);
-      db.run('DELETE FROM session_fts WHERE file_path = ?', [filePath]);
-      db.run('DELETE FROM message_fts WHERE file_path = ?', [filePath]);
+// Archive one transcript into the vault, best-effort. Indexing must never be blocked
+// by archiving, so a copy failure warns at most once per refresh and is swallowed.
+function tryArchive(
+  ctx: RefreshCtx,
+  entry: { path: string; tool: Tool },
+  parsed: { cwd: string; sessionId: string },
+  stat: { mtime: number; size: number },
+): void {
+  try {
+    archiveFile(entry, parsed, stat, ctx.manifest, ctx.dir);
+  } catch (e) {
+    if (!ctx.warned) {
+      const msg = e instanceof Error ? e.message : String(e);
+      process.stderr.write(`sessions: vault archive failed (${msg}); continuing without archiving\n`);
+      ctx.warned = true;
     }
-    db.run('INSERT OR REPLACE INTO ignored_files (file_path, mtime, size) VALUES (?, ?, ?)', [
-      filePath,
-      stat.mtimeMs,
-      stat.size,
-    ]);
-    return false;
-  };
+  }
+}
 
-  const lines = readSessionLines(filePath, tool);
-  if (lines.length === 0) return ignore();
+// Whether a session's LIVE source still exists (not the vault copy). A vault-only
+// session (source gone) is served from the vault and must never be re-archived.
+function liveSourcePresent(filePath: string, tool: Tool): boolean {
+  if (tool === 'opencode') return opencodeStat(filePath) !== null;
+  return existsSync(filePath);
+}
+
+// The negative-inventory path: drop any indexed rows for this file and record its
+// mtime+size so an unchanged malformed/excluded transcript is not re-parsed forever.
+function ignoreSession(
+  db: Database,
+  filePath: string,
+  stat: { mtimeMs: number; size: number },
+  hasExisting: boolean,
+): void {
+  if (hasExisting) {
+    db.run('DELETE FROM sessions WHERE file_path = ?', [filePath]);
+    db.run('DELETE FROM session_fts WHERE file_path = ?', [filePath]);
+    db.run('DELETE FROM message_fts WHERE file_path = ?', [filePath]);
+  }
+  db.run('INSERT OR REPLACE INTO ignored_files (file_path, mtime, size) VALUES (?, ?, ?)', [
+    filePath,
+    stat.mtimeMs,
+    stat.size,
+  ]);
+}
+
+// Parse `lines` and write the session row + FTS rows, returning the session cwd on
+// success or null when the lines are unusable (empty, no cwd, or an excluded worktree
+// log). The caller owns ignored_files; this only writes on success.
+function writeSessionRow(
+  db: Database,
+  filePath: string,
+  tool: Tool,
+  stat: { mtimeMs: number; size: number },
+  lines: string[],
+  hasExisting: boolean,
+): { cwd: string } | null {
+  if (lines.length === 0) return null;
 
   const metadata = extractSessionMetadata(lines, tool);
-  if (!metadata.cwd) return ignore();
-  if (metadata.cwd.includes('.claude/worktrees') || metadata.cwd.includes('/.bare')) return ignore();
+  if (!metadata.cwd) return null;
+  if (metadata.cwd.includes('.claude/worktrees') || metadata.cwd.includes('/.bare')) return null;
 
   const sessionId = basename(filePath).replace('.jsonl', '');
   const messages = extractMessages(lines);
@@ -423,7 +461,7 @@ function indexFile(db: Database, filePath: string, tool: Tool): boolean {
   // fetches, intercom) — extension output, never turns, so it stays out of
   // message_fts and ranks at the middle bm25 weight.
   const contextText = [errors.messages.join('\n'), extractCustomContext(lines, tool)].filter(Boolean).join('\n');
-  if (existing) {
+  if (hasExisting) {
     db.run('DELETE FROM session_fts WHERE file_path = ?', [filePath]);
     db.run('DELETE FROM message_fts WHERE file_path = ?', [filePath]);
   }
@@ -476,11 +514,65 @@ function indexFile(db: Database, filePath: string, tool: Tool): boolean {
   // user text rides in a single sentinel row (msg_index -1): it keeps the session
   // findable by subagent-only terms but is excluded from messageHits.
   if (subagentContent) insertMessage.run(filePath, -1, 'user', subagentContent);
-  return true;
+  return { cwd: metadata.cwd };
+}
+
+function indexFile(db: Database, filePath: string, tool: Tool, ctx: RefreshCtx): boolean {
+  // Deliberately re-stat rather than trusting refreshIndex's pre-lock snapshot: a
+  // candidate may have waited behind another MCP process at BEGIN IMMEDIATE, and
+  // this is where we observe that process's completed write (or a transcript
+  // append) and skip the parse. A file that vanished during the wait — with no vault
+  // copy either — stats as null and is left entirely alone; pruning is its owner.
+  const stat = statSession(filePath, tool);
+  if (!stat) return false;
+
+  const existing = db
+    .query<{ mtime: number; size: number }, [string]>('SELECT mtime, size FROM sessions WHERE file_path = ?')
+    .get(filePath);
+  if (existing && existing.mtime === stat.mtimeMs && existing.size === stat.size) return false;
+  const ignored = db
+    .query<{ mtime: number; size: number }, [string]>('SELECT mtime, size FROM ignored_files WHERE file_path = ?')
+    .get(filePath);
+  if (ignored && ignored.mtime === stat.mtimeMs && ignored.size === stat.size) return false;
+
+  const lines = readSessionLines(filePath, tool);
+  const indexed = writeSessionRow(db, filePath, tool, stat, lines, !!existing);
+  if (indexed) {
+    // Archive only when the LIVE source is present. `stat` is the live stat in that
+    // case (statSession tries the original path before the vault fallback).
+    if (liveSourcePresent(filePath, tool)) {
+      tryArchive(
+        ctx,
+        { path: filePath, tool },
+        { cwd: indexed.cwd, sessionId: basename(filePath).replace('.jsonl', '') },
+        { mtime: stat.mtimeMs, size: stat.size },
+      );
+    }
+    return true;
+  }
+
+  // The live file is unusable (empty/truncated/rotated by the vendor). If the vault
+  // holds a parseable copy, index from that instead of ignoring the session — the
+  // archived version is the durability promise.
+  const entry = ctx.manifest[filePath];
+  if (entry && existsSync(entry.vaultPath)) {
+    let vaultLines: string[] = [];
+    try {
+      vaultLines = readFileSync(entry.vaultPath, 'utf-8').trimEnd().split('\n');
+    } catch {}
+    if (writeSessionRow(db, filePath, tool, stat, vaultLines, !!existing)) return true;
+  }
+
+  ignoreSession(db, filePath, stat, !!existing);
+  return false;
 }
 
 async function runRefreshIndex(): Promise<RefreshResult> {
   const db = getDb();
+  // The vault manifest, loaded once and saved once (saveManifest at the end):
+  // archiveFile mutates this map in place during the batches, and a per-file save
+  // could persist an archive whose index write later rolled back. One write follows.
+  const ctx: RefreshCtx = { manifest: loadManifest(getArchiveDir()), dir: getArchiveDir(), warned: false };
   // De-duplicate at the boundary. It also makes the set/map work below line up
   // exactly with the total reported to callers.
   const files = [...new Map((await discoverFiles()).map((file) => [file.path, file])).values()];
@@ -498,6 +590,10 @@ async function runRefreshIndex(): Promise<RefreshResult> {
     .all();
   const ignoredByPath = new Map(ignoredRows.map((row) => [row.file_path, row]));
   const inventoryPaths = new Set([...indexedByPath.keys(), ...ignoredByPath.keys()]);
+  // A path backed by the vault is never pruned even when its live source is gone:
+  // discoverFiles re-added it to `filePaths` (listArchived only returns entries whose
+  // vault copy still exists), so the row stays and is served from the vault. Only
+  // paths absent from BOTH the live sources and the vault are removed here.
   const removedPaths = [...inventoryPaths].filter((path) => !filePaths.has(path));
   if (removedPaths.length > 0) {
     db.exec('BEGIN IMMEDIATE');
@@ -542,7 +638,7 @@ async function runRefreshIndex(): Promise<RefreshResult> {
     db.exec('BEGIN IMMEDIATE');
     try {
       for (const file of batch) {
-        if (indexFile(db, file.path, file.tool)) updated++;
+        if (indexFile(db, file.path, file.tool, ctx)) updated++;
       }
       db.exec('COMMIT');
     } catch (error) {
@@ -550,6 +646,30 @@ async function runRefreshIndex(): Promise<RefreshResult> {
       throw error;
     }
   }
+
+  // Backfill: archive every already-indexed session still missing from the manifest,
+  // even though its index row is unchanged. The first refresh after upgrade preserves
+  // the entire existing corpus this way. Vault-only sessions are already in the
+  // manifest; a source that has since vanished has no live bytes to copy, so skip it.
+  const indexedRows = db
+    .query<{ file_path: string; cwd: string; session_id: string; tool: string; mtime: number; size: number }, []>(
+      'SELECT file_path, cwd, session_id, tool, mtime, size FROM sessions',
+    )
+    .all();
+  for (const row of indexedRows) {
+    if (ctx.manifest[row.file_path]) continue;
+    const tool = row.tool as Tool;
+    if (!liveSourcePresent(row.file_path, tool)) continue;
+    tryArchive(
+      ctx,
+      { path: row.file_path, tool },
+      { cwd: row.cwd, sessionId: row.session_id },
+      { mtime: row.mtime, size: row.size },
+    );
+  }
+
+  // One atomic manifest write for the whole refresh (see the ctx comment above).
+  saveManifest(ctx.dir, ctx.manifest);
 
   return { total: files.length, updated };
 }
