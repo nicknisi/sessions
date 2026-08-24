@@ -139,10 +139,10 @@ describe('extractFiles — pi', () => {
   // Fixture blocks are sanitized lines lifted from a real ~/.pi/agent/sessions log
   // (2026-08-04): assistant `type:'message'` lines whose content[] carry
   // `{type:'toolCall', name, arguments:{path}}` blocks.
-  function piAssistant(...content: Record<string, unknown>[]): Record<string, unknown> {
+  function piAssistant(...content: JsonObject[]): JsonObject {
     return { type: 'message', message: { role: 'assistant', content } };
   }
-  function toolCall(name: string, args: Record<string, unknown>): Record<string, unknown> {
+  function toolCall(name: string, args: JsonObject): JsonObject {
     return { type: 'toolCall', id: `${name}_1`, name, arguments: args };
   }
 

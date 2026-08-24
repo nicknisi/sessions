@@ -15,8 +15,9 @@ import {
 import { opencodeFilePath, serializeOpencodeSession, closeOpencodeDb } from '../opencode';
 import { readSessionLines } from '../session-io';
 import { getCwdFromSession, firstPrompt, customTitle } from '../parser';
+import type { JsonValue } from '../extract-util';
 
-const j = (o: unknown): string => JSON.stringify(o);
+const j = (o: JsonValue): string => JSON.stringify(o);
 
 let tmp: string;
 let dir: string;

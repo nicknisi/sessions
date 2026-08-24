@@ -1,5 +1,6 @@
 import { existsSync } from 'node:fs';
 import { basename, resolve } from 'node:path';
+import { z } from 'zod';
 import { resolveRepo, logForFile, blameLine, showCommit, isCommitRef, type RepoInfo, type CommitInfo } from '../repo';
 import { candidateSessionsForRepoWindow, sessionExcerpts, searchSessions, type CandidateSessionRow } from '../cache';
 import { buildResumeCommand } from '../search-format';
@@ -41,8 +42,13 @@ function looksLikePath(raw: string): boolean {
   return raw.includes('/') || /\.[A-Za-z0-9]+$/.test(raw);
 }
 
+interface PathLine {
+  path: string;
+  line?: number;
+}
+
 /** Split a `path:line` target into its path and 1-based line, or `{ path }` when unsuffixed. */
-function splitLine(raw: string): { path: string; line?: number } {
+function splitLine(raw: string): PathLine {
   const m = /^(.*):(\d+)$/.exec(raw);
   if (m && m[1]) return { path: m[1], line: Number(m[2]) };
   return { path: raw };
@@ -81,10 +87,12 @@ function toRepoRelative(p: string, roots: string[]): string {
   return p;
 }
 
+const filesTouchedSchema = z.array(z.string());
+
 function parseFilesTouched(json: string): string[] {
   try {
-    const parsed = JSON.parse(json);
-    return Array.isArray(parsed) ? (parsed as string[]) : [];
+    const parsed = filesTouchedSchema.safeParse(JSON.parse(json));
+    return parsed.success ? parsed.data : [];
   } catch {
     return [];
   }
@@ -152,6 +160,7 @@ function correlateCommit(repo: RepoInfo, commit: CommitInfo, rows: CandidateSess
         overlappingFiles: overlap,
         confidence,
         excerpts,
+        // SAFETY: the tool column is written by the index from Tool values only.
         resume: buildResumeCommand(row.tool as Tool, row.cwd, row.session_id),
       };
       return { evidence, score, startedAt: row.started_at };

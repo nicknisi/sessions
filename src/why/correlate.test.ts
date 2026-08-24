@@ -2,8 +2,9 @@ import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
+import type { JsonObject, JsonValue } from '../extract-util';
 
-const j = (o: unknown): string => JSON.stringify(o);
+const j = (o: JsonValue): string => JSON.stringify(o);
 
 let tmp: string;
 let repo: string; // the resolved toplevel (realpath) — sessions cwd must match this
@@ -37,7 +38,7 @@ function commit(gitDir: string, relPath: string, content: string, dateIso: strin
 
 // —— session fixtures (cwd = the resolved repo toplevel) ——
 
-function writeClaude(id: string, records: Record<string, unknown>[]): string {
+function writeClaude(id: string, records: JsonObject[]): string {
   const dir = join(process.env.SESSIONS_CLAUDE_DIR!, 'proj');
   mkdirSync(dir, { recursive: true });
   const p = join(dir, `${id}.jsonl`);
@@ -45,7 +46,7 @@ function writeClaude(id: string, records: Record<string, unknown>[]): string {
   return p;
 }
 
-function writePi(id: string, records: Record<string, unknown>[]): string {
+function writePi(id: string, records: JsonObject[]): string {
   const dir = join(process.env.SESSIONS_PI_DIR!, 'proj');
   mkdirSync(dir, { recursive: true });
   const p = join(dir, `${id}.jsonl`);
@@ -53,7 +54,7 @@ function writePi(id: string, records: Record<string, unknown>[]): string {
   return p;
 }
 
-function writeCodex(id: string, records: Record<string, unknown>[]): string {
+function writeCodex(id: string, records: JsonObject[]): string {
   const dir = join(process.env.SESSIONS_CODEX_DIR!, '2026', '06');
   mkdirSync(dir, { recursive: true });
   const p = join(dir, `${id}.jsonl`);
@@ -62,7 +63,7 @@ function writeCodex(id: string, records: Record<string, unknown>[]): string {
 }
 
 /** A Claude session that edited `absFiles` between start and end. */
-function claudeSession(start: string, end: string, absFiles: string[], text: string): Record<string, unknown>[] {
+function claudeSession(start: string, end: string, absFiles: string[], text: string): JsonObject[] {
   return [
     { type: 'user', cwd: repo, timestamp: start, gitBranch: 'main', message: { role: 'user', content: text } },
     ...absFiles.map((f) => ({

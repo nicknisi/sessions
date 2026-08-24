@@ -15,6 +15,7 @@
 
 import { existsSync, mkdirSync, copyFileSync, readFileSync, writeFileSync, renameSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import { z } from 'zod';
 import { type Tool } from '../types';
 import { getArchiveDir } from '../paths';
 import { serializeOpencodeSession } from '../opencode';
@@ -55,42 +56,35 @@ function encodePath(originalPath: string): string {
  * empty and rebuilt by the refresh backfill pass; the vault copies themselves are
  * untouched by the manifest being unreadable.
  */
+const vaultEntrySchema = z.object({
+  tool: z.enum(['claude', 'pi', 'codex', 'opencode']),
+  cwd: z.string(),
+  sessionId: z.string(),
+  mtime: z.number(),
+  size: z.number(),
+  archivedAt: z.string(),
+  vaultPath: z.string(),
+});
+
+const manifestFileSchema = z.record(z.string(), z.unknown());
+
 export function loadManifest(dir: string): Manifest {
   const path = getManifestPath(dir);
   if (!existsSync(path)) return {};
-  let parsed: unknown;
+  let parsed: z.infer<typeof manifestFileSchema>;
   try {
-    parsed = JSON.parse(readFileSync(path, 'utf-8'));
+    const file = manifestFileSchema.safeParse(JSON.parse(readFileSync(path, 'utf-8')));
+    if (!file.success) return {};
+    parsed = file.data;
   } catch {
     return {};
   }
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return {};
-  const manifest: Manifest = {};
-  for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
-    if (!value || typeof value !== 'object') continue;
-    const v = value as Record<string, unknown>;
-    if (
-      typeof v.tool !== 'string' ||
-      typeof v.cwd !== 'string' ||
-      typeof v.sessionId !== 'string' ||
-      typeof v.mtime !== 'number' ||
-      typeof v.size !== 'number' ||
-      typeof v.archivedAt !== 'string' ||
-      typeof v.vaultPath !== 'string'
-    ) {
-      continue;
-    }
-    manifest[key] = {
-      tool: v.tool as Tool,
-      cwd: v.cwd,
-      sessionId: v.sessionId,
-      mtime: v.mtime,
-      size: v.size,
-      archivedAt: v.archivedAt,
-      vaultPath: v.vaultPath,
-    };
+  const entries: Array<[string, VaultEntry]> = [];
+  for (const [key, value] of Object.entries(parsed)) {
+    const entry = vaultEntrySchema.safeParse(value);
+    if (entry.success) entries.push([key, entry.data]);
   }
-  return manifest;
+  return Object.fromEntries(entries);
 }
 
 /**
@@ -120,7 +114,7 @@ export function saveManifest(dir: string, manifest: Manifest): void {
  * A file that is itself inside the vault is never archived (self-copy guard).
  */
 export function archiveFile(
-  entry: { path: string; tool: string },
+  entry: { path: string; tool: Tool },
   parsed: { cwd: string; sessionId: string },
   stat: { mtime: number; size: number },
   manifest: Manifest,
@@ -141,7 +135,7 @@ export function archiveFile(
   }
 
   manifest[entry.path] = {
-    tool: entry.tool as Tool,
+    tool: entry.tool,
     cwd: parsed.cwd,
     sessionId: parsed.sessionId,
     mtime: stat.mtime,

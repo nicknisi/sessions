@@ -9,6 +9,8 @@
 // http://localhost:11434); nothing leaves the machine. `fetch` is built into Bun,
 // so this adds no runtime dependency.
 
+import { z } from 'zod';
+
 export interface Embedder {
   /** Stored in session_vectors.model; vectors from a different id are recomputed. */
   id: string;
@@ -18,6 +20,11 @@ export interface Embedder {
 
 const OLLAMA_URL = (): string => process.env.SESSIONS_OLLAMA_URL ?? 'http://localhost:11434';
 const OLLAMA_MODEL = (): string => process.env.SESSIONS_OLLAMA_MODEL ?? 'nomic-embed-text';
+
+const embedResponseSchema = z.object({ embeddings: z.array(z.array(z.number())) });
+const tagsResponseSchema = z.object({
+  models: z.array(z.object({ name: z.string().optional() })).default([]),
+});
 
 // # ponytail: fixed timeouts; tune only against a logged real miss, per EVAL.md
 // discipline. The probe is on the hot path (every process re-probes once), so it
@@ -51,12 +58,11 @@ export class OllamaEmbedder implements Embedder {
         signal: ctrl.signal,
       });
       if (!res.ok) throw new Error(`ollama embed: http ${res.status}`);
-      const body = (await res.json()) as { embeddings?: unknown };
-      const embeddings = body.embeddings;
-      if (!Array.isArray(embeddings) || embeddings.length !== texts.length) {
+      const body = embedResponseSchema.safeParse(await res.json());
+      if (!body.success || body.data.embeddings.length !== texts.length) {
         throw new Error('ollama embed: malformed response');
       }
-      return embeddings as number[][];
+      return body.data.embeddings;
     } finally {
       clearTimeout(timer);
     }
@@ -93,9 +99,9 @@ async function probeOllama(): Promise<Embedder | null> {
   try {
     const res = await fetch(`${url}/api/tags`, { signal: ctrl.signal });
     if (!res.ok) return null;
-    const body = (await res.json()) as { models?: Array<{ name?: unknown }> };
-    const models = Array.isArray(body.models) ? body.models : [];
-    const listed = models.some((m) => typeof m?.name === 'string' && modelMatches(m.name, model));
+    const body = tagsResponseSchema.safeParse(await res.json());
+    const models = body.success ? body.data.models : [];
+    const listed = models.some((m) => m.name !== undefined && modelMatches(m.name, model));
     // A model that isn't pulled degrades identically to an absent server.
     if (!listed) return null;
     return new OllamaEmbedder(model, url);

@@ -16,7 +16,7 @@ function git(cwd: string, args: string[], env: Record<string, string> = {}): str
   return new TextDecoder().decode(r.stdout).trim();
 }
 
-function whyEnv(): Record<string, string> {
+function whyEnv() {
   return {
     ...process.env,
     SESSIONS_CACHE_DIR: join(tmp, 'cache'),
@@ -27,10 +27,16 @@ function whyEnv(): Record<string, string> {
     SESSIONS_ARCHIVE_DIR: join(tmp, 'archive'),
     SESSIONS_REFRESH_INTERVAL_MS: '0',
     NO_COLOR: '1',
-  } as Record<string, string>;
+  };
 }
 
-function runCli(cwd: string, args: string[]): { code: number; stdout: string; stderr: string } {
+interface CliResult {
+  code: number;
+  stdout: string;
+  stderr: string;
+}
+
+function runCli(cwd: string, args: string[]): CliResult {
   const r = Bun.spawnSync([process.execPath, INDEX, 'why', ...args], { cwd, env: whyEnv() });
   return {
     code: r.exitCode,

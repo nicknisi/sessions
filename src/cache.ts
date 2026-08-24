@@ -688,6 +688,7 @@ async function runRefreshIndex(): Promise<RefreshResult> {
     .all();
   for (const row of indexedRows) {
     if (ctx.manifest[row.file_path]) continue;
+    // SAFETY: the tool column is written by the index from Tool values only.
     const tool = row.tool as Tool;
     if (!liveSourcePresent(row.file_path, tool)) continue;
     tryArchive(
@@ -768,6 +769,7 @@ async function embedMissingVectors(db: Database): Promise<void> {
   );
   for (let i = 0; i < stale.length; i += EMBED_BATCH) {
     const batch = stale.slice(i, i + EMBED_BATCH);
+    // SAFETY: the tool column is written by the index from Tool values only.
     const docs = batch.map((row) => buildEmbedDoc(row, readSessionLines(row.file_path, row.tool as Tool)));
     let vectors: number[][];
     try {

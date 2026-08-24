@@ -19,34 +19,40 @@ import {
   type Embedder,
 } from './embed';
 
+// The probe/embed tests only drive fetch's `() => Promise<Response>` arity; the real
+// signature's request arguments are never read by these stubs.
+function stubFetch(handler: () => Promise<Response>): typeof fetch {
+  return Object.assign(handler, { preconnect: (): void => {} });
+}
+
 // ——— fake embedder: a tiny concept map. Words in the same concept share a
 // dimension, so paraphrases ("flaky" ≈ "intermittent") land cosine-close. Unknown
 // tokens contribute nothing, so an unrelated query embeds to the zero vector. ———
-const CONCEPT: Record<string, number> = {
-  flaky: 0,
-  flakiness: 0,
-  intermittent: 0,
-  unreliable: 0,
-  test: 1,
-  tests: 1,
-  testing: 1,
-  ci: 1,
-  failure: 1,
-  failures: 1,
-  failing: 1,
-  auth: 2,
-  authentication: 2,
-  login: 2,
-  jwt: 2,
-  docker: 3,
-  container: 3,
-  containers: 3,
-  compose: 3,
-  pagination: 4,
-  handlers: 4,
-  cursor: 4,
-  paginate: 4,
-};
+const CONCEPT = new Map<string, number>([
+  ['flaky', 0],
+  ['flakiness', 0],
+  ['intermittent', 0],
+  ['unreliable', 0],
+  ['test', 1],
+  ['tests', 1],
+  ['testing', 1],
+  ['ci', 1],
+  ['failure', 1],
+  ['failures', 1],
+  ['failing', 1],
+  ['auth', 2],
+  ['authentication', 2],
+  ['login', 2],
+  ['jwt', 2],
+  ['docker', 3],
+  ['container', 3],
+  ['containers', 3],
+  ['compose', 3],
+  ['pagination', 4],
+  ['handlers', 4],
+  ['cursor', 4],
+  ['paginate', 4],
+]);
 const FAKE_DIM = 5;
 function fakeVector(text: string): number[] {
   const v = Array.from<number>({ length: FAKE_DIM }).fill(0);
@@ -54,7 +60,7 @@ function fakeVector(text: string): number[] {
     .toLowerCase()
     .split(/[^a-z0-9]+/)
     .filter(Boolean)) {
-    const d = CONCEPT[tok];
+    const d = CONCEPT.get(tok);
     if (d !== undefined) v[d]! += 1;
   }
   return v;
@@ -101,27 +107,31 @@ describe('detectEmbedder probe matrix', () => {
   });
 
   test('server down → null', async () => {
-    globalThis.fetch = (async () => {
+    globalThis.fetch = stubFetch(async () => {
       throw new Error('ECONNREFUSED');
-    }) as unknown as typeof fetch;
+    });
     clearEmbedderForTests();
     expect(await detectEmbedder()).toBeNull();
   });
 
   test('server up, model not pulled → null', async () => {
-    globalThis.fetch = (async () =>
-      new Response(JSON.stringify({ models: [{ name: 'llama3:latest' }] }), {
-        status: 200,
-      })) as unknown as typeof fetch;
+    globalThis.fetch = stubFetch(
+      async () =>
+        new Response(JSON.stringify({ models: [{ name: 'llama3:latest' }] }), {
+          status: 200,
+        }),
+    );
     clearEmbedderForTests();
     expect(await detectEmbedder()).toBeNull();
   });
 
   test('server up, model present (bare and :latest) → embedder', async () => {
-    globalThis.fetch = (async () =>
-      new Response(JSON.stringify({ models: [{ name: 'nomic-embed-text:latest' }] }), {
-        status: 200,
-      })) as unknown as typeof fetch;
+    globalThis.fetch = stubFetch(
+      async () =>
+        new Response(JSON.stringify({ models: [{ name: 'nomic-embed-text:latest' }] }), {
+          status: 200,
+        }),
+    );
     clearEmbedderForTests();
     const e = await detectEmbedder();
     expect(e?.id).toBe('ollama:nomic-embed-text');
@@ -129,10 +139,10 @@ describe('detectEmbedder probe matrix', () => {
 
   test('probe cached per process: a second call does not re-fetch', async () => {
     let calls = 0;
-    globalThis.fetch = (async () => {
+    globalThis.fetch = stubFetch(async () => {
       calls++;
       return new Response(JSON.stringify({ models: [{ name: 'nomic-embed-text' }] }), { status: 200 });
-    }) as unknown as typeof fetch;
+    });
     clearEmbedderForTests();
     await detectEmbedder();
     await detectEmbedder();
@@ -157,14 +167,15 @@ describe('embed fail-open', () => {
   });
 
   test('OllamaEmbedder.embed throws on non-200', async () => {
-    globalThis.fetch = (async () => new Response('nope', { status: 500 })) as unknown as typeof fetch;
+    globalThis.fetch = stubFetch(async () => new Response('nope', { status: 500 }));
     const e = new OllamaEmbedder('nomic-embed-text', 'http://localhost:11434');
     await expect(e.embed(['a'])).rejects.toThrow();
   });
 
   test('OllamaEmbedder.embed throws on a count mismatch', async () => {
-    globalThis.fetch = (async () =>
-      new Response(JSON.stringify({ embeddings: [[1, 2, 3]] }), { status: 200 })) as unknown as typeof fetch;
+    globalThis.fetch = stubFetch(
+      async () => new Response(JSON.stringify({ embeddings: [[1, 2, 3]] }), { status: 200 }),
+    );
     const e = new OllamaEmbedder('nomic-embed-text', 'http://localhost:11434');
     await expect(e.embed(['a', 'b'])).rejects.toThrow();
   });
@@ -172,9 +183,14 @@ describe('embed fail-open', () => {
 
 // ——— fusion against a seeded corpus + fake embedder ———
 
-type Rec = Record<string, unknown>;
-const j = (o: unknown): string => JSON.stringify(o);
-const user = (text: string, t: string): Rec => ({
+interface UserRecord {
+  type: 'user';
+  timestamp: string;
+  message: { role: 'user'; content: Array<{ type: 'text'; text: string }> };
+  promptSource: 'typed';
+}
+const j = (o: UserRecord & { cwd: string }): string => JSON.stringify(o);
+const user = (text: string, t: string): UserRecord => ({
   type: 'user',
   timestamp: t,
   message: { role: 'user', content: [{ type: 'text', text }] },

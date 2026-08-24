@@ -172,10 +172,10 @@ export async function runWhy(args: { target: string; cwd?: string; limit?: numbe
   const outcome = await why(args.target, args.cwd ?? process.cwd(), args.limit);
   // A non-repo cwd or unknown ref/path is an unrecoverable call for this target.
   if (outcome.kind === 'error') return toolError(outcome.message);
-  const payload = outcome.evidence;
+  const payload: z.infer<typeof WhyDidThisChangeOutput> = outcome.evidence;
   // A structured empty (sessions: []) is a successful result, not an error.
   if (payload.sessions.length === 0) {
-    return sentinel('No sessions correlate to this target.', payload as unknown as Record<string, unknown>);
+    return sentinel('No sessions correlate to this target.', payload);
   }
   return toolResult(payload);
 }

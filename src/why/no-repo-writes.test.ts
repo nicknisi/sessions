@@ -28,7 +28,12 @@ function setEnv(): void {
   process.env.SESSIONS_REFRESH_INTERVAL_MS = '0';
 }
 
-function snapshot(): { status: string; head: string } {
+interface RepoSnapshot {
+  status: string;
+  head: string;
+}
+
+function snapshot(): RepoSnapshot {
   return {
     status: git(join(tmp, 'repo'), ['status', '--porcelain']),
     head: git(join(tmp, 'repo'), ['rev-parse', 'HEAD']),

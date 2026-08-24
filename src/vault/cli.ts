@@ -70,8 +70,13 @@ export function statusReport(dir: string): string {
   return lines.join('\n');
 }
 
+export interface InspectReport {
+  text: string;
+  found: boolean;
+}
+
 /** `inspect`: the manifest entry for a target plus whether it is live, archived, or both. */
-export function inspectReport(dir: string, target: string): { text: string; found: boolean } {
+export function inspectReport(dir: string, target: string): InspectReport {
   const manifest = loadManifest(dir);
   const match = resolveTarget(manifest, target);
   if (!match) {

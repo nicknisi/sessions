@@ -5,13 +5,14 @@ import { join } from 'node:path';
 import { Database } from 'bun:sqlite';
 import { readSessionLines, statSession } from '../session-io';
 import { getSessionMessages } from '../parser';
+import type { JsonValue } from '../extract-util';
 
 // The vault as a discovery source: a session whose source file is gone (vendor GC)
 // must survive index prune, schema-bump rebuilds, and truncated-live-file re-parses,
 // staying searchable and readable under its ORIGINAL file_path. Hermetic tmp dirs,
 // SESSIONS_* overrides asserted before importing cache (cache.test.ts pattern).
 
-const j = (o: unknown): string => JSON.stringify(o);
+const j = (o: JsonValue): string => JSON.stringify(o);
 
 let tmp: string;
 let cache: typeof import('../cache');
