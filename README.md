@@ -47,6 +47,15 @@ The compiled binary is at `dist/sessions`. Requires [Bun](https://bun.sh) when b
 ### Dependencies
 
 - **fzf** (optional but recommended) — used for fuzzy selection. If fzf is not installed, a built-in numbered list selector is used as a fallback. Install with `brew install fzf`.
+- **Ollama** (optional) — enables semantic recall (see below). If Ollama is not running, search stays purely lexical. Install from [ollama.com](https://ollama.com).
+
+### Semantic recall
+
+Search is lexical by default (full-text ranking over titles, paths, commands, and messages). When [Ollama](https://ollama.com) is running locally, `sessions` adds an **optional** semantic lane that fuses with — never replaces — the lexical results, so a paraphrase like "flaky tests" can surface a session about "intermittent CI failures".
+
+- **Detection**: `sessions` probes `http://localhost:11434` (override with `SESSIONS_OLLAMA_URL`) and uses the `nomic-embed-text` model (override with `SESSIONS_OLLAMA_MODEL`; `ollama pull nomic-embed-text` to install it). Session embeddings are computed at index time and cached; installing Ollama later upgrades the whole corpus on the next refresh.
+- **Absence is first-class**: no Ollama, an unreachable server, or the model not pulled all degrade to identical lexical behavior. Not running Ollama is the off switch — there is no flag.
+- **Privacy**: only `localhost` is ever contacted; nothing leaves your machine, and no model is bundled in the binary.
 
 ## Quick Setup
 

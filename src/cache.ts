@@ -43,6 +43,8 @@ import { archiveFile, listArchived, loadManifest, saveManifest, type Manifest } 
 import { MAX_FILES as MAX_PRIMER_FILES } from './search-format';
 import { type RepoInfo, globPrefix, branchLabel, cwdUnder } from './repo';
 import { isTrivia, blendedScore, type ScorableSession } from './significance';
+import { detectEmbedder, embedQuery } from './semantic/embed';
+import { topKSimilar, fuseRRF, ABSTENTION_THRESHOLD, type VectorRow } from './semantic/fuse';
 
 // Source/cache locations default to the real home dirs but honor env overrides so
 // tests can point the index at hermetic temp fixtures (SESSIONS_* env vars).
@@ -95,7 +97,10 @@ function getCodexDir(): string {
 // re-parse of every transcript, which the user_version drop+rebuild below provides.
 // v11: adds sessions.ended_at (the full last timestamp), so correlation (sessions why)
 // can test a commit's authored time against each session's window without re-parsing.
-const SCHEMA_VERSION = 11;
+// v12: adds session_vectors — optional per-session embeddings for the semantic
+// search lane. Embeddings are derived data (a rebuild re-embeds at the next
+// refresh when an embedder is present), so the drop/rebuild below is lossless.
+const SCHEMA_VERSION = 12;
 let _db: Database | null = null;
 let _refreshPromise: Promise<RefreshResult> | null = null;
 let _lastRefreshAt = 0;
@@ -152,6 +157,7 @@ function openDb(): Database {
     db.run('DROP TABLE IF EXISTS session_fts');
     db.run('DROP TABLE IF EXISTS message_fts');
     db.run('DROP TABLE IF EXISTS ignored_files');
+    db.run('DROP TABLE IF EXISTS session_vectors');
     db.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   }
 
@@ -227,6 +233,21 @@ function openDb(): Database {
   db.run(`
     CREATE TABLE IF NOT EXISTS ignored_files (
       file_path TEXT PRIMARY KEY,
+      mtime REAL NOT NULL,
+      size INTEGER NOT NULL
+    )
+  `);
+  // Optional semantic lane (v12): one embedding per session. `model` is the
+  // embedder id — vectors from a different model live in a different space, so a
+  // mismatch (or a stale mtime/size) forces a re-embed on the next refresh. `vec`
+  // is Float32Array bytes. Absent/empty when no embedder has ever run; searching
+  // degrades to lexical-only, byte-identical to the pre-semantic behavior.
+  db.run(`
+    CREATE TABLE IF NOT EXISTS session_vectors (
+      file_path TEXT PRIMARY KEY,
+      model TEXT NOT NULL,
+      dim INTEGER NOT NULL,
+      vec BLOB NOT NULL,
       mtime REAL NOT NULL,
       size INTEGER NOT NULL
     )
@@ -413,6 +434,7 @@ function ignoreSession(
     db.run('DELETE FROM sessions WHERE file_path = ?', [filePath]);
     db.run('DELETE FROM session_fts WHERE file_path = ?', [filePath]);
     db.run('DELETE FROM message_fts WHERE file_path = ?', [filePath]);
+    db.run('DELETE FROM session_vectors WHERE file_path = ?', [filePath]);
   }
   db.run('INSERT OR REPLACE INTO ignored_files (file_path, mtime, size) VALUES (?, ?, ?)', [
     filePath,
@@ -609,6 +631,7 @@ async function runRefreshIndex(): Promise<RefreshResult> {
         db.run('DELETE FROM sessions WHERE file_path = ?', [path]);
         db.run('DELETE FROM session_fts WHERE file_path = ?', [path]);
         db.run('DELETE FROM message_fts WHERE file_path = ?', [path]);
+        db.run('DELETE FROM session_vectors WHERE file_path = ?', [path]);
         db.run('DELETE FROM ignored_files WHERE file_path = ?', [path]);
       }
       db.exec('COMMIT');
@@ -678,7 +701,104 @@ async function runRefreshIndex(): Promise<RefreshResult> {
   // One atomic manifest write for the whole refresh (see the ctx comment above).
   saveManifest(ctx.dir, ctx.manifest);
 
+  // Optional semantic lane: embed sessions missing (or with stale) vectors. Runs
+  // after all index writes commit, is entirely skipped when no embedder is
+  // present, and fails open — an embed error abandons embedding for THIS refresh
+  // (one warning) but never the refresh itself.
+  await embedMissingVectors(db);
+
   return { total: files.length, updated };
+}
+
+// The retrieval document embedded per session: title + first prompt + the files
+// it touched + its first few genuine user messages, capped so a long session
+// can't dominate. Deterministic from the transcript.
+// # ponytail: crude doc recipe; tune only against a logged real miss, per EVAL.md.
+const EMBED_DOC_CHARS = 2000;
+const EMBED_DOC_USER_MESSAGES = 8;
+const EMBED_BATCH = 32;
+
+function buildEmbedDoc(
+  row: { first_prompt: string; custom_title: string; files_touched: string },
+  lines: string[],
+): string {
+  const userMessages = getSessionMessages(lines)
+    .filter((m) => m.role === 'user')
+    .slice(0, EMBED_DOC_USER_MESSAGES)
+    .map((m) => m.text);
+  const parts = [
+    row.custom_title || row.first_prompt,
+    row.first_prompt,
+    parseFiles(row.files_touched).join('\n'),
+    ...userMessages,
+  ].filter((p) => p.length > 0);
+  return parts.join('\n').slice(0, EMBED_DOC_CHARS);
+}
+
+interface EmbedCandidateRow {
+  file_path: string;
+  tool: string;
+  mtime: number;
+  size: number;
+  first_prompt: string;
+  custom_title: string;
+  files_touched: string;
+}
+
+// Embed every session whose vector is missing, or stale (source mtime/size
+// changed), or from a different model (a swapped SESSIONS_OLLAMA_MODEL). Installing
+// Ollama later thus upgrades the whole corpus on the next refresh, and a schema
+// rebuild self-heals. Never throws.
+async function embedMissingVectors(db: Database): Promise<void> {
+  const embedder = await detectEmbedder();
+  if (!embedder) return;
+
+  const stale = db
+    .query<EmbedCandidateRow, [string]>(`
+      SELECT s.file_path, s.tool, s.mtime, s.size, s.first_prompt, s.custom_title, s.files_touched
+      FROM sessions s
+      LEFT JOIN session_vectors v ON v.file_path = s.file_path
+      WHERE v.file_path IS NULL OR v.model != ? OR v.mtime != s.mtime OR v.size != s.size
+    `)
+    .all(embedder.id);
+  if (stale.length === 0) return;
+
+  const upsert = db.query(
+    'INSERT OR REPLACE INTO session_vectors (file_path, model, dim, vec, mtime, size) VALUES (?, ?, ?, ?, ?, ?)',
+  );
+  for (let i = 0; i < stale.length; i += EMBED_BATCH) {
+    const batch = stale.slice(i, i + EMBED_BATCH);
+    const docs = batch.map((row) => buildEmbedDoc(row, readSessionLines(row.file_path, row.tool as Tool)));
+    let vectors: number[][];
+    try {
+      vectors = await embedder.embed(docs);
+    } catch {
+      // Fail open: warn once, abandon embedding for this refresh. Missing rows
+      // are picked up on the next refresh once the embedder is healthy again.
+      process.stderr.write('sessions: embedding unavailable this refresh; search continues lexical-only\n');
+      return;
+    }
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      for (let j = 0; j < batch.length; j++) {
+        const nums = vectors[j];
+        if (!nums || nums.length === 0) continue;
+        const vec = Float32Array.from(nums);
+        upsert.run(
+          batch[j]!.file_path,
+          embedder.id,
+          vec.length,
+          new Uint8Array(vec.buffer),
+          batch[j]!.mtime,
+          batch[j]!.size,
+        );
+      }
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+  }
 }
 
 /**
@@ -937,7 +1057,77 @@ export async function searchSessions(query: string, opts: SearchOptions = {}): P
     });
     merged.sort((a, b) => a.finalRank - b.finalRank || b.meta.date.localeCompare(a.meta.date));
 
-    const top = merged.slice(0, limit);
+    // ——— optional semantic lane (RRF fusion) ———
+    // Skipped entirely — leaving the lexical ordering above untouched, byte for
+    // byte — unless an embedder, stored vectors, AND an embeddable query all
+    // exist. That short-circuit is the absence-identity guarantee: no embedder or
+    // no vectors ⇒ today's exact lexical result.
+    type Entry = (typeof merged)[number];
+    const entryByPath = new Map<string, Entry>(merged.map((m) => [m.meta.file_path, m]));
+    let ordered: Entry[] = merged;
+
+    const embedder = await detectEmbedder();
+    if (embedder) {
+      const vecRows = db
+        .query<{ file_path: string; model: string; dim: number; vec: Uint8Array }, [string]>(
+          'SELECT file_path, model, dim, vec FROM session_vectors WHERE model = ?',
+        )
+        .all(embedder.id);
+      const queryVec = vecRows.length > 0 ? await embedQuery(embedder, query) : null;
+      if (queryVec) {
+        const rowsForScan: VectorRow[] = vecRows.map((v) => ({
+          filePath: v.file_path,
+          model: v.model,
+          dim: v.dim,
+          vec: bytesToF32(v.vec),
+        }));
+        const sims = topKSimilar(queryVec, rowsForScan, Math.max(limit, 50));
+        // Only similarities at/above the abstention threshold count as semantic
+        // hits: this is the negative-abstention guard (a zero-lexical query with
+        // only weak nearest vectors yields no semantic hits, so `ordered` stays
+        // the empty lexical result) AND the noise filter (a fused query never
+        // drags in unrelated near-zero-similarity sessions).
+        // # ponytail: fixed threshold; tune only against a logged real miss.
+        const semanticHits = sims.filter((s) => s.sim >= ABSTENTION_THRESHOLD);
+        if (semanticHits.length > 0) {
+          // Pull metadata (with the SAME filters) for purely-semantic candidates
+          // so a paraphrase hit that BM25 never surfaced can enter the results.
+          const semanticOnly = semanticHits.map((s) => s.filePath).filter((p) => !entryByPath.has(p));
+          const extraSem = conditions.length > 0 ? 'AND ' + conditions.join(' AND ') : '';
+          for (let i = 0; i < semanticOnly.length; i += CHUNK) {
+            const chunk = semanticOnly.slice(i, i + CHUNK);
+            const placeholders = chunk.map(() => '?').join(', ');
+            const metaRows = db
+              .query<SessionRow, any[]>(`
+              SELECT file_path, cwd, tool, session_id, date, created_at, first_prompt,
+                     custom_title, message_count, files_touched, files_read, commands, errored,
+                     branches, forked_from, NULL as snippet
+              FROM sessions WHERE file_path IN (${placeholders}) ${extraSem}
+            `)
+              .all(...chunk, ...condParams);
+            for (const r of metaRows) {
+              if (!entryByPath.has(r.file_path)) {
+                entryByPath.set(r.file_path, { meta: r, hits: [], snippet: null, finalRank: 0 });
+              }
+            }
+          }
+          // Both ranked lists carry only filter-passing paths (lexical from
+          // `merged`, semantic filtered against `entryByPath`).
+          const lexicalRanked = merged.map((m) => m.meta.file_path);
+          const semanticRanked = semanticHits.map((s) => s.filePath).filter((p) => entryByPath.has(p));
+          const scores = fuseRRF(lexicalRanked, semanticRanked);
+          ordered = [...entryByPath.values()]
+            .filter((e) => scores.has(e.meta.file_path))
+            .sort(
+              (a, b) =>
+                (scores.get(b.meta.file_path) ?? 0) - (scores.get(a.meta.file_path) ?? 0) ||
+                b.meta.date.localeCompare(a.meta.date),
+            );
+        }
+      }
+    }
+
+    const top = ordered.slice(0, limit);
     rows = top.map((m) => ({ ...m.meta, snippet: m.snippet }));
     for (const m of top) hitsByPath.set(m.meta.file_path, m.hits);
   } else {
@@ -1501,6 +1691,14 @@ function parseFiles(json: string): string[] {
   } catch {
     return [];
   }
+}
+
+// Reinterpret a stored session_vectors.vec BLOB as its Float32Array. slice()
+// copies into a fresh, zero-offset ArrayBuffer so the reinterpretation is safe
+// regardless of how bun:sqlite backs the returned bytes.
+function bytesToF32(bytes: Uint8Array): Float32Array {
+  const copy = bytes.slice();
+  return new Float32Array(copy.buffer, copy.byteOffset, Math.floor(copy.byteLength / 4));
 }
 
 /**
