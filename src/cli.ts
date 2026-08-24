@@ -32,6 +32,9 @@ ${C.bold}Commands:${C.reset}
   context          Print a context primer for the current repo (markdown)
                    --full widens detail; --limit/--days/--tool filter; --worktree
                    narrows to the current worktree; --out <path> writes to a file
+  why <target>     Why does this code exist? Correlate a file, file:line, commit-ish,
+                   or free-text topic to the AI sessions behind it. Read-only on git
+                   and the index; --json emits the structured evidence
   digest <session> Print the arc of one session as compact markdown (~8k chars):
                    each genuine user turn with its exchange's final assistant
                    reply. Accepts a JSONL file path or an indexed session id
@@ -62,6 +65,10 @@ ${C.bold}Commands:${C.reset}
                    triage state; there is no transport, the file is the seam
   memory import    Merge another author's bundle in as candidates to triage.
                    Never overwrites your own approve/reject decisions
+  vault status     Show the durable transcript archive: per-tool counts, total
+                   bytes, and how many sessions are vault-only (source gone)
+  vault inspect    Show one archived session by original path or session id
+                   (<target>); prints whether it is live, archived, or both
   setup            Install plugin and configure MCP for detected tools
                    --hooks opts in to SessionStart auto-injection (off by
                    default); without it, an interactive prompt asks when on a TTY

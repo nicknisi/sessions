@@ -61,6 +61,17 @@ const GROUPS: Group[] = [
     ],
   },
   {
+    label: 'Know why it exists',
+    lede: 'The other direction: start from the code, and find the conversation that produced it.',
+    entries: [
+      {
+        name: 'why_did_this_change',
+        blurb:
+          'Point it at a file, a path:line, a commit, or a topic and get back the sessions behind it — each tagged files+time or time-only, with excerpts and a resume command. Read-only on git: log, blame, and show only, so it works on repos you do not own.',
+      },
+    ],
+  },
+  {
     label: 'Know where you are',
     lede: 'The two calls worth making before writing any code in a repo you have been away from.',
     entries: [

@@ -11,6 +11,12 @@
 
 import type { SearchOptions } from '../cache';
 
+// This eval is lexical-only BY CONSTRUCTION: it runs `searchSessions` with no
+// embedder present, so the semantic fusion lane (src/semantic/) never engages and
+// these gates measure the lexical floor alone. Paraphrase recall — the thing the
+// optional Ollama lane adds — is proved separately in src/semantic/semantic.test.ts
+// against a fake deterministic embedder, so CI needs no Ollama. Bump EVAL_V only
+// when the corpus or goldens change (they must not for the semantic phase).
 export const EVAL_V = 'golden-v1';
 
 /** Recall is measured at this depth, matching the MCP caller's typical ask. */

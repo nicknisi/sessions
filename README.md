@@ -47,6 +47,15 @@ The compiled binary is at `dist/sessions`. Requires [Bun](https://bun.sh) when b
 ### Dependencies
 
 - **fzf** (optional but recommended) — used for fuzzy selection. If fzf is not installed, a built-in numbered list selector is used as a fallback. Install with `brew install fzf`.
+- **Ollama** (optional) — enables semantic recall (see below). If Ollama is not running, search stays purely lexical. Install from [ollama.com](https://ollama.com).
+
+### Semantic recall
+
+Search is lexical by default (full-text ranking over titles, paths, commands, and messages). When [Ollama](https://ollama.com) is running locally, `sessions` adds an **optional** semantic lane that fuses with — never replaces — the lexical results, so a paraphrase like "flaky tests" can surface a session about "intermittent CI failures".
+
+- **Detection**: `sessions` probes `http://localhost:11434` (override with `SESSIONS_OLLAMA_URL`) and uses the `nomic-embed-text` model (override with `SESSIONS_OLLAMA_MODEL`; `ollama pull nomic-embed-text` to install it). Session embeddings are computed at index time and cached; installing Ollama later upgrades the whole corpus on the next refresh.
+- **Absence is first-class**: no Ollama, an unreachable server, or the model not pulled all degrade to identical lexical behavior. Not running Ollama is the off switch — there is no flag.
+- **Privacy**: only `localhost` is ever contacted; nothing leaves your machine, and no model is bundled in the binary.
 
 ## Quick Setup
 
@@ -87,7 +96,7 @@ sessions setup
 
 After upgrading sessions (e.g., `brew upgrade sessions`), run `sessions setup` again to update the skills to the latest version.
 
-To remove the plugin, the MCP config, and the SessionStart hook: `sessions uninstall`. It removes only what the installer created — durable data in `~/.local/share/sessions` (memory triage decisions) is left alone.
+To remove the plugin, the MCP config, and the SessionStart hook: `sessions uninstall`. It removes only what the installer created — durable data in `~/.local/share/sessions` (the memory store and the transcript archive) is left alone.
 
 ## CLI: search & resume
 
@@ -99,6 +108,7 @@ sessions --tool claude       # Filter to Claude Code sessions only
 sessions --errored           # Only sessions that hit an error
 sessions --file src/auth.ts  # Only sessions that touched this file
 sessions context             # Print a context primer for the current repo
+sessions why <target>        # Why does this code exist? Correlate it to past sessions
 sessions digest <session>    # Print one session's arc as compact markdown
 sessions report              # Usage report (HTML dashboard, opens in browser)
 sessions memory mine         # Mine past sessions for durable facts (JSON on stdout)
@@ -116,6 +126,8 @@ sessions memory merge <id> <id>...  # Fold paraphrases into the first id
 sessions memory export       # Write approved memories as a portable bundle (JSON)
 sessions memory import <p>   # Merge another author's bundle in as candidates
 sessions memory import --from pi-hermes  # ...or import another agent's memory store
+sessions vault status          # Durable transcript archive: counts, bytes, vault-only sessions
+sessions vault inspect <target>  # One archived session by original path or session id
 ```
 
 ### Options
@@ -124,6 +136,7 @@ sessions memory import --from pi-hermes  # ...or import another agent's memory s
 | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `context`                       | Print a markdown context primer for the current repo (see [Context primer](#context-primer))                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | `digest <session>`              | Print one session's arc as compact markdown (~8k chars): each genuine user turn with its exchange's final assistant reply. Accepts a JSONL file path or a session id                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `why <target>`                  | Explain why code exists by correlating a file, `path:line`, commit-ish, or free-text topic to the AI sessions behind it (see [Why](#why-explain-code)). Read-only on git and the index                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | `report`                        | Generate a usage report (see [Usage reports](#usage-reports))                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `memory mine`                   | Mine past sessions for durable facts worth remembering and print the candidate batch as JSON. `--repo <path>` scopes to one repo container (default: the current repo); `--all` mines every repo; `--since-last` mines only transcripts whose mtime or size changed since the previous mine, so a repeat run over an unchanged corpus emits an empty batch                                                                                                                                                                                                                                                                                             |
 | `memory report`                 | Read-only recurrence report over the memory store: VIOLATIONS (approved memories still being re-corrected after their `lastSeen` date), REPEATS (corrections spanning sessions and dates that were never triaged), and FUZZY (middling-similarity paraphrase pairs to confirm in `/memory`). `--repo <path>` / `--all` scope the report like `mine`; `--since YYYY-MM-DD` filters cluster evidence; `--json` emits the machine-readable batch; `--no-snapshot` skips appending to the trend history. Each run appends a dated snapshot to `~/.local/share/sessions/memory-recurrence-snapshots.jsonl`, and the TREND section shows deltas between runs |
@@ -132,9 +145,11 @@ sessions memory import --from pi-hermes  # ...or import another agent's memory s
 | `memory export`                 | Write approved memories as a portable JSON bundle on stdout; `--out <path>` writes a file. Approved records only, with session paths and repo paths stripped — no local paths leave the machine                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `memory import <path>`          | Merge a bundle from another author in as candidates to triage. Never lands as approved and never overwrites your own approve/reject decisions. A `repo`-scoped memory arrives with no repo key — export strips local paths — so bind it to one of your repos when you approve it: `--scope repo:.`. Import says how many need it                                                                                                                                                                                                                                                                                                                       |
 | `memory import --from <source>` | Import the durable facts another agent on this machine has stored, as candidates to triage: `pi-hermes` (its structured store, or MEMORY.md/USER.md/failures.md), `claude` (global and repo CLAUDE.md/AGENTS.md plus the per-project memory store), or `all`. `--repo <path>` sets the repo context (default: cwd). Long consolidated entries split at their own sentence boundaries to fit the memory band; entries already in the store count as known, not duplicates. `codex` stores hold command permissions, not facts, so it imports nothing. See [Other agents' memory stores](#other-agents-memory-stores)                                    |
+| `vault status`                  | Report on the durable transcript archive: per-tool counts, total bytes, and how many archived sessions are vault-only (their source file is gone). See [Transcript vault](#transcript-vault)                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `vault inspect <target>`        | Show one archived session by its original file path or session id: the manifest entry plus whether the session is live, archived, or both                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | `setup`                         | Install plugin and configure MCP for detected tools (`--hooks` opts into auto-injection)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| `uninstall`                     | Remove plugin, MCP config, and the SessionStart hook from all tools. Triage decisions in `~/.local/share/sessions` are preserved                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| `cleanup`                       | Full reset: uninstall plugin + clear search index                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `uninstall`                     | Remove plugin, MCP config, and the SessionStart hook from all tools. Durable data in `~/.local/share/sessions` (the memory store and the transcript archive) is preserved                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `cleanup`                       | Full reset: uninstall plugin + clear search index. The transcript archive is untouched — a cleared index rebuilds from the vault                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `--here`                        | Scope to the current git repo (default: all projects)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `--tool <name>`                 | Filter by tool: `claude`, `codex`, `pi`, or `opencode`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | `--errored`                     | Only show sessions that hit an error                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
@@ -182,6 +197,24 @@ When you pick a session, `sessions` displays the resume command and copies it to
 
 For Claude Code sessions, the command includes `--resume <session-id>`; for OpenCode, `opencode --session <session-id>`. For Pi and Codex sessions, it navigates to the project directory (these tools don't support direct session resume).
 
+## Why: explain code
+
+`sessions why <target>` answers "why does this code exist" by correlating a git commit to the AI coding sessions that produced it. It is **read-only** on both sides: git is consulted with `log`/`blame`/`show` only, and nothing is ever written to any repository — no hooks, no trailers, no branches.
+
+```sh
+sessions why src/cache.ts          # commits that last touched a file, and their sessions
+sessions why src/cache.ts:142      # the commit that last changed one line (git blame)
+sessions why HEAD~2                 # one commit and the sessions that produced it
+sessions why "jwt auth refactor"   # sessions in this repo matching a topic (no git)
+sessions why src/cache.ts --json   # emit the structured evidence as JSON
+```
+
+**Forms.** The target is a file path (optionally `path:line`), a commit-ish (sha, tag, `HEAD~n`), or free text. A path resolves to the commit that last touched it (or, with a line, the commit that last changed that line via `git blame`); a commit-ish resolves directly; free text searches this repo's sessions with no git at all.
+
+**Confidence.** Each correlated session is tagged `files+time` (it edited the committed files inside its time window) or `time-only` (same repo and window, no file overlap). Results carry the commit (subject, author time, files, trailers), per-session excerpts, an overlapping-files list, and a ready-to-run resume command. An empty result is a result, not an error.
+
+The same correlation is exposed to agents as the read-only MCP tool `why_did_this_change` and the `/why` skill.
+
 ## Agent memory
 
 `sessions` includes an [MCP](https://modelcontextprotocol.io/) server that gives AI agents searchable access to your past conversations — across every tool, not just the one they're running in. `sessions setup` configures it automatically; for manual setup, add to your MCP configuration (e.g., `~/.claude/.mcp.json`):
@@ -199,7 +232,7 @@ For Claude Code sessions, the command includes `--resume <session-id>`; for Open
 
 ### MCP tools
 
-The MCP server exposes eleven tools:
+The MCP server exposes twelve tools:
 
 | Tool                    | Description                                                                                                                                                                                                                                                                                                                                                                                         |
 | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -210,6 +243,7 @@ The MCP server exposes eleven tools:
 | `get_activity_digest`   | Compact digest of sessions in a date range, grouped by day and project — for weekly summaries                                                                                                                                                                                                                                                                                                       |
 | `get_session_metrics`   | Usage metrics for a date range: tool/project breakdown, daily activity, active hours                                                                                                                                                                                                                                                                                                                |
 | `get_context_primer`    | Repo-scoped primer (recent sessions in detail + older headlines) for re-injecting prior work                                                                                                                                                                                                                                                                                                        |
+| `why_did_this_change`   | Correlate a file, `path:line`, commit-ish, or free-text topic to the AI sessions behind it. Returns the resolved commit (subject, author time, files, trailers) and the sessions that produced it, each tagged `files+time` or `time-only`, with excerpts and a resume command. Read-only on git and the index — never writes to any repository                                                     |
 | `get_memory`            | Approved standing instructions and durable facts for this repo, its project groups, and cross-repo workflow rules — a bounded set of short sentences to read before starting a task. An optional `topic` narrows the result to what is relevant to the task at hand; memory approved with `--always-on` are returned regardless and come first                                                      |
 | `get_memory_sources`    | Inventory every memory store the agents on this machine keep — pi-hermes-memory, Claude Code's global/per-project memory and CLAUDE.md/AGENTS.md files, Codex's rules and goals — with entry counts, durable-fact counts, and last-updated dates. Pure discovery for "what does each agent know?"                                                                                                   |
 | `review_agent_memories` | Read the CONTENTS of those stores with provenance: source agent and store, scope, a durable flag (importable fact vs audit-only material), and a `similarTo` flag when an entry substantially overlaps a memory sessions already holds. Secret/injection text is withheld with a count. Filter by `agent`, narrow by `topic`; capped at 50 entries with `total`/`truncated` reporting the rest      |
@@ -417,6 +451,29 @@ Both the CLI and the MCP server share a SQLite + FTS5 index at `~/.cache/session
 Long-lived MCP servers coalesce concurrent refreshes and reuse a freshness check for five seconds, so a burst of related tool calls does not walk the full session tree repeatedly. Set `SESSIONS_REFRESH_INTERVAL_MS=0` on the MCP process to require a source scan before every call.
 
 To clear the index and force a full rebuild:
+
+```sh
+sessions --clear-cache
+```
+
+### Transcript vault
+
+The search index is a disposable cache: it prunes rows when source transcripts vanish, and any schema change drops every table and rebuilds from whatever files still exist. Vendors garbage-collect transcripts on a rolling schedule (Claude Code deletes them after 30 days by default), so left to the index alone, history is lost.
+
+The **vault** is the durable copy. On every index refresh, each parseable transcript is archived to `~/.local/share/sessions/archive/` (raw bytes, one file per session, latest snapshot per file). This directory is the same durable-data convention that `sessions uninstall` already leaves alone, and it is **on by default** — the point is that archiving happens before anyone remembers to enable it. Set `SESSIONS_ARCHIVE_DIR` to relocate it.
+
+The vault is also a **discovery source**: a session whose source file is gone is re-indexed from its vault copy under its original path, so search, resume commands, and message reads keep working. OpenCode is the one exception to raw-bytes archiving — its sessions are SQLite rows with no files, so a normalized JSONL export (the same shape the parser reads) is archived instead.
+
+Inspect the archive:
+
+```sh
+sessions vault status              # per-tool counts, total bytes, vault-only sessions
+sessions vault inspect <target>    # one session by original path or session id
+```
+
+`status` reports how many archived sessions are vault-only (their source file is already gone). `inspect` takes either the original file path or the session id and prints the manifest entry plus whether the session is live, archived, or both.
+
+To rebuild the search index from scratch (the vault is untouched, so archived history survives):
 
 ```sh
 sessions --clear-cache

@@ -27,9 +27,19 @@ Gates: `recall@5 ≥ 0.9`, `MRR ≥ 0.7`, negatives abstain `100%` (hard).
 
 ## The discipline
 
-Adapted from the ctx project's retrieval eval (`../ctx`), minus the embeddings —
-sessions re-finds work by concrete cues, which is a lexical problem (see
-`docs/superpowers/specs/2026-06-27-search-faster-better-design.md`).
+Adapted from the ctx project's retrieval eval (`../ctx`). Lexical ranking is the
+floor and the subject of this eval: sessions re-finds work by concrete cues
+(error strings, paths, commands), which is a lexical problem (see
+`docs/superpowers/specs/2026-06-27-search-faster-better-design.md`), and these
+gates hold that floor.
+
+Embeddings are not evaluated here. The optional semantic lane (`src/semantic/`,
+Ollama-detected, localhost-only) fuses with lexical ranking to catch paraphrase
+("flaky tests" finding "intermittent CI failures") — additively, never replacing
+lexical. It has its own suite (`src/semantic/semantic.test.ts`) run against a fake
+deterministic embedder, so `bun run eval` stays embedder-free and green on any
+machine: it executes `searchSessions` with no embedder present, so the fusion lane
+never engages and the numbers below measure lexical alone.
 
 1. **The fixture is frozen.** Do not edit an expectation to match whatever the
    ranker currently does. If a golden fails, either the code regressed or the

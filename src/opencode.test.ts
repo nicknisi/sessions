@@ -193,6 +193,7 @@ describe('opencode cache integration', () => {
     process.env.SESSIONS_PI_DIR = join(tmp, 'pi');
     process.env.SESSIONS_CODEX_DIR = join(tmp, 'codex');
     process.env.SESSIONS_OPENCODE_DB = dbPath;
+    process.env.SESSIONS_ARCHIVE_DIR = join(tmp, 'archive'); // hermetic vault; keep off the real ~/.local/share
     for (const d of ['cache', 'claude', 'pi', 'codex']) mkdirSync(join(tmp, d), { recursive: true });
     cache = await import('./cache');
     cache.closeDb();

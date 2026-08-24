@@ -142,6 +142,19 @@ export function readOpencodeSession(filePath: string): string[] {
   return lines;
 }
 
+/**
+ * Serialize an OpenCode session to the normalized JSONL text the vault archives.
+ *
+ * OpenCode sessions are SQLite rows with no per-session file, so an export of the
+ * already-materialized `readOpencodeSession` lines[] is the rawest form that exists
+ * to preserve. The output is byte-identical to what the live materializer emits, so
+ * a vault copy re-parses through session-io/parser as tool `opencode` — no second
+ * normalization scheme. Empty string when the session is gone (nothing to archive).
+ */
+export function serializeOpencodeSession(filePath: string): string {
+  return readOpencodeSession(filePath).join('\n');
+}
+
 /** Genuine user text across a session's subagent (child) sessions, for parent-session search recall. */
 export function collectOpencodeSubagentText(filePath: string): string {
   const d = db();

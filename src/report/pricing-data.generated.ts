@@ -3,7 +3,7 @@
 // Source: https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json
 import type { PricingMap } from './pricing.ts';
 
-export const GENERATED_AT = '2026-08-23T19:31:05.910Z';
+export const GENERATED_AT = '2026-08-24T15:00:15.609Z';
 export const SOURCE_COMMIT = 'litellm-main';
 
 export const PRICING: PricingMap = {

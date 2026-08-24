@@ -18,7 +18,7 @@ import {
   type PrimerMemory,
 } from './types';
 import { activeMemoryFor } from './memory/retrieve';
-import { getPiSessionsDir } from './paths';
+import { getPiSessionsDir, getArchiveDir } from './paths';
 import type { MemoryRecord } from './memory/types';
 import {
   extractMessages,
@@ -34,14 +34,17 @@ import { extractCommands } from './extract-commands';
 import { extractErrors } from './extract-errors';
 import { extractThinking } from './extract-thinking';
 import { extractCustomContext } from './extract-custom';
-import { discoverOpencodeSessions, collectOpencodeSubagentText, closeOpencodeDb } from './opencode';
+import { discoverOpencodeSessions, collectOpencodeSubagentText, closeOpencodeDb, opencodeStat } from './opencode';
 import { readSessionLines, statSession } from './session-io';
+import { archiveFile, listArchived, loadManifest, saveManifest, type Manifest } from './vault/archive';
 // The same cap the search projection uses. Aliased at the import so the name reads as the
 // primer's projection cap rather than being confused with extract-files.ts's own MAX_FILES
 // (50 — the bound on the indexed files_touched column, a different number for a different job).
 import { MAX_FILES as MAX_PRIMER_FILES } from './search-format';
 import { type RepoInfo, globPrefix, branchLabel, cwdUnder } from './repo';
 import { isTrivia, blendedScore, type ScorableSession } from './significance';
+import { detectEmbedder, embedQuery } from './semantic/embed';
+import { topKSimilar, fuseRRF, ABSTENTION_THRESHOLD, type VectorRow } from './semantic/fuse';
 
 // Source/cache locations default to the real home dirs but honor env overrides so
 // tests can point the index at hermetic temp fixtures (SESSIONS_* env vars).
@@ -92,7 +95,12 @@ function getCodexDir(): string {
 // /tree fork count, the PiFork[] JSON, and the /fork parent path) — and pi
 // custom/custom_message content joins session_fts.context_text. Both need a
 // re-parse of every transcript, which the user_version drop+rebuild below provides.
-const SCHEMA_VERSION = 10;
+// v11: adds sessions.ended_at (the full last timestamp), so correlation (sessions why)
+// can test a commit's authored time against each session's window without re-parsing.
+// v12: adds session_vectors — optional per-session embeddings for the semantic
+// search lane. Embeddings are derived data (a rebuild re-embeds at the next
+// refresh when an embedder is present), so the drop/rebuild below is lossless.
+const SCHEMA_VERSION = 12;
 let _db: Database | null = null;
 let _refreshPromise: Promise<RefreshResult> | null = null;
 let _lastRefreshAt = 0;
@@ -149,6 +157,7 @@ function openDb(): Database {
     db.run('DROP TABLE IF EXISTS session_fts');
     db.run('DROP TABLE IF EXISTS message_fts');
     db.run('DROP TABLE IF EXISTS ignored_files');
+    db.run('DROP TABLE IF EXISTS session_vectors');
     db.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   }
 
@@ -166,6 +175,10 @@ function openDb(): Database {
       -- the active-hours histogram needs the clock, and reading it from here is what
       -- lets getSessionMetrics skip a second pass over every transcript on disk.
       started_at TEXT NOT NULL DEFAULT '',
+      -- The full last timestamp (v11). started_at's end-of-session counterpart: the
+      -- session window started_at..ended_at is what sessions why overlaps commit times
+      -- against. '' when the transcript carries no full ISO timestamp.
+      ended_at TEXT NOT NULL DEFAULT '',
       first_prompt TEXT NOT NULL,
       custom_title TEXT NOT NULL DEFAULT '',
       message_count INTEGER NOT NULL DEFAULT 0,
@@ -220,6 +233,21 @@ function openDb(): Database {
   db.run(`
     CREATE TABLE IF NOT EXISTS ignored_files (
       file_path TEXT PRIMARY KEY,
+      mtime REAL NOT NULL,
+      size INTEGER NOT NULL
+    )
+  `);
+  // Optional semantic lane (v12): one embedding per session. `model` is the
+  // embedder id — vectors from a different model live in a different space, so a
+  // mismatch (or a stale mtime/size) forces a re-embed on the next refresh. `vec`
+  // is Float32Array bytes. Absent/empty when no embedder has ever run; searching
+  // degrades to lexical-only, byte-identical to the pre-semantic behavior.
+  db.run(`
+    CREATE TABLE IF NOT EXISTS session_vectors (
+      file_path TEXT PRIMARY KEY,
+      model TEXT NOT NULL,
+      dim INTEGER NOT NULL,
+      vec BLOB NOT NULL,
       mtime REAL NOT NULL,
       size INTEGER NOT NULL
     )
@@ -317,6 +345,15 @@ async function discoverFiles(): Promise<FileEntry[]> {
   // Returns [] when the DB is absent.
   entries.push(...discoverOpencodeSessions());
 
+  // Vault-only sessions: transcripts whose live source is gone but whose archived
+  // copy survives. Appended under their ORIGINAL path so they re-index with the same
+  // identity; parsing reads through the session-io vault fallback. Skip any path a
+  // live source already produced — a vendor-restored file wins over its vault entry.
+  const live = new Set(entries.map((e) => e.path));
+  for (const archived of listArchived(getArchiveDir())) {
+    if (!live.has(archived.path)) entries.push({ path: archived.path, tool: archived.tool });
+  }
+
   return entries;
 }
 
@@ -350,49 +387,78 @@ function collectSubagentText(filePath: string, tool: Tool): string {
   return '';
 }
 
-function indexFile(db: Database, filePath: string, tool: Tool): boolean {
-  // Deliberately re-stat rather than trusting refreshIndex's pre-lock snapshot: a
-  // candidate may have waited behind another MCP process at BEGIN IMMEDIATE, and
-  // this is where we observe that process's completed write (or a transcript
-  // append) and skip the parse. A file that vanished during the wait stats as
-  // null and is left entirely alone — pruning, not ignoring, is its owner.
-  const stat = statSession(filePath, tool);
-  if (!stat) return false;
+// Refresh-scoped state threaded through indexFile: the vault manifest (mutated in
+// place, saved once at the end) and a one-shot warn flag so a failing archive dir
+// (disk full, EACCES) warns once and never blocks indexing.
+interface RefreshCtx {
+  manifest: Manifest;
+  dir: string;
+  warned: boolean;
+}
 
-  const existing = db
-    .query<{ mtime: number; size: number }, [string]>('SELECT mtime, size FROM sessions WHERE file_path = ?')
-    .get(filePath);
-
-  if (existing && existing.mtime === stat.mtimeMs && existing.size === stat.size) {
-    return false;
-  }
-  const ignored = db
-    .query<{ mtime: number; size: number }, [string]>('SELECT mtime, size FROM ignored_files WHERE file_path = ?')
-    .get(filePath);
-  if (ignored && ignored.mtime === stat.mtimeMs && ignored.size === stat.size) {
-    return false;
-  }
-
-  const ignore = (): false => {
-    if (existing) {
-      db.run('DELETE FROM sessions WHERE file_path = ?', [filePath]);
-      db.run('DELETE FROM session_fts WHERE file_path = ?', [filePath]);
-      db.run('DELETE FROM message_fts WHERE file_path = ?', [filePath]);
+// Archive one transcript into the vault, best-effort. Indexing must never be blocked
+// by archiving, so a copy failure warns at most once per refresh and is swallowed.
+function tryArchive(
+  ctx: RefreshCtx,
+  entry: { path: string; tool: Tool },
+  parsed: { cwd: string; sessionId: string },
+  stat: { mtime: number; size: number },
+): void {
+  try {
+    archiveFile(entry, parsed, stat, ctx.manifest, ctx.dir);
+  } catch (e) {
+    if (!ctx.warned) {
+      const msg = e instanceof Error ? e.message : String(e);
+      process.stderr.write(`sessions: vault archive failed (${msg}); continuing without archiving\n`);
+      ctx.warned = true;
     }
-    db.run('INSERT OR REPLACE INTO ignored_files (file_path, mtime, size) VALUES (?, ?, ?)', [
-      filePath,
-      stat.mtimeMs,
-      stat.size,
-    ]);
-    return false;
-  };
+  }
+}
 
-  const lines = readSessionLines(filePath, tool);
-  if (lines.length === 0) return ignore();
+// Whether a session's LIVE source still exists (not the vault copy). A vault-only
+// session (source gone) is served from the vault and must never be re-archived.
+function liveSourcePresent(filePath: string, tool: Tool): boolean {
+  if (tool === 'opencode') return opencodeStat(filePath) !== null;
+  return existsSync(filePath);
+}
+
+// The negative-inventory path: drop any indexed rows for this file and record its
+// mtime+size so an unchanged malformed/excluded transcript is not re-parsed forever.
+function ignoreSession(
+  db: Database,
+  filePath: string,
+  stat: { mtimeMs: number; size: number },
+  hasExisting: boolean,
+): void {
+  if (hasExisting) {
+    db.run('DELETE FROM sessions WHERE file_path = ?', [filePath]);
+    db.run('DELETE FROM session_fts WHERE file_path = ?', [filePath]);
+    db.run('DELETE FROM message_fts WHERE file_path = ?', [filePath]);
+    db.run('DELETE FROM session_vectors WHERE file_path = ?', [filePath]);
+  }
+  db.run('INSERT OR REPLACE INTO ignored_files (file_path, mtime, size) VALUES (?, ?, ?)', [
+    filePath,
+    stat.mtimeMs,
+    stat.size,
+  ]);
+}
+
+// Parse `lines` and write the session row + FTS rows, returning the session cwd on
+// success or null when the lines are unusable (empty, no cwd, or an excluded worktree
+// log). The caller owns ignored_files; this only writes on success.
+function writeSessionRow(
+  db: Database,
+  filePath: string,
+  tool: Tool,
+  stat: { mtimeMs: number; size: number },
+  lines: string[],
+  hasExisting: boolean,
+): { cwd: string } | null {
+  if (lines.length === 0) return null;
 
   const metadata = extractSessionMetadata(lines, tool);
-  if (!metadata.cwd) return ignore();
-  if (metadata.cwd.includes('.claude/worktrees') || metadata.cwd.includes('/.bare')) return ignore();
+  if (!metadata.cwd) return null;
+  if (metadata.cwd.includes('.claude/worktrees') || metadata.cwd.includes('/.bare')) return null;
 
   const sessionId = basename(filePath).replace('.jsonl', '');
   const messages = extractMessages(lines);
@@ -423,14 +489,14 @@ function indexFile(db: Database, filePath: string, tool: Tool): boolean {
   // fetches, intercom) — extension output, never turns, so it stays out of
   // message_fts and ranks at the middle bm25 weight.
   const contextText = [errors.messages.join('\n'), extractCustomContext(lines, tool)].filter(Boolean).join('\n');
-  if (existing) {
+  if (hasExisting) {
     db.run('DELETE FROM session_fts WHERE file_path = ?', [filePath]);
     db.run('DELETE FROM message_fts WHERE file_path = ?', [filePath]);
   }
   db.run('DELETE FROM ignored_files WHERE file_path = ?', [filePath]);
   db.run(
-    `INSERT OR REPLACE INTO sessions (file_path, mtime, size, cwd, tool, session_id, date, created_at, started_at, first_prompt, custom_title, message_count, files_touched, files_read, commands, errored, error_count, closing_user, closing_assistant, branch, branches, fork_points, forked_from)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT OR REPLACE INTO sessions (file_path, mtime, size, cwd, tool, session_id, date, created_at, started_at, ended_at, first_prompt, custom_title, message_count, files_touched, files_read, commands, errored, error_count, closing_user, closing_assistant, branch, branches, fork_points, forked_from)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       filePath,
       stat.mtimeMs,
@@ -441,6 +507,7 @@ function indexFile(db: Database, filePath: string, tool: Tool): boolean {
       metadata.date,
       metadata.createdAt,
       metadata.startedAt,
+      metadata.endedAt,
       summary.firstPrompt,
       metadata.customTitle,
       metadata.messageCount,
@@ -476,11 +543,65 @@ function indexFile(db: Database, filePath: string, tool: Tool): boolean {
   // user text rides in a single sentinel row (msg_index -1): it keeps the session
   // findable by subagent-only terms but is excluded from messageHits.
   if (subagentContent) insertMessage.run(filePath, -1, 'user', subagentContent);
-  return true;
+  return { cwd: metadata.cwd };
+}
+
+function indexFile(db: Database, filePath: string, tool: Tool, ctx: RefreshCtx): boolean {
+  // Deliberately re-stat rather than trusting refreshIndex's pre-lock snapshot: a
+  // candidate may have waited behind another MCP process at BEGIN IMMEDIATE, and
+  // this is where we observe that process's completed write (or a transcript
+  // append) and skip the parse. A file that vanished during the wait — with no vault
+  // copy either — stats as null and is left entirely alone; pruning is its owner.
+  const stat = statSession(filePath, tool);
+  if (!stat) return false;
+
+  const existing = db
+    .query<{ mtime: number; size: number }, [string]>('SELECT mtime, size FROM sessions WHERE file_path = ?')
+    .get(filePath);
+  if (existing && existing.mtime === stat.mtimeMs && existing.size === stat.size) return false;
+  const ignored = db
+    .query<{ mtime: number; size: number }, [string]>('SELECT mtime, size FROM ignored_files WHERE file_path = ?')
+    .get(filePath);
+  if (ignored && ignored.mtime === stat.mtimeMs && ignored.size === stat.size) return false;
+
+  const lines = readSessionLines(filePath, tool);
+  const indexed = writeSessionRow(db, filePath, tool, stat, lines, !!existing);
+  if (indexed) {
+    // Archive only when the LIVE source is present. `stat` is the live stat in that
+    // case (statSession tries the original path before the vault fallback).
+    if (liveSourcePresent(filePath, tool)) {
+      tryArchive(
+        ctx,
+        { path: filePath, tool },
+        { cwd: indexed.cwd, sessionId: basename(filePath).replace('.jsonl', '') },
+        { mtime: stat.mtimeMs, size: stat.size },
+      );
+    }
+    return true;
+  }
+
+  // The live file is unusable (empty/truncated/rotated by the vendor). If the vault
+  // holds a parseable copy, index from that instead of ignoring the session — the
+  // archived version is the durability promise.
+  const entry = ctx.manifest[filePath];
+  if (entry && existsSync(entry.vaultPath)) {
+    let vaultLines: string[] = [];
+    try {
+      vaultLines = readFileSync(entry.vaultPath, 'utf-8').trimEnd().split('\n');
+    } catch {}
+    if (writeSessionRow(db, filePath, tool, stat, vaultLines, !!existing)) return true;
+  }
+
+  ignoreSession(db, filePath, stat, !!existing);
+  return false;
 }
 
 async function runRefreshIndex(): Promise<RefreshResult> {
   const db = getDb();
+  // The vault manifest, loaded once and saved once (saveManifest at the end):
+  // archiveFile mutates this map in place during the batches, and a per-file save
+  // could persist an archive whose index write later rolled back. One write follows.
+  const ctx: RefreshCtx = { manifest: loadManifest(getArchiveDir()), dir: getArchiveDir(), warned: false };
   // De-duplicate at the boundary. It also makes the set/map work below line up
   // exactly with the total reported to callers.
   const files = [...new Map((await discoverFiles()).map((file) => [file.path, file])).values()];
@@ -498,6 +619,10 @@ async function runRefreshIndex(): Promise<RefreshResult> {
     .all();
   const ignoredByPath = new Map(ignoredRows.map((row) => [row.file_path, row]));
   const inventoryPaths = new Set([...indexedByPath.keys(), ...ignoredByPath.keys()]);
+  // A path backed by the vault is never pruned even when its live source is gone:
+  // discoverFiles re-added it to `filePaths` (listArchived only returns entries whose
+  // vault copy still exists), so the row stays and is served from the vault. Only
+  // paths absent from BOTH the live sources and the vault are removed here.
   const removedPaths = [...inventoryPaths].filter((path) => !filePaths.has(path));
   if (removedPaths.length > 0) {
     db.exec('BEGIN IMMEDIATE');
@@ -506,6 +631,7 @@ async function runRefreshIndex(): Promise<RefreshResult> {
         db.run('DELETE FROM sessions WHERE file_path = ?', [path]);
         db.run('DELETE FROM session_fts WHERE file_path = ?', [path]);
         db.run('DELETE FROM message_fts WHERE file_path = ?', [path]);
+        db.run('DELETE FROM session_vectors WHERE file_path = ?', [path]);
         db.run('DELETE FROM ignored_files WHERE file_path = ?', [path]);
       }
       db.exec('COMMIT');
@@ -542,7 +668,7 @@ async function runRefreshIndex(): Promise<RefreshResult> {
     db.exec('BEGIN IMMEDIATE');
     try {
       for (const file of batch) {
-        if (indexFile(db, file.path, file.tool)) updated++;
+        if (indexFile(db, file.path, file.tool, ctx)) updated++;
       }
       db.exec('COMMIT');
     } catch (error) {
@@ -551,7 +677,130 @@ async function runRefreshIndex(): Promise<RefreshResult> {
     }
   }
 
+  // Backfill: archive every already-indexed session still missing from the manifest,
+  // even though its index row is unchanged. The first refresh after upgrade preserves
+  // the entire existing corpus this way. Vault-only sessions are already in the
+  // manifest; a source that has since vanished has no live bytes to copy, so skip it.
+  const indexedRows = db
+    .query<{ file_path: string; cwd: string; session_id: string; tool: string; mtime: number; size: number }, []>(
+      'SELECT file_path, cwd, session_id, tool, mtime, size FROM sessions',
+    )
+    .all();
+  for (const row of indexedRows) {
+    if (ctx.manifest[row.file_path]) continue;
+    // SAFETY: the tool column is written by the index from Tool values only.
+    const tool = row.tool as Tool;
+    if (!liveSourcePresent(row.file_path, tool)) continue;
+    tryArchive(
+      ctx,
+      { path: row.file_path, tool },
+      { cwd: row.cwd, sessionId: row.session_id },
+      { mtime: row.mtime, size: row.size },
+    );
+  }
+
+  // One atomic manifest write for the whole refresh (see the ctx comment above).
+  saveManifest(ctx.dir, ctx.manifest);
+
+  // Optional semantic lane: embed sessions missing (or with stale) vectors. Runs
+  // after all index writes commit, is entirely skipped when no embedder is
+  // present, and fails open — an embed error abandons embedding for THIS refresh
+  // (one warning) but never the refresh itself.
+  await embedMissingVectors(db);
+
   return { total: files.length, updated };
+}
+
+// The retrieval document embedded per session: title + first prompt + the files
+// it touched + its first few genuine user messages, capped so a long session
+// can't dominate. Deterministic from the transcript.
+// # ponytail: crude doc recipe; tune only against a logged real miss, per EVAL.md.
+const EMBED_DOC_CHARS = 2000;
+const EMBED_DOC_USER_MESSAGES = 8;
+const EMBED_BATCH = 32;
+
+function buildEmbedDoc(
+  row: { first_prompt: string; custom_title: string; files_touched: string },
+  lines: string[],
+): string {
+  const userMessages = getSessionMessages(lines)
+    .filter((m) => m.role === 'user')
+    .slice(0, EMBED_DOC_USER_MESSAGES)
+    .map((m) => m.text);
+  const parts = [
+    row.custom_title || row.first_prompt,
+    row.first_prompt,
+    parseFiles(row.files_touched).join('\n'),
+    ...userMessages,
+  ].filter((p) => p.length > 0);
+  return parts.join('\n').slice(0, EMBED_DOC_CHARS);
+}
+
+interface EmbedCandidateRow {
+  file_path: string;
+  tool: string;
+  mtime: number;
+  size: number;
+  first_prompt: string;
+  custom_title: string;
+  files_touched: string;
+}
+
+// Embed every session whose vector is missing, or stale (source mtime/size
+// changed), or from a different model (a swapped SESSIONS_OLLAMA_MODEL). Installing
+// Ollama later thus upgrades the whole corpus on the next refresh, and a schema
+// rebuild self-heals. Never throws.
+async function embedMissingVectors(db: Database): Promise<void> {
+  const embedder = await detectEmbedder();
+  if (!embedder) return;
+
+  const stale = db
+    .query<EmbedCandidateRow, [string]>(`
+      SELECT s.file_path, s.tool, s.mtime, s.size, s.first_prompt, s.custom_title, s.files_touched
+      FROM sessions s
+      LEFT JOIN session_vectors v ON v.file_path = s.file_path
+      WHERE v.file_path IS NULL OR v.model != ? OR v.mtime != s.mtime OR v.size != s.size
+    `)
+    .all(embedder.id);
+  if (stale.length === 0) return;
+
+  const upsert = db.query(
+    'INSERT OR REPLACE INTO session_vectors (file_path, model, dim, vec, mtime, size) VALUES (?, ?, ?, ?, ?, ?)',
+  );
+  for (let i = 0; i < stale.length; i += EMBED_BATCH) {
+    const batch = stale.slice(i, i + EMBED_BATCH);
+    // SAFETY: the tool column is written by the index from Tool values only.
+    const docs = batch.map((row) => buildEmbedDoc(row, readSessionLines(row.file_path, row.tool as Tool)));
+    let vectors: number[][];
+    try {
+      vectors = await embedder.embed(docs);
+    } catch {
+      // Fail open: warn once, abandon embedding for this refresh. Missing rows
+      // are picked up on the next refresh once the embedder is healthy again.
+      process.stderr.write('sessions: embedding unavailable this refresh; search continues lexical-only\n');
+      return;
+    }
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      for (let j = 0; j < batch.length; j++) {
+        const nums = vectors[j];
+        if (!nums || nums.length === 0) continue;
+        const vec = Float32Array.from(nums);
+        upsert.run(
+          batch[j]!.file_path,
+          embedder.id,
+          vec.length,
+          new Uint8Array(vec.buffer),
+          batch[j]!.mtime,
+          batch[j]!.size,
+        );
+      }
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+  }
 }
 
 /**
@@ -810,7 +1059,77 @@ export async function searchSessions(query: string, opts: SearchOptions = {}): P
     });
     merged.sort((a, b) => a.finalRank - b.finalRank || b.meta.date.localeCompare(a.meta.date));
 
-    const top = merged.slice(0, limit);
+    // ——— optional semantic lane (RRF fusion) ———
+    // Skipped entirely — leaving the lexical ordering above untouched, byte for
+    // byte — unless an embedder, stored vectors, AND an embeddable query all
+    // exist. That short-circuit is the absence-identity guarantee: no embedder or
+    // no vectors ⇒ today's exact lexical result.
+    type Entry = (typeof merged)[number];
+    const entryByPath = new Map<string, Entry>(merged.map((m) => [m.meta.file_path, m]));
+    let ordered: Entry[] = merged;
+
+    const embedder = await detectEmbedder();
+    if (embedder) {
+      const vecRows = db
+        .query<{ file_path: string; model: string; dim: number; vec: Uint8Array }, [string]>(
+          'SELECT file_path, model, dim, vec FROM session_vectors WHERE model = ?',
+        )
+        .all(embedder.id);
+      const queryVec = vecRows.length > 0 ? await embedQuery(embedder, query) : null;
+      if (queryVec) {
+        const rowsForScan: VectorRow[] = vecRows.map((v) => ({
+          filePath: v.file_path,
+          model: v.model,
+          dim: v.dim,
+          vec: bytesToF32(v.vec),
+        }));
+        const sims = topKSimilar(queryVec, rowsForScan, Math.max(limit, 50));
+        // Only similarities at/above the abstention threshold count as semantic
+        // hits: this is the negative-abstention guard (a zero-lexical query with
+        // only weak nearest vectors yields no semantic hits, so `ordered` stays
+        // the empty lexical result) AND the noise filter (a fused query never
+        // drags in unrelated near-zero-similarity sessions).
+        // # ponytail: fixed threshold; tune only against a logged real miss.
+        const semanticHits = sims.filter((s) => s.sim >= ABSTENTION_THRESHOLD);
+        if (semanticHits.length > 0) {
+          // Pull metadata (with the SAME filters) for purely-semantic candidates
+          // so a paraphrase hit that BM25 never surfaced can enter the results.
+          const semanticOnly = semanticHits.map((s) => s.filePath).filter((p) => !entryByPath.has(p));
+          const extraSem = conditions.length > 0 ? 'AND ' + conditions.join(' AND ') : '';
+          for (let i = 0; i < semanticOnly.length; i += CHUNK) {
+            const chunk = semanticOnly.slice(i, i + CHUNK);
+            const placeholders = chunk.map(() => '?').join(', ');
+            const metaRows = db
+              .query<SessionRow, any[]>(`
+              SELECT file_path, cwd, tool, session_id, date, created_at, first_prompt,
+                     custom_title, message_count, files_touched, files_read, commands, errored,
+                     branches, forked_from, NULL as snippet
+              FROM sessions WHERE file_path IN (${placeholders}) ${extraSem}
+            `)
+              .all(...chunk, ...condParams);
+            for (const r of metaRows) {
+              if (!entryByPath.has(r.file_path)) {
+                entryByPath.set(r.file_path, { meta: r, hits: [], snippet: null, finalRank: 0 });
+              }
+            }
+          }
+          // Both ranked lists carry only filter-passing paths (lexical from
+          // `merged`, semantic filtered against `entryByPath`).
+          const lexicalRanked = merged.map((m) => m.meta.file_path);
+          const semanticRanked = semanticHits.map((s) => s.filePath).filter((p) => entryByPath.has(p));
+          const scores = fuseRRF(lexicalRanked, semanticRanked);
+          ordered = [...entryByPath.values()]
+            .filter((e) => scores.has(e.meta.file_path))
+            .sort(
+              (a, b) =>
+                (scores.get(b.meta.file_path) ?? 0) - (scores.get(a.meta.file_path) ?? 0) ||
+                b.meta.date.localeCompare(a.meta.date),
+            );
+        }
+      }
+    }
+
+    const top = ordered.slice(0, limit);
     rows = top.map((m) => ({ ...m.meta, snippet: m.snippet }));
     for (const m of top) hitsByPath.set(m.meta.file_path, m.hits);
   } else {
@@ -1376,6 +1695,14 @@ function parseFiles(json: string): string[] {
   }
 }
 
+// Reinterpret a stored session_vectors.vec BLOB as its Float32Array. slice()
+// copies into a fresh, zero-offset ArrayBuffer so the reinterpretation is safe
+// regardless of how bun:sqlite backs the returned bytes.
+function bytesToF32(bytes: Uint8Array): Float32Array {
+  const copy = bytes.slice();
+  return new Float32Array(copy.buffer, copy.byteOffset, Math.floor(copy.byteLength / 4));
+}
+
 /**
  * Repo-scoped, two-tier, worktree-aggregated context primer assembled entirely
  * from indexed columns + the RepoInfo branch map. Reads zero session source
@@ -1576,4 +1903,79 @@ export async function recentSessionsForRepo(
     .get(...scope.params);
 
   return { rows, totalCount: total?.n ?? 0 };
+}
+
+/** One indexed session projected to what correlation (sessions why) needs. */
+export interface CandidateSessionRow {
+  file_path: string;
+  cwd: string;
+  tool: string;
+  session_id: string;
+  date: string;
+  started_at: string;
+  ended_at: string;
+  first_prompt: string;
+  custom_title: string;
+  files_touched: string;
+}
+
+/**
+ * Repo-scoped sessions whose `date` falls in `[after, before]` (inclusive, YYYY-MM-DD).
+ *
+ * The coarse date bound keeps the scan O(window) rather than O(corpus) — `sessions why`
+ * derives the bound from a commit's authored day plus a buffer, then applies the precise
+ * `started_at <= authoredAt <= (ended_at | end-of-day) + slack` rule in JS. Same
+ * boundary-aware repo scope as the primer, so linked worktrees aggregate while a
+ * same-prefix sibling stays out.
+ */
+export async function candidateSessionsForRepoWindow(
+  repo: RepoInfo,
+  after: string,
+  before: string,
+): Promise<CandidateSessionRow[]> {
+  const db = getDb();
+  await ensureIndexFresh();
+
+  const scope = repoScopeClause(repoRoots(repo));
+  const where = `WHERE ${scope.clause} AND date >= ? AND date <= ?`;
+
+  return db
+    .query<CandidateSessionRow, any[]>(
+      `SELECT file_path, cwd, tool, session_id, date, started_at, ended_at, first_prompt, custom_title, files_touched
+       FROM sessions ${where}
+       ORDER BY started_at DESC, date DESC`,
+    )
+    .all(...scope.params, after, before);
+}
+
+/** Read up to `limit` best FTS message hits for one session, scoped by its file_path. */
+export interface SessionExcerptRow {
+  msg_index: number;
+  role: string;
+  snippet: string;
+}
+
+/**
+ * The best `limit` message excerpts for one session matching `terms` (already an FTS
+ * query string). Scoped to the session's `file_path` — the same message_fts MATCH shape
+ * searchSessions uses. Returns [] on an empty/blank term set or an FTS syntax error;
+ * evidence without quotes is never an error.
+ */
+export function sessionExcerpts(filePath: string, ftsQuery: string, limit: number): SessionExcerptRow[] {
+  if (!ftsQuery) return [];
+  const db = getDb();
+  try {
+    return db
+      .query<SessionExcerptRow, [string, string, number]>(
+        `SELECT msg_index, role, snippet(message_fts, 3, '', '', '\u2026', 32) AS snippet
+         FROM message_fts
+         WHERE file_path = ? AND message_fts MATCH ?
+         ORDER BY bm25(message_fts, ${MESSAGE_FTS_COLUMN_WEIGHTS.join(', ')})
+         LIMIT ?`,
+      )
+      .all(filePath, ftsQuery, limit)
+      .filter((r) => r.msg_index >= 0);
+  } catch {
+    return [];
+  }
 }

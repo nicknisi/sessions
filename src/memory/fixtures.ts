@@ -29,6 +29,10 @@ export function setMemoryEnv(tmp: string): void {
   process.env.SESSIONS_CODEX_DIR = join(tmp, 'codex');
   process.env.SESSIONS_OPENCODE_DB = join(tmp, 'opencode.db'); // absent -> no OpenCode sessions leak in
   process.env.SESSIONS_DATA_DIR = join(tmp, 'data');
+  // Shadow any SESSIONS_ARCHIVE_DIR another file leaked: it overrides the DATA_DIR
+  // default, so an unset here would let a prior test's still-present vault leak
+  // sessions into discovery.
+  process.env.SESSIONS_ARCHIVE_DIR = join(tmp, 'data', 'archive');
 }
 
 /** Release both shared handles so the next call reopens against the current env. */

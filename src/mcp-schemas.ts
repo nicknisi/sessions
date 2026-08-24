@@ -1,4 +1,4 @@
-// The 11 tools' `outputSchema` shapes, kept out of src/mcp.ts so that file stays readable.
+// The 12 tools' `outputSchema` shapes, kept out of src/mcp.ts so that file stays readable.
 //
 // Two invariants govern everything here:
 //
@@ -344,4 +344,34 @@ export const GetContextPrimerOutput = z.object({
   memory: z.array(z.object({ text: z.string(), kind: z.string(), scope: z.string(), alwaysOn: z.boolean() })),
   memoryTotal: z.number(),
   isEmpty: z.boolean(),
+});
+
+// ——— why_did_this_change ———
+
+/** Mirrors WhyEvidence (src/why/correlate.ts). A JSON object, never a top-level array;
+ *  `commit` is null on the query form and `sessions` admits the empty case. */
+export const WhyDidThisChangeOutput = z.object({
+  commit: z
+    .object({
+      sha: z.string(),
+      subject: z.string(),
+      authoredAt: z.string(),
+      files: z.array(z.string()),
+      trailers: z.array(z.string()),
+    })
+    .nullable(),
+  sessions: z.array(
+    z.object({
+      filePath: z.string(),
+      tool: z.string(),
+      sessionId: z.string(),
+      startedAt: z.string(),
+      endedAt: z.string().nullable(),
+      headline: z.string(),
+      overlappingFiles: z.array(z.string()),
+      confidence: z.enum(['files+time', 'time-only']),
+      excerpts: z.array(z.object({ msgIndex: z.number(), role: z.string(), text: z.string() })),
+      resume: z.string(),
+    }),
+  ),
 });

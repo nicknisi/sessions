@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Database } from 'bun:sqlite';
 import { asJsonObject, type JsonValue } from './extract-util';
+import { loadManifest } from './vault/archive';
 
 const j = (o: JsonValue): string => JSON.stringify(o);
 
@@ -20,6 +21,7 @@ function setEnv(): void {
   process.env.SESSIONS_PI_DIR = join(tmp, 'pi');
   process.env.SESSIONS_CODEX_DIR = join(tmp, 'codex');
   process.env.SESSIONS_OPENCODE_DB = join(tmp, 'opencode.db'); // absent → no OpenCode sessions leak in
+  process.env.SESSIONS_ARCHIVE_DIR = join(tmp, 'archive'); // hermetic vault; keep off the real ~/.local/share
 }
 
 function writeClaude(claudeDir: string, id: string, cwd: string, records: JsonValue[]): void {
@@ -321,9 +323,20 @@ test('unchanged invalid transcripts are tracked in the negative inventory cache,
   expect(ignoredRow(path)).toBeNull();
 });
 
-test('pruning: deleting the file empties both FTS tables for it', async () => {
+test('pruning: deleting the source keeps the session (vault-backed); removing the vault copy too prunes it', async () => {
   const path = cPath();
   rmSync(path);
+  await cache.refreshIndex();
+  // Source gone but archived: the vault is a discovery source, so the row survives
+  // and stays searchable/readable under its original file_path.
+  expect(messageRowCount(path)).toBeGreaterThan(0);
+  expect((await cache.searchSessions('grobblewick', {})).map((x) => x.sessionId)).toContain('c');
+
+  // Remove the vault copy too — now neither source nor vault has it, so it prunes
+  // (the both-missing case the negative-inventory behavior preserved).
+  const entry = loadManifest(process.env.SESSIONS_ARCHIVE_DIR!)[path];
+  expect(entry).toBeDefined();
+  rmSync(entry!.vaultPath);
   await cache.refreshIndex();
   expect(messageRowCount(path)).toBe(0);
   const db = new Database(cache.getDbPath(), { readonly: true });

@@ -35,6 +35,17 @@ export function getMemoryDbPath(): string {
 }
 
 /**
+ * The transcript vault: an append-only, user-owned archive of session transcripts.
+ * Built on getDataDir() (the ~/.local/share/sessions durable-data convention that
+ * `sessions uninstall` leaves alone) so it inherits SESSIONS_DATA_DIR, with
+ * SESSIONS_ARCHIVE_DIR as the direct override. Resolved lazily — never frozen at
+ * import — for the same test-hermeticity reason as getDataDir above.
+ */
+export function getArchiveDir(): string {
+  return process.env.SESSIONS_ARCHIVE_DIR || join(getDataDir(), 'archive');
+}
+
+/**
  * Where Pi keeps its session transcripts. One resolver shared by the index
  * (src/cache.ts), the no-index scanner (src/scanner.ts), and the usage report
  * (src/report/extract.ts) so all three always look at the same tree.

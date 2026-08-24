@@ -24,6 +24,7 @@ import {
   GrepSessionsOutput,
   ReviewAgentMemoriesOutput,
   SearchSessionsOutput,
+  WhyDidThisChangeOutput,
 } from './mcp-schemas';
 
 const j = (o: JsonValue): string => JSON.stringify(o);
@@ -85,6 +86,8 @@ function setEnv(): void {
   // Required now that tools/call reaches get_memory from this file: without it the memory
   // store would open (and create) the developer's real ~/.local/share/sessions/memory.db.
   process.env.SESSIONS_DATA_DIR = join(tmp, 'data');
+  // Shadow any leaked SESSIONS_ARCHIVE_DIR (it overrides the DATA_DIR default).
+  process.env.SESSIONS_ARCHIVE_DIR = join(tmp, 'data', 'archive');
 }
 
 beforeAll(async () => {
@@ -647,6 +650,7 @@ const TOOL_NAMES = [
   'grep_sessions',
   'review_agent_memories',
   'search_sessions',
+  'why_did_this_change',
 ];
 
 /** Fold the failure detail into the compared value: a bare `success` boolean tells you a
@@ -665,7 +669,7 @@ test('version: the server reports the package.json version, not a hardcoded lite
   await client.close();
 });
 
-test('tool surface: 11 tools, each with a title, annotations, and an object outputSchema', async () => {
+test('tool surface: 12 tools, each with a title, annotations, and an object outputSchema', async () => {
   const client = await connect();
   const { tools } = await client.listTools();
 
@@ -688,8 +692,8 @@ test('tool surface: 11 tools, each with a title, annotations, and an object outp
 test('tool surface: two createServer() instances in one process both connect', async () => {
   const a = await connect();
   const b = await connect();
-  expect((await a.listTools()).tools).toHaveLength(11);
-  expect((await b.listTools()).tools).toHaveLength(11);
+  expect((await a.listTools()).tools).toHaveLength(12);
+  expect((await b.listTools()).tools).toHaveLength(12);
   await a.close();
   await b.close();
 });
@@ -822,6 +826,7 @@ test('schema conformance: every tool validates against its declared outputSchema
     // limit:1 splits sessions D and E across the two tiers so recent[] AND headlines[]
     // both carry elements.
     { name: 'get_context_primer', args: { cwd: REPO_ROOT, limit: 1 }, schema: GetContextPrimerOutput },
+    { name: 'why_did_this_change', args: { target: 'retry', cwd: REPO_ROOT }, schema: WhyDidThisChangeOutput },
   ];
   expect(calls.map((c) => c.name).sort()).toEqual(TOOL_NAMES); // no tool quietly skipped
 
@@ -893,6 +898,7 @@ describe('empty results', () => {
     process.env.SESSIONS_CODEX_DIR = join(emptyTmp, 'codex');
     process.env.SESSIONS_OPENCODE_DB = join(emptyTmp, 'opencode.db');
     process.env.SESSIONS_DATA_DIR = join(emptyTmp, 'data');
+    process.env.SESSIONS_ARCHIVE_DIR = join(emptyTmp, 'data', 'archive');
   }
 
   beforeAll(async () => {
@@ -932,7 +938,7 @@ describe('empty results', () => {
     rmSync(emptyTmp, { recursive: true, force: true });
   });
 
-  test('empty results: all 11 tools return a conforming payload alongside their sentinel', async () => {
+  test('empty results: all 12 tools return a conforming payload alongside their sentinel', async () => {
     const client = await connect();
     const repoRoot = join(import.meta.dir, '..'); // a real git repo with no indexed sessions
     const calls: { name: string; args: JsonObject; schema: ZodType; text?: string }[] = [
@@ -983,6 +989,12 @@ describe('empty results', () => {
         args: { cwd: repoRoot },
         schema: GetContextPrimerOutput,
         text: 'No past sessions found for this repo.',
+      },
+      {
+        name: 'why_did_this_change',
+        args: { target: 'no-such-topic-xyzzy', cwd: repoRoot },
+        schema: WhyDidThisChangeOutput,
+        text: 'No sessions correlate to this target.',
       },
     ];
     expect(calls.map((c) => c.name).sort()).toEqual(TOOL_NAMES);

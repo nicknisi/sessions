@@ -104,6 +104,18 @@ if (command === 'memory') {
   process.exit(0);
 }
 
+if (command === 'vault') {
+  const { runVault } = await import('./src/vault/cli.ts');
+  await runVault(Bun.argv.slice(3));
+  process.exit(0);
+}
+
+if (command === 'why') {
+  const { runWhy } = await import('./src/why/cli.ts');
+  await runWhy(Bun.argv.slice(3));
+  process.exit(0);
+}
+
 const args = parseArgs(Bun.argv.slice(2));
 const repoRoot = getRepoRoot(args.scopeHere);
 
