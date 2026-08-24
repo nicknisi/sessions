@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.28.0](https://github.com/nicknisi/sessions/compare/v1.27.0...v1.28.0) (2026-08-24)
+
+
+### Features
+
+* durable recall — transcript vault, sessions why, semantic recall ([#91](https://github.com/nicknisi/sessions/issues/91)) ([f91a3a2](https://github.com/nicknisi/sessions/commit/f91a3a27b3bf6f1d2e77b0734b5fedf44524db6b))
+
 ## [1.27.0](https://github.com/nicknisi/sessions/compare/v1.26.1...v1.27.0) (2026-08-21)
 
 
