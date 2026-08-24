@@ -1,9 +1,22 @@
-import { existsSync, mkdirSync, writeFileSync, cpSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+  cpSync,
+} from 'node:fs';
+import { join, dirname, sep } from 'node:path';
 import { C } from './colors';
 import { PLUGIN_FILES } from './plugin-files';
 import { enableSessionHook, disableSessionHook } from './hooks';
-import { getDataDir } from './paths';
+import { getDataDir, getHome } from './paths';
+import { splitFrontmatter, frontmatterDescription } from './skill-frontmatter';
 import {
   cleanDeadConfigs,
   codexManualBlock,
@@ -100,6 +113,97 @@ function installPlugin(): boolean {
   const ok = source ? installPluginFromDisk(source) : installPluginFromEmbed();
   if (ok) writeMarketplaceJson();
   return ok;
+}
+
+// ——— Pi skills ———
+//
+// Pi has no plugin marketplace: it discovers skills as <skillsDir>/<name>/SKILL.md and
+// its MCP list in mcp.json. Setup wired only the MCP entry, so Pi got the tools without
+// the skills that carry their procedures. The bridge is one symlink per skill into Pi's
+// skills dir — links, not copies, so an upgraded plugin never leaves stale skills behind.
+
+function piSkillsDir(): string {
+  return join(getHome(), '.pi', 'agent', 'skills');
+}
+
+export interface SkillLink {
+  name: string;
+  status: 'linked' | 'unchanged' | 'refused';
+}
+
+interface InstalledSkill {
+  name: string;
+  description: string;
+}
+
+/** The description's first sentence, folded — enough for a list; the rest is trigger text. */
+function firstSentence(description: string): string {
+  const m = /^.+?\.(?=\s|$)/.exec(description);
+  return m ? m[0] : description;
+}
+
+/** Every skill the plugin ships, read from the just-installed copy with its frontmatter
+ *  description — the SKILL.md set is the source of truth, so a new skill appears here
+ *  without a setup.ts edit. */
+export function installedSkills(skillsRoot = join(pluginDest(), 'skills')): InstalledSkill[] {
+  if (!existsSync(skillsRoot)) return [];
+  const out: InstalledSkill[] = [];
+  for (const name of readdirSync(skillsRoot).sort()) {
+    try {
+      if (!statSync(join(skillsRoot, name)).isDirectory()) continue;
+      const raw = readFileSync(join(skillsRoot, name, 'SKILL.md'), 'utf8');
+      const { frontmatter } = splitFrontmatter(raw);
+      out.push({ name, description: firstSentence(frontmatterDescription(frontmatter)) });
+    } catch {
+      out.push({ name, description: '' });
+    }
+  }
+  return out;
+}
+
+function isOurLink(dest: string, source: string): boolean {
+  try {
+    return lstatSync(dest).isSymbolicLink() && readlinkSync(dest) === source;
+  } catch {
+    return false;
+  }
+}
+
+/** Link each plugin skill into Pi's skills dir. An existing entry that is not already
+ *  our link (a hand-written skill with the same name) is refused, never clobbered. */
+export function linkPiSkills(skillsDir = piSkillsDir(), pluginSkills = join(pluginDest(), 'skills')): SkillLink[] {
+  if (!existsSync(pluginSkills)) return [];
+  mkdirSync(skillsDir, { recursive: true });
+  const results: SkillLink[] = [];
+  for (const name of readdirSync(pluginSkills).sort()) {
+    const source = join(pluginSkills, name);
+    if (!statSync(source).isDirectory()) continue;
+    const dest = join(skillsDir, name);
+    if (lstatSync(dest, { throwIfNoEntry: false })) {
+      results.push({ name, status: isOurLink(dest, source) ? 'unchanged' : 'refused' });
+      continue;
+    }
+    symlinkSync(source, dest, 'dir');
+    results.push({ name, status: 'linked' });
+  }
+  return results;
+}
+
+/** Remove only links that point into our plugin skills dir; anything else stays. */
+export function unlinkPiSkills(skillsDir = piSkillsDir(), pluginSkills = join(pluginDest(), 'skills')): string[] {
+  if (!existsSync(skillsDir)) return [];
+  const removed: string[] = [];
+  for (const name of readdirSync(skillsDir).sort()) {
+    const dest = join(skillsDir, name);
+    try {
+      if (!lstatSync(dest).isSymbolicLink()) continue;
+      const target = readlinkSync(dest);
+      if (target !== join(pluginSkills, name) && !target.startsWith(pluginSkills + sep)) continue;
+      rmSync(dest);
+      removed.push(name);
+    } catch {}
+  }
+  return removed;
 }
 
 function sessionsCommand(): string {
@@ -236,6 +340,23 @@ export function runSetup(opts: SetupOptions = {}): void {
         w(`  ${C.dim}ℹ${C.reset} Plugin already installed in ${C.dim}${tool.name}${C.reset}\n`);
       }
     }
+
+    if (tool.id === 'pi') {
+      const links = linkPiSkills();
+      const linked = links.filter((l) => l.status === 'linked').length;
+      if (linked) {
+        w(
+          `  ${C.green}✓${C.reset} ${linked} skill${linked === 1 ? '' : 's'} linked into ${C.dim}Pi${C.reset} ${C.dim}(${piSkillsDir()})${C.reset}\n`,
+        );
+      } else if (links.length && links.every((l) => l.status === 'unchanged')) {
+        w(`  ${C.dim}ℹ${C.reset} Skills already linked for ${C.dim}Pi${C.reset}\n`);
+      }
+      for (const r of links.filter((l) => l.status === 'refused')) {
+        w(
+          `  ${C.yellow}!${C.reset} Left ${C.dim}${join(piSkillsDir(), r.name)}${C.reset} alone — not a sessions link\n`,
+        );
+      }
+    }
   }
 
   // SessionStart auto-injection hook — opt-in, Claude Code only for now.
@@ -250,14 +371,19 @@ export function runSetup(opts: SetupOptions = {}): void {
     w(`  ${C.dim}  Disable any time with \`sessions uninstall\`.${C.reset}\n`);
   }
 
-  w(`\n  ${C.bold}Skills available:${C.reset}\n`);
-  w(`    ${C.cyan}/context${C.reset}           Context primer for the current repo\n`);
-  w(`    ${C.cyan}/weekly-summary${C.reset}    Summarize your past week's AI sessions\n`);
-  w(`    ${C.cyan}/standup${C.reset}           Yesterday + today activity for standups\n`);
-  w(`    ${C.cyan}/recall${C.reset}            What did I do on a specific project?\n`);
-  w(`    ${C.cyan}/session-metrics${C.reset}   Usage dashboard with tool breakdown\n`);
-  w(`    ${C.cyan}/memory${C.reset}            Triage durable facts mined from past sessions\n`);
-  w(`\n  ${C.dim}Run \`sessions setup\` again after upgrading to update skills.${C.reset}\n\n`);
+  // Only Claude Code (plugin) and Pi (symlinks) actually receive the skills; printing
+  // this list to a Cursor/Codex-only user advertises skills they never got. The list is
+  // read from the just-installed skills, not hardcoded — the hardcoded version already
+  // shipped without /why once.
+  const skills = installedSkills();
+  if (detected.some((t) => t.id === 'claude' || t.id === 'pi') && skills.length) {
+    w(`\n  ${C.bold}Skills available:${C.reset}\n`);
+    const width = Math.max(...skills.map((s) => s.name.length));
+    for (const s of skills) {
+      w(`    ${C.cyan}/${s.name.padEnd(width)}${C.reset}  ${C.dim}${s.description}${C.reset}\n`);
+    }
+    w(`\n  ${C.dim}Run \`sessions setup\` again after upgrading to update skills.${C.reset}\n\n`);
+  }
 }
 
 export function runUninstall(): void {
@@ -284,6 +410,15 @@ export function runUninstall(): void {
       const res = disableSessionHook('claude');
       if (res.changed) {
         w(`  ${C.green}✓${C.reset} Removed SessionStart auto-injection from ${C.dim}${tool.name}${C.reset}\n`);
+      }
+    }
+
+    if (tool.id === 'pi') {
+      const removed = unlinkPiSkills();
+      if (removed.length) {
+        w(
+          `  ${C.green}✓${C.reset} Removed ${removed.length} skill link${removed.length === 1 ? '' : 's'} from ${C.dim}Pi${C.reset}\n`,
+        );
       }
     }
   }
