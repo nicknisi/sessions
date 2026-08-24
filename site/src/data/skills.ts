@@ -11,6 +11,7 @@ import { readSkills, triggerPhrases, type Skill } from '../lib/skills';
 const ORDER: { name: string; outcome: string }[] = [
   { name: 'context', outcome: 'Prior decisions, dead ends, and the thread you left open.' },
   { name: 'recall', outcome: 'The reasoning behind one past decision, without paging a transcript.' },
+  { name: 'why', outcome: 'The sessions behind a file, line, or commit — and a resume command to reopen them.' },
   { name: 'standup', outcome: 'Yesterday and today as terse bullets you can paste into Slack.' },
   { name: 'weekly-summary', outcome: 'A structured week, then a nudge toward any new memory worth keeping.' },
   { name: 'session-metrics', outcome: 'Which tool you actually use, and the hours you actually work.' },
