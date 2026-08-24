@@ -350,6 +350,21 @@ export const GetContextPrimerOutput = z.object({
 
 /** Mirrors WhyEvidence (src/why/correlate.ts). A JSON object, never a top-level array;
  *  `commit` is null on the query form and `sessions` admits the empty case. */
+/** One correlated session. Shared by `sessions` (produced the commit) and
+ *  `unlandedAttempts` (touched the file, no commit in its history — file form only). */
+const WhySession = z.object({
+  filePath: z.string(),
+  tool: z.string(),
+  sessionId: z.string(),
+  startedAt: z.string(),
+  endedAt: z.string().nullable(),
+  headline: z.string(),
+  overlappingFiles: z.array(z.string()),
+  confidence: z.enum(['files+time', 'time-only']),
+  excerpts: z.array(z.object({ msgIndex: z.number(), role: z.string(), text: z.string() })),
+  resume: z.string(),
+});
+
 export const WhyDidThisChangeOutput = z.object({
   commit: z
     .object({
@@ -358,20 +373,9 @@ export const WhyDidThisChangeOutput = z.object({
       authoredAt: z.string(),
       files: z.array(z.string()),
       trailers: z.array(z.string()),
+      merge: z.boolean(),
     })
     .nullable(),
-  sessions: z.array(
-    z.object({
-      filePath: z.string(),
-      tool: z.string(),
-      sessionId: z.string(),
-      startedAt: z.string(),
-      endedAt: z.string().nullable(),
-      headline: z.string(),
-      overlappingFiles: z.array(z.string()),
-      confidence: z.enum(['files+time', 'time-only']),
-      excerpts: z.array(z.object({ msgIndex: z.number(), role: z.string(), text: z.string() })),
-      resume: z.string(),
-    }),
-  ),
+  sessions: z.array(WhySession),
+  unlandedAttempts: z.array(WhySession),
 });
