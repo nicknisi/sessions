@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.29.0](https://github.com/nicknisi/sessions/compare/v1.28.0...v1.29.0) (2026-08-24)
+
+
+### Features
+
+* **why:** surface unlanded attempts and label merges ([#93](https://github.com/nicknisi/sessions/issues/93)) ([b4ceec2](https://github.com/nicknisi/sessions/commit/b4ceec2fc061d9c5455b8af37164b4325a74dff8))
+
 ## [1.28.0](https://github.com/nicknisi/sessions/compare/v1.27.0...v1.28.0) (2026-08-24)
 
 
