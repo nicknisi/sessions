@@ -1948,6 +1948,30 @@ export async function candidateSessionsForRepoWindow(
     .all(...scope.params, after, before);
 }
 
+/**
+ * Repo-scoped sessions whose files_touched mentions `relPath`, newest first, no date
+ * bound — the recall side of `why`'s unlanded-attempt bucket, which cannot know when the
+ * abandoned work happened. files_touched only, never files_read: an attempt means the
+ * session *changed* the file. Same substring-LIKE imprecision contract as the
+ * searchSessions files filter; the caller re-checks after repo-relative normalization.
+ */
+export async function sessionsTouchingFile(repo: RepoInfo, relPath: string): Promise<CandidateSessionRow[]> {
+  const db = getDb();
+  await ensureIndexFresh();
+
+  const scope = repoScopeClause(repoRoots(repo));
+  const escaped = relPath.replace(/[\\%_]/g, (c) => `\\${c}`);
+
+  return db
+    .query<CandidateSessionRow, any[]>(
+      `SELECT file_path, cwd, tool, session_id, date, started_at, ended_at, first_prompt, custom_title, files_touched
+       FROM sessions
+       WHERE ${scope.clause} AND files_touched LIKE '%' || ? || '%' ESCAPE '\\'
+       ORDER BY started_at DESC, date DESC`,
+    )
+    .all(...scope.params, escaped);
+}
+
 /** Read up to `limit` best FTS message hits for one session, scoped by its file_path. */
 export interface SessionExcerptRow {
   msg_index: number;

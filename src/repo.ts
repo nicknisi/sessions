@@ -106,6 +106,8 @@ export interface CommitInfo {
   files: string[];
   /** Co-Authored-By and other trailers, verbatim — annotation only, never a confidence tier. */
   trailers: string[];
+  /** Two or more parents (%P): this is the merge that landed the change, not the commit that wrote it. */
+  merge: boolean;
 }
 
 // RS between commits, US between header fields (and between joined trailers). Both are
@@ -113,7 +115,7 @@ export interface CommitInfo {
 // unambiguous without escaping.
 const RS = '\x1e';
 const US = '\x1f';
-const COMMIT_FORMAT = `${RS}%H${US}%aI${US}%s${US}%(trailers:only,unfold,separator=${US})`;
+const COMMIT_FORMAT = `${RS}%H${US}%aI${US}%s${US}%P${US}%(trailers:only,unfold,separator=${US})`;
 
 /** Parse the RS/US-delimited `--name-only` output of log/show into commits. */
 function parseCommits(out: string): CommitInfo[] {
@@ -128,12 +130,13 @@ function parseCommits(out: string): CommitInfo[] {
     if (!sha) continue;
     const authoredAt = fields[1] ?? '';
     const subject = fields[2] ?? '';
-    const trailers = fields.slice(3).filter((t) => t.trim());
+    const merge = (fields[3] ?? '').trim().includes(' ');
+    const trailers = fields.slice(4).filter((t) => t.trim());
     const files = rest
       .split('\n')
       .map((l) => l.trim())
       .filter((l) => l.length > 0);
-    commits.push({ sha, subject, authoredAt, files, trailers });
+    commits.push({ sha, subject, authoredAt, files, trailers, merge });
   }
   return commits;
 }

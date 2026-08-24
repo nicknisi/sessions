@@ -320,6 +320,52 @@ describe('why — window slack', () => {
   });
 });
 
+describe('why — unlanded attempts', () => {
+  test('a session that touched the file with no landing commit is flagged; landed sessions are not', async () => {
+    setEnv();
+    cache.closeDb();
+    const out = await correlate.why('src/target.ts', repo);
+    expect(out.kind).toBe('evidence');
+    if (out.kind !== 'evidence') return;
+    const attempts = out.evidence.unlandedAttempts;
+    // 'old work' (2026-06-01) touched target.ts days from any commit on it → unlanded.
+    expect(attempts.map((a) => a.headline)).toContain('old work');
+    // Sessions whose work landed in the file's history are not attempts.
+    expect(attempts.every((a) => !['cl1', 'cx1', 'pi2'].includes(a.sessionId))).toBe(true);
+    // Verified file overlap, but no commit window — the weaker confidence label.
+    expect(attempts.every((a) => a.confidence === 'time-only')).toBe(true);
+  });
+
+  test('a session that just ended is in flight, not abandoned', async () => {
+    setEnv();
+    cache.closeDb();
+    const now = Date.now();
+    writeClaude(
+      'inflight',
+      claudeSession(
+        new Date(now - 10 * 60_000).toISOString(),
+        new Date(now).toISOString(),
+        [join(repo, 'src/target.ts')],
+        'in flight work',
+      ),
+    );
+    const out = await correlate.why('src/target.ts', repo);
+    expect(out.kind).toBe('evidence');
+    if (out.kind !== 'evidence') return;
+    expect(out.evidence.unlandedAttempts.every((a) => a.sessionId !== 'inflight')).toBe(true);
+  });
+
+  test('commit and query forms carry an empty bucket', async () => {
+    setEnv();
+    cache.closeDb();
+    const sha = git(join(tmp, 'repo'), ['rev-parse', 'HEAD']);
+    const byCommit = await correlate.why(sha, repo);
+    if (byCommit.kind === 'evidence') expect(byCommit.evidence.unlandedAttempts).toEqual([]);
+    const byQuery = await correlate.why('target', repo);
+    if (byQuery.kind === 'evidence') expect(byQuery.evidence.unlandedAttempts).toEqual([]);
+  });
+});
+
 describe('why — errors and latency', () => {
   test('a non-git cwd is a clean error for a file target', async () => {
     setEnv();

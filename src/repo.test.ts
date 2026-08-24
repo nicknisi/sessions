@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { realpathSync } from 'node:fs';
-import { cwdUnder, globPrefix, branchLabel, resolveRepo } from './repo';
+import { cwdUnder, globPrefix, branchLabel, resolveRepo, showCommit } from './repo';
 
 describe('cwdUnder', () => {
   test('a sibling with a shared prefix is NOT under root (dotfiles vs dotfiles-v2)', () => {
@@ -103,5 +103,25 @@ describe('resolveRepo', () => {
     expect(fromWt).not.toBeNull();
     expect(fromWt!.gitCommonDir).toBe(info!.gitCommonDir);
     expect(fromWt!.currentWorktree).toBe(wtPath);
+  });
+});
+
+describe('showCommit merge flag', () => {
+  test('a two-parent commit reports merge: true; a linear commit false', () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'sessions-merge-')));
+    try {
+      sh(dir, ['init', '-q', '-b', 'main']);
+      sh(dir, ['-c', 'user.email=t@e.com', '-c', 'user.name=T', 'commit', '-q', '--allow-empty', '-m', 'init']);
+      sh(dir, ['checkout', '-q', '-b', 'fix']);
+      sh(dir, ['-c', 'user.email=t@e.com', '-c', 'user.name=T', 'commit', '-q', '--allow-empty', '-m', 'fix work']);
+      sh(dir, ['checkout', '-q', 'main']);
+      sh(dir, ['-c', 'user.email=t@e.com', '-c', 'user.name=T', 'merge', '-q', '--no-ff', 'fix', '-m', 'merge fix']);
+
+      const info = resolveRepo(dir)!;
+      expect(showCommit(info, 'HEAD')!.merge).toBe(true);
+      expect(showCommit(info, 'HEAD~1')!.merge).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

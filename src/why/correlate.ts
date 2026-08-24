@@ -2,7 +2,13 @@ import { existsSync } from 'node:fs';
 import { basename, resolve } from 'node:path';
 import { z } from 'zod';
 import { resolveRepo, logForFile, blameLine, showCommit, isCommitRef, type RepoInfo, type CommitInfo } from '../repo';
-import { candidateSessionsForRepoWindow, sessionExcerpts, searchSessions, type CandidateSessionRow } from '../cache';
+import {
+  candidateSessionsForRepoWindow,
+  sessionsTouchingFile,
+  sessionExcerpts,
+  searchSessions,
+  type CandidateSessionRow,
+} from '../cache';
 import { buildResumeCommand } from '../search-format';
 import type { Tool } from '../types';
 
@@ -33,6 +39,10 @@ export interface WhySessionEvidence {
 export interface WhyEvidence {
   commit: CommitInfo | null;
   sessions: WhySessionEvidence[];
+  /** Sessions that touched the target file but correlate to NO commit in its history —
+   *  the local signature of an attempt that never landed (closed-unmerged PR, abandoned
+   *  branch). Only populated for the file form; [] for commit and query forms. */
+  unlandedAttempts: WhySessionEvidence[];
 }
 
 export type WhyOutcome = { kind: 'evidence'; evidence: WhyEvidence } | { kind: 'error'; message: string };
@@ -168,7 +178,66 @@ function correlateCommit(repo: RepoInfo, commit: CommitInfo, rows: CandidateSess
     .filter((x): x is NonNullable<typeof x> => x !== null);
 
   scored.sort((a, b) => b.score - a.score || b.startedAt.localeCompare(a.startedAt));
-  return { commit, sessions: scored.slice(0, limit).map((x) => x.evidence) };
+  return { commit, sessions: scored.slice(0, limit).map((x) => x.evidence), unlandedAttempts: [] };
+}
+
+/**
+ * The abandoned-attempt bucket for the file form: indexed sessions that touched the
+ * target file whose window contains NO commit from the file's history — work that never
+ * landed. A session that ended less than SLACK_AFTER_MS ago is skipped: its commit may
+ * still be coming, and branding in-flight work abandoned is a false accusation.
+ */
+async function findUnlandedAttempts(
+  repo: RepoInfo,
+  target: Extract<WhyTarget, { kind: 'file' }>,
+  history: CommitInfo[],
+  limit: number,
+): Promise<WhySessionEvidence[]> {
+  const relTarget = target.path.startsWith('/') ? toRepoRelative(target.path, [repo.currentWorktree]) : target.path;
+  const rows = await sessionsTouchingFile(repo, relTarget);
+  if (rows.length === 0) return [];
+
+  const commitTimes = history.map((c) => ms(c.authoredAt)).filter(Number.isFinite);
+  const now = Date.now();
+  const attempts: WhySessionEvidence[] = [];
+
+  for (const row of rows) {
+    const roots = [...new Set([row.cwd, repo.currentWorktree, repo.container].filter(Boolean))].sort(
+      (a, b) => b.length - a.length,
+    );
+    const sessionRel = new Set(parseFilesTouched(row.files_touched).map((p) => toRepoRelative(p, roots)));
+    if (!sessionRel.has(relTarget)) continue; // LIKE suffix over-match, not a real touch
+
+    const startMs = row.started_at ? ms(row.started_at) : ms(row.date + 'T00:00:00.000Z');
+    const endMs = row.ended_at ? ms(row.ended_at) : ms(row.date + 'T23:59:59.999Z');
+    if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) continue;
+    if (endMs + SLACK_AFTER_MS > now) continue;
+
+    const landed = commitTimes.some((t) => startMs <= t && t <= endMs + SLACK_AFTER_MS);
+    if (landed) continue;
+
+    attempts.push({
+      filePath: row.file_path,
+      tool: row.tool,
+      sessionId: row.session_id,
+      startedAt: row.started_at,
+      endedAt: row.ended_at || null,
+      headline: row.custom_title || row.first_prompt,
+      overlappingFiles: [relTarget],
+      // The file overlap is verified above; 'files+time' would imply a commit window
+      // match, which is exactly what this bucket lacks — keep the weaker label.
+      confidence: 'time-only',
+      excerpts: sessionExcerpts(row.file_path, `"${basename(relTarget)}"`, 2).map((e) => ({
+        msgIndex: e.msg_index,
+        role: e.role,
+        text: e.snippet,
+      })),
+      // SAFETY: the tool column is written by the index from Tool values only.
+      resume: buildResumeCommand(row.tool as Tool, row.cwd, row.session_id),
+    });
+    if (attempts.length >= limit) break;
+  }
+  return attempts;
 }
 
 /** The commit a file target resolves to: the blamed commit for `file:line`, else the most
@@ -202,7 +271,7 @@ async function correlateQuery(repo: RepoInfo | null, cwd: string, text: string, 
     excerpts: (r.messageHits ?? []).map((h) => ({ msgIndex: h.index, role: h.role, text: h.snippet })),
     resume: buildResumeCommand(r.tool, r.cwd, r.sessionId),
   }));
-  return { commit: null, sessions };
+  return { commit: null, sessions, unlandedAttempts: [] };
 }
 
 /**
@@ -231,5 +300,12 @@ export async function why(raw: string, cwd: string, limit = MAX_SESSIONS): Promi
 
   const day = commit.authoredAt.slice(0, 10);
   const rows = await candidateSessionsForRepoWindow(repo, addDays(day, -2), addDays(day, 1));
-  return { kind: 'evidence', evidence: correlateCommit(repo, commit, rows, cap) };
+  const evidence = correlateCommit(repo, commit, rows, cap);
+
+  if (target.kind === 'file') {
+    // ponytail: 500-commit history cap — a session whose landing commit fell off the
+    // tail gets misflagged as abandoned. Raise the cap if a repo ever trips it.
+    evidence.unlandedAttempts = await findUnlandedAttempts(repo, target, logForFile(repo, target.path, 500), cap);
+  }
+  return { kind: 'evidence', evidence };
 }

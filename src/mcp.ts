@@ -173,8 +173,8 @@ export async function runWhy(args: { target: string; cwd?: string; limit?: numbe
   // A non-repo cwd or unknown ref/path is an unrecoverable call for this target.
   if (outcome.kind === 'error') return toolError(outcome.message);
   const payload: z.infer<typeof WhyDidThisChangeOutput> = outcome.evidence;
-  // A structured empty (sessions: []) is a successful result, not an error.
-  if (payload.sessions.length === 0) {
+  // A structured empty (sessions: [], unlandedAttempts: []) is a successful result, not an error.
+  if (payload.sessions.length === 0 && payload.unlandedAttempts.length === 0) {
     return sentinel('No sessions correlate to this target.', payload);
   }
   return toolResult(payload);
@@ -601,7 +601,7 @@ function registerTools(server: McpServer): void {
     {
       title: 'Why does this code exist?',
       description:
-        'Correlate a file, line, commit, or topic to the AI coding sessions behind it — the conversations that explain WHY code looks the way it does, which git alone cannot answer. Pass `target` as a repo-relative path ("src/cache.ts"), a path:line ("src/cache.ts:142") to pin one line via git blame, a commit-ish (sha, tag, HEAD~2), or free text for a topic search. Returns the resolved commit (subject, author time, files, trailers; null for the free-text form) and the sessions that produced it, each ranked by confidence: "files+time" (the session edited the committed files inside its time window) above "time-only" (same repo and window, no file overlap). Every session carries excerpts, an overlapping-files list, and a ready-to-run resume command; pass a session\'s filePath to get_session_messages for the full exchange. Read-only on both git and the index — it never writes to any repository (no hooks, no trailers, no branches). Empty when nothing correlates; that is a result, not an error.',
+        'Correlate a file, line, commit, or topic to the AI coding sessions behind it — the conversations that explain WHY code looks the way it does, which git alone cannot answer. Pass `target` as a repo-relative path ("src/cache.ts"), a path:line ("src/cache.ts:142") to pin one line via git blame, a commit-ish (sha, tag, HEAD~2), or free text for a topic search. Returns the resolved commit (subject, author time, files, trailers; null for the free-text form) and the sessions that produced it, each ranked by confidence: "files+time" (the session edited the committed files inside its time window) above "time-only" (same repo and window, no file overlap). Every session carries excerpts, an overlapping-files list, and a ready-to-run resume command; pass a session\'s filePath to get_session_messages for the full exchange. `commit.merge: true` marks the merge that landed the change, not the commit that wrote it. For the file form, `unlandedAttempts` lists sessions that touched the file but correlate to NO commit in its history — a possible abandoned attempt (closed-unmerged PR, dropped branch); treat "was this fixed?" as unproven when it is non-empty. Read-only on both git and the index — it never writes to any repository (no hooks, no trailers, no branches). Empty when nothing correlates; that is a result, not an error.',
       inputSchema: {
         target: z
           .string()

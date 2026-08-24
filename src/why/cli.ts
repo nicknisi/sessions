@@ -1,5 +1,5 @@
 import { C, disableColors } from '../colors';
-import { why, type WhyEvidence } from './correlate';
+import { why, type WhyEvidence, type WhySessionEvidence } from './correlate';
 
 function help(): never {
   process.stderr.write(`${C.bold}sessions why${C.reset} — why does this code exist?
@@ -32,27 +32,41 @@ function render(evidence: WhyEvidence): void {
     const c = evidence.commit;
     w.write(`${C.bold}${c.sha.slice(0, 12)}${C.reset} ${c.subject}\n`);
     w.write(`${C.dim}${c.authoredAt}${C.reset}\n`);
+    if (c.merge) {
+      w.write(`${C.dim}merge — the merge that landed this; the change itself is in its parents${C.reset}\n`);
+    }
     if (c.trailers.length) w.write(`${C.dim}${c.trailers.join('; ')}${C.reset}\n`);
     w.write('\n');
   }
 
-  if (evidence.sessions.length === 0) {
+  if (evidence.sessions.length === 0 && evidence.unlandedAttempts.length === 0) {
     w.write(`${C.dim}No sessions correlate to this.${C.reset}\n`);
     return;
   }
 
-  for (const s of evidence.sessions) {
-    const tag = s.confidence === 'files+time' ? `${C.green}files+time${C.reset}` : `${C.yellow}time-only${C.reset}`;
-    w.write(`${C.bold}${s.headline || '(no title)'}${C.reset} ${C.dim}(${s.tool})${C.reset} [${tag}]\n`);
-    w.write(`  ${C.dim}${s.startedAt || '?'} → ${s.endedAt ?? '?'}${C.reset}\n`);
-    if (s.overlappingFiles.length) {
-      w.write(`  ${C.dim}files: ${s.overlappingFiles.join(', ')}${C.reset}\n`);
-    }
-    for (const e of s.excerpts) {
-      w.write(`  ${C.dim}${e.role}:${C.reset} ${e.text}\n`);
-    }
-    w.write(`  ${C.cyan}${s.resume}${C.reset}\n\n`);
+  for (const s of evidence.sessions) renderSession(s);
+
+  if (evidence.unlandedAttempts.length) {
+    const n = evidence.unlandedAttempts.length;
+    w.write(
+      `${C.yellow}${n} session${n === 1 ? '' : 's'} touched this file with no commit in its history — possible abandoned attempt${C.reset}\n\n`,
+    );
+    for (const s of evidence.unlandedAttempts) renderSession(s);
   }
+}
+
+function renderSession(s: WhySessionEvidence): void {
+  const w = process.stdout;
+  const tag = s.confidence === 'files+time' ? `${C.green}files+time${C.reset}` : `${C.yellow}time-only${C.reset}`;
+  w.write(`${C.bold}${s.headline || '(no title)'}${C.reset} ${C.dim}(${s.tool})${C.reset} [${tag}]\n`);
+  w.write(`  ${C.dim}${s.startedAt || '?'} → ${s.endedAt ?? '?'}${C.reset}\n`);
+  if (s.overlappingFiles.length) {
+    w.write(`  ${C.dim}files: ${s.overlappingFiles.join(', ')}${C.reset}\n`);
+  }
+  for (const e of s.excerpts) {
+    w.write(`  ${C.dim}${e.role}:${C.reset} ${e.text}\n`);
+  }
+  w.write(`  ${C.cyan}${s.resume}${C.reset}\n\n`);
 }
 
 export async function runWhy(argv: string[]): Promise<void> {
