@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.29.1](https://github.com/nicknisi/sessions/compare/v1.29.0...v1.29.1) (2026-08-24)
+
+
+### Bug Fixes
+
+* **setup:** install skills for pi, list them dynamically ([#95](https://github.com/nicknisi/sessions/issues/95)) ([f1240c9](https://github.com/nicknisi/sessions/commit/f1240c94fe805bfa8e1a78620bfa686a1459ae86))
+
 ## [1.29.0](https://github.com/nicknisi/sessions/compare/v1.28.0...v1.29.0) (2026-08-24)
 
 
