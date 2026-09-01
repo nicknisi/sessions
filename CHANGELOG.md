@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.29.2](https://github.com/nicknisi/sessions/compare/v1.29.1...v1.29.2) (2026-09-01)
+
+
+### Bug Fixes
+
+* **report:** correct usage and cost accounting ([#98](https://github.com/nicknisi/sessions/issues/98)) ([0be0fe7](https://github.com/nicknisi/sessions/commit/0be0fe7b0ae49c007e6415fb6d51e2d431566562))
+
 ## [1.29.1](https://github.com/nicknisi/sessions/compare/v1.29.0...v1.29.1) (2026-08-24)
 
 
