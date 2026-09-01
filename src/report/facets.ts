@@ -134,8 +134,7 @@ export interface ReportFacets {
 export const TOP_DISPATCHES = 20;
 export const TOP_SESSIONS = 15;
 
-// Same convention as aggregate.ts: cache reads are replayed context, not new work.
-const billableTokens = (t: UsageEvent['tokens']) => t.input + t.output + t.cacheWrite;
+const processedTokens = (t: UsageEvent['tokens']) => t.input + t.output + t.cacheRead + t.cacheWrite;
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 const round4 = (n: number) => Math.round(n * 10_000) / 10_000;
@@ -159,8 +158,8 @@ function cacheStats(events: UsageEvent[]): CacheStats {
       // Price the same tokens twice — once as cache reads, once as fresh input —
       // through the real pricing path, so tiering and per-model rates apply.
       const zero = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
-      const asRead = computeCost(e.model, { ...zero, cacheRead: e.tokens.cacheRead });
-      const asInput = computeCost(e.model, { ...zero, input: e.tokens.cacheRead });
+      const asRead = computeCost(e.model, { ...zero, cacheRead: e.tokens.cacheRead }, e.speed);
+      const asInput = computeCost(e.model, { ...zero, input: e.tokens.cacheRead }, e.speed);
       saved += Math.max(0, asInput - asRead);
     }
   }
@@ -200,7 +199,7 @@ function subagentReport(events: UsageEvent[], costOf: (e: UsageEvent) => number,
     const cost = costOf(e);
     totalCost += cost;
     if (!e.agent) continue;
-    const tokens = billableTokens(e.tokens);
+    const tokens = processedTokens(e.tokens);
     subCost += cost;
     subTokens += tokens;
 
@@ -306,7 +305,7 @@ function sessionCosts(events: UsageEvent[], costOf: (e: UsageEvent) => number, t
       slots.set(key, s);
     }
     const cost = costOf(e);
-    s.tokens += billableTokens(e.tokens);
+    s.tokens += processedTokens(e.tokens);
     s.cost += cost;
     s.messages++;
     if (e.agent) s.subagentCost += cost;
@@ -432,7 +431,7 @@ export function computeBurn(
   period: { from: string; to: string; runsTo?: string | null },
   todayLocal: string,
 ): BurnStats {
-  const costOf = (e: UsageEvent) => e.costUSD ?? computeCost(e.model, e.tokens);
+  const costOf = (e: UsageEvent) => e.costUSD ?? computeCost(e.model, e.tokens, e.speed);
   const spent = inRange.reduce((t, e) => t + costOf(e), 0);
   // The period's own horizon, which for `--this-month` is the end of the month
   // rather than the last day that has data. Projecting against the reported range
@@ -457,7 +456,7 @@ export function computeBurn(
 }
 
 export function computeFacets(events: UsageEvent[], tz: string): ReportFacets {
-  const costOf = (e: UsageEvent) => e.costUSD ?? computeCost(e.model, e.tokens);
+  const costOf = (e: UsageEvent) => e.costUSD ?? computeCost(e.model, e.tokens, e.speed);
   const sessions = sessionCosts(events, costOf, tz);
   const mix = modelMix(events, costOf, tz);
   return {

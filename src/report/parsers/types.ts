@@ -18,6 +18,8 @@ export interface UsageEvent {
     cacheWrite1h?: number; // subset of cacheWrite written to the 1h cache (billed at input×2)
   };
   costUSD?: number; // only set when source pre-computes (Pi); otherwise computed downstream
+  /** Anthropic Fast mode charges a 2× premium for supported Opus models. */
+  speed?: 'standard' | 'fast';
   /** Set when the event came from a dispatched subagent rather than the main loop.
    *  `id` is the dispatch id (one per Task/Agent invocation); `type` is the agent
    *  type ('Explore', 'general-purpose', a plugin agent, …) — Pi does not record

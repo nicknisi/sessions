@@ -14,16 +14,21 @@ interface JsonObject {
   [key: string]: JsonValue;
 }
 
-function claudeLine(opts: { id?: string; requestId?: string; input?: number }): string {
-  const message: JsonObject = {
-    model: 'claude-opus-4-8',
-    usage: {
-      input_tokens: opts.input ?? 1000,
-      output_tokens: 500,
-      cache_creation_input_tokens: 200,
-      cache_read_input_tokens: 10000,
-    },
+function claudeLine(opts: {
+  id?: string;
+  requestId?: string;
+  input?: number;
+  output?: number;
+  speed?: 'standard' | 'fast';
+}): string {
+  const usage: JsonObject = {
+    input_tokens: opts.input ?? 1000,
+    output_tokens: opts.output ?? 500,
+    cache_creation_input_tokens: 200,
+    cache_read_input_tokens: 10000,
   };
+  if (opts.speed) usage.speed = opts.speed;
+  const message: JsonObject = { model: 'claude-opus-4-8', usage };
   if (opts.id !== undefined) message.id = opts.id;
   const line: JsonObject = {
     type: 'assistant',
@@ -45,6 +50,20 @@ describe('parseClaudeCode dedup', () => {
     writeFileSync(join(root, 'proj', 'b.jsonl'), claudeLine({ id: 'msg_1', requestId: 'req_1' }));
     const events = await parseClaudeCode(root);
     expect(events.length).toBe(1);
+  });
+
+  test('keeps the complete usage from streamed records sharing one response id', async () => {
+    const root = join(tmp, 'claude-streamed');
+    mkdirSync(root, { recursive: true });
+    writeFileSync(
+      join(root, 'a.jsonl'),
+      claudeLine({ id: 'msg_stream', requestId: 'req_stream', output: 5, speed: 'fast' }) +
+        claudeLine({ id: 'msg_stream', requestId: 'req_stream', output: 500, speed: 'fast' }),
+    );
+    const events = await parseClaudeCode(root);
+    expect(events).toHaveLength(1);
+    expect(events[0]!.tokens.output).toBe(500);
+    expect(events[0]!.speed).toBe('fast');
   });
 
   test('keeps distinct message.id events', async () => {

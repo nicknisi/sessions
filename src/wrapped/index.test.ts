@@ -176,8 +176,8 @@ describe('runWrapped', () => {
     // 03:30 UTC lands in the small-hours census.
     expect(data.rhythm.nightsPastMidnight).toBe(1);
     expect(data.rhythm.latestNight.clock).toContain('3:30');
-    // Token rule matches the report: input + output + cacheWrite, cacheRead excluded.
-    expect(data.totals.tokens).toBe(5 * (1000 + 500 + 200));
+    // Token rule matches the report: all processed input and output, including cache traffic.
+    expect(data.totals.tokens).toBe(5 * (1000 + 500 + 10000 + 200));
     // Per-tool sessions are distinct (s1 spans June 1 + June 22 — aggregate's
     // sum-of-daily would say 3; the headline total and tools[] must agree).
     expect(data.tools[0].sessions).toBe(2);

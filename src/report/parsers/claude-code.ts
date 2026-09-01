@@ -40,6 +40,7 @@ const claudeAssistantLineSchema = z.object({
           output_tokens: z.number().optional(),
           cache_creation_input_tokens: z.number().optional(),
           cache_read_input_tokens: z.number().optional(),
+          speed: z.enum(['standard', 'fast']).optional().catch(undefined),
           cache_creation: z
             .object({
               ephemeral_5m_input_tokens: z.number().optional(),
@@ -164,6 +165,7 @@ export async function parseClaudeCodeFile(path: string): Promise<ParsedFile> {
       },
     };
     if (assistant.gitBranch) event.branch = assistant.gitBranch;
+    if (u.speed) event.speed = u.speed;
     // The same API response is rewritten into every resumed/forked session
     // file; this key lets the merge count it once. Absent when the record has
     // no message id, in which case it cannot be deduped.
@@ -186,16 +188,30 @@ export function resolveAgentTypes(events: UsageEvent[], agentTypes: Record<strin
   }
 }
 
-/** Drop repeats of the same API response, keeping the first occurrence. */
+/** Drop repeats of the same API response, keeping its most complete usage record. */
 export function dedupeEvents(events: UsageEvent[]): UsageEvent[] {
-  const seen = new Set<string>();
+  const positions = new Map<string, number>();
   const out: UsageEvent[] = [];
+  const volume = (e: UsageEvent) => e.tokens.input + e.tokens.output + e.tokens.cacheRead + e.tokens.cacheWrite;
   for (const e of events) {
-    if (e.dedupKey) {
-      if (seen.has(e.dedupKey)) continue;
-      seen.add(e.dedupKey);
+    if (!e.dedupKey) {
+      out.push(e);
+      continue;
     }
-    out.push(e);
+    const position = positions.get(e.dedupKey);
+    if (position === undefined) {
+      positions.set(e.dedupKey, out.length);
+      out.push(e);
+      continue;
+    }
+    const current = out[position]!;
+    if (
+      volume(e) > volume(current) ||
+      (volume(e) === volume(current) && (e.costUSD ?? 0) > (current.costUSD ?? 0)) ||
+      (volume(e) === volume(current) && e.speed === 'fast' && current.speed !== 'fast')
+    ) {
+      out[position] = e;
+    }
   }
   return out;
 }

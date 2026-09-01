@@ -8,7 +8,7 @@ import type { ToolId } from '../report/types.ts';
 import type { PricingWarning } from '../report/schema.ts';
 
 export interface WrappedTotals {
-  /** input + output + cacheWrite — same rule as `sessions report` (cacheRead excluded). */
+  /** All processed input and output, including cache reads and writes. */
   tokens: number;
   cacheReadTokens: number;
   costUSD: number;

@@ -432,9 +432,20 @@ export function resetPricingWarnings(): void {
   warnings = [];
 }
 
-export function computeCost(modelId: string, usage: UsageCounts): number {
+// Fast mode doubles Opus 4.8/5 base rates; prompt-cache multipliers stack on top.
+// https://platform.claude.com/docs/en/about-claude/pricing#fast-mode-pricing
+const FAST_MODE_MODELS = ['claude-opus-4-8', 'claude-opus-5'] as const;
+
+function fastModeMultiplier(modelId: string, speed: 'standard' | 'fast' | undefined): number {
+  if (speed !== 'fast') return 1;
+  const normalized = normalizedPricingKey(modelId);
+  return FAST_MODE_MODELS.some((model) => containsPricingKey(normalized, model)) ? 2 : 1;
+}
+
+export function computeCost(modelId: string, usage: UsageCounts, speed?: 'standard' | 'fast'): number {
+  const multiplier = fastModeMultiplier(modelId, speed);
   const p = find(modelId);
-  if (p) return priceWith(p, usage);
+  if (p) return priceWith(p, usage) * multiplier;
 
   const total = usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
   const family = findFamily(modelId);
@@ -443,7 +454,7 @@ export function computeCost(modelId: string, usage: UsageCounts): number {
     return 0;
   }
   if (total > 0) warnings.push({ model: modelId, tokens: total, pricedAs: family.key });
-  return priceWith(family.pricing, usage);
+  return priceWith(family.pricing, usage) * multiplier;
 }
 
 function priceWith(p: ModelPricing, usage: UsageCounts): number {
