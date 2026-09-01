@@ -157,7 +157,7 @@ describe('runReport', () => {
     expect(report.generator).toBe('sessions');
     expect(report.version).toBe(1);
     expect(report.weeklyHighlights).toBeUndefined();
-    expect(report.summary.totalTokens).toBe(1700);
+    expect(report.summary.totalTokens).toBe(11700);
     expect(readFileSync(res.htmlPath!, 'utf8').startsWith('<!DOCTYPE html>')).toBe(true);
   });
 

@@ -106,6 +106,14 @@ describe('computeCost arithmetic', () => {
     expect(cost).toBeCloseTo(expected, 12);
   });
 
+  test('Fast mode doubles Opus 4.8 and Opus 5 pricing', () => {
+    const usage = counts({ input: 1000, output: 2000, cacheRead: 4000, cacheWrite: 800 });
+    for (const model of ['claude-opus-4-8', 'claude-opus-5']) {
+      expect(computeCost(model, usage, 'fast')).toBeCloseTo(computeCost(model, usage) * 2, 12);
+    }
+    expect(computeCost('claude-fable-5', usage, 'fast')).toBeCloseTo(computeCost('claude-fable-5', usage), 12);
+  });
+
   test('1h cache-creation is priced at input×2 (5m stays at the cache_create rate)', () => {
     // opus-4-8: input 5e-6 → 1h rate 10e-6; cacheWrite (5m) rate 6.25e-6.
     const all1h = computeCost('claude-opus-4-8', counts({ cacheWrite: 1000, cacheWrite1h: 1000 }));

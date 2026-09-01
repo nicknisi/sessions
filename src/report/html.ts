@@ -258,8 +258,7 @@ function accentDecls(p: Palette): string {
 const GLOSSARY = {
   totalCost:
     'Estimated from public per-token list prices. If you are on a Pro or Max plan this is what the same usage would have cost through the API, not what you were billed.',
-  tokens:
-    'Input + output + cache writes. Cache reads are excluded: they are context replayed from cache, not new work. Cache volume has its own card below.',
+  tokens: 'Input + output, including prompt-cache reads and writes.',
   sessions:
     'Distinct sessions counted per day and summed, so a session running past midnight counts on each day it touched.',
   messages: 'Assistant responses — one per API response, after de-duplicating resumed and forked transcripts.',
@@ -272,7 +271,7 @@ const GLOSSARY = {
   perSession: 'Total estimated cost divided by the number of distinct sessions.',
   perActiveDay: 'Total estimated cost divided by the days with at least one message.',
   msgsPerDay: 'Assistant responses divided by the days with at least one message.',
-  tokensPerDay: 'Billable tokens divided by the days with at least one message.',
+  tokensPerDay: 'Processed tokens divided by the days with at least one message.',
   volume:
     'A rough equivalence, not a precise count: roughly 0.75 words per token against published word counts, or about 9 tokens per line for source trees. The unit is chosen from a pool of comparisons that land near your own magnitude, seeded on this period so it stays the same every time you open the report.',
   rhythm:
@@ -293,10 +292,8 @@ const GLOSSARY = {
     'What the prompt cache returned over the period: those cache reads priced at full input rates, minus what they actually cost. The one figure on this page that is money you did not spend.',
   hitRate:
     'Share of prompt-side tokens served from cache rather than re-sent. Higher is better; a falling rate means context is being rebuilt instead of reused.',
-  cacheRead:
-    'Tokens replayed from the prompt cache, billed at roughly a tenth of the input rate. Not included in the token total.',
-  cacheWrite:
-    'Tokens written into the prompt cache, billed at a premium over input. These are new work, so they ARE included in the token total.',
+  cacheRead: 'Tokens replayed from the prompt cache, billed at roughly a tenth of the input rate.',
+  cacheWrite: 'Tokens written into the prompt cache, billed at a premium over input.',
   burn: 'Spend so far against a straight-line projection to the end of the period, and against the equally long window immediately before it.',
   distribution:
     'The shape of session spend across every session in the period, not just the ones listed. A max far above the median means a few sessions carry the bill.',

@@ -1,6 +1,6 @@
-// VENDORED from tokenmaxing/src/aggregate.ts (public contract: schemaVersion 2) with ONE local
-// divergence: the 'opencode' TOOL_LABEL entry is a sessions-owned extension — see the matching
-// note in ./types.ts. When re-syncing with upstream, preserve it. Do not edit other logic here.
+// VENDORED from tokenmaxing/src/aggregate.ts (public contract: schemaVersion 2) with two local
+// divergences: the 'opencode' TOOL_LABEL entry, and totalTokens includes cache reads so the report
+// reflects all processed tokens. When re-syncing with upstream, preserve both.
 import type {
   TokenmaxingData,
   ToolBreakdown,
@@ -65,14 +65,12 @@ interface EnrichedEvent {
 }
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
-// Excludes cache_read (replayed prior context — mostly free reuse, not "new work").
-// cache_creation (cacheWrite) IS counted because those are new tokens written to cache.
-const totalTokens = (t: UsageEvent['tokens']) => t.input + t.output + t.cacheWrite;
+const totalTokens = (t: UsageEvent['tokens']) => t.input + t.output + t.cacheRead + t.cacheWrite;
 
 function enrich(events: UsageEvent[], tz: string): EnrichedEvent[] {
   return events.map((e) => ({
     e,
-    cost: e.costUSD ?? computeCost(e.model, e.tokens),
+    cost: e.costUSD ?? computeCost(e.model, e.tokens, e.speed),
     date: localDate(e.timestamp, tz),
     hour: localHour(e.timestamp, tz),
     basename: resolveProject(e.projectPath),

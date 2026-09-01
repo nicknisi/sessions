@@ -26,7 +26,8 @@ import type { AgentName } from './parsers/claude-code.ts';
 // v2: the Pi parser changed what it emits per file (dedupKeys, subagent-run
 // attribution, compaction usage, zero-usage skips) — a v1 pi parse served from
 // cache would silently miss all of it, so old caches are rebuilt.
-const SCHEMA_VERSION = 2;
+// v3: Claude events retain the Fast mode flag used for historical pricing.
+const SCHEMA_VERSION = 3;
 
 export function getEventCachePath(): string {
   return join(getCacheDir(), 'usage.db');

@@ -58,7 +58,7 @@ export function renderText(r: UsageReport): string {
   out += rule('=');
 
   out += row('Total cost', fmtUSD(s.totalCostUSD));
-  out += row('Billable tokens', fmtTokens(s.totalTokens));
+  out += row('Tokens processed', fmtTokens(s.totalTokens));
   out += row('Sessions / messages', `${s.sessions.toLocaleString('en-US')} / ${s.messages.toLocaleString('en-US')}`);
   out += row('Active days', `${s.activeDays} (streak ${s.currentStreakDays}, longest ${s.longestStreakDays})`);
   out += row('Peak hour', hourLabel(s.peakHourLocal));
