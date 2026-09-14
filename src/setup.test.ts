@@ -1,8 +1,18 @@
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, lstatSync, readlinkSync, existsSync } from 'node:fs';
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  readFileSync,
+  rmSync,
+  lstatSync,
+  readlinkSync,
+  existsSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { linkPiSkills, unlinkPiSkills, installedSkills } from './setup';
+import { PLUGIN_FILES } from './plugin-files';
 
 let tmp: string;
 let pluginSkills: string;
@@ -62,6 +72,30 @@ describe('unlinkPiSkills', () => {
     // The refused hand-written skill survives uninstall.
     expect(existsSync(join(piSkills, 'memory', 'SKILL.md'))).toBe(true);
   });
+});
+
+test('bundles session-reflect and its checks for setup discovery and Pi links', () => {
+  const bundledSkills = join(tmp, 'reflection-plugin', 'skills');
+  const skillDir = join(bundledSkills, 'session-reflect');
+  const linksDir = join(tmp, 'reflection-pi');
+  mkdirSync(skillDir, { recursive: true });
+
+  for (const file of ['SKILL.md', 'tests.md']) {
+    const embedded = PLUGIN_FILES[`skills/session-reflect/${file}`];
+    const source = readFileSync(join(import.meta.dir, '..', 'plugin', 'skills', 'session-reflect', file), 'utf8');
+    expect(embedded).toBe(source);
+    writeFileSync(join(skillDir, file), embedded!);
+  }
+
+  expect(installedSkills(bundledSkills)).toEqual([
+    { name: 'session-reflect', description: 'Reflect on how you work with AI coding agents using sessions history.' },
+  ]);
+  expect(linkPiSkills(linksDir, bundledSkills)).toEqual([{ name: 'session-reflect', status: 'linked' }]);
+  for (const file of ['SKILL.md', 'tests.md']) {
+    expect(PLUGIN_FILES[`skills/session-reflect/${file}`]).toBe(
+      readFileSync(join(linksDir, 'session-reflect', file), 'utf8'),
+    );
+  }
 });
 
 describe('installedSkills', () => {
