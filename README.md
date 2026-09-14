@@ -89,6 +89,7 @@ sessions setup
     /standup           Yesterday + today activity for standups
     /recall            What did I do on a specific project?
     /session-metrics   Usage dashboard with tool breakdown
+    /session-reflect   Reflect on prompting, corrections, and delegation
     /memory            Triage durable facts mined from past sessions
 
   Run `sessions setup` again after upgrading to update skills.
@@ -255,16 +256,17 @@ The `get_activity_digest` tool supports a `detail` parameter: `"compact"` (defau
 
 ### Skills
 
-The plugin ships six skills that compose the MCP tools (and, for `/memory`, the CLI) into repeatable workflows:
+The plugin bundles skills that compose the MCP tools (and, for `/memory`, the CLI) into repeatable workflows:
 
-| Skill              | Trigger                                     | What it does                                                                                                    |
-| ------------------ | ------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `/context`         | "what was I doing here", "catch me up"      | Repo-scoped primer: prior decisions, dead ends, the open thread                                                 |
-| `/recall`          | "what did I do on [project]"                | Searches by topic or file, digests the best candidates, expands only the matched exchanges                      |
-| `/standup`         | "standup", "what did I do yesterday"        | Yesterday + today in compact format, terse bullets for Slack                                                    |
-| `/weekly-summary`  | "summarize my week", "weekly recap"         | Fetches full digest for the past 7 days, writes structured report, then nudges toward any new memory candidates |
-| `/session-metrics` | "session stats", "which tool do I use most" | Tool/project breakdown, daily activity, active hours heatmap                                                    |
-| `/memory`          | "triage memory", "review memory"            | Runs the mine, clusters paraphrases, merges them, and walks approve / reject / snooze                           |
+| Skill              | Trigger                                                        | What it does                                                                                                    |
+| ------------------ | -------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `/context`         | "what was I doing here", "catch me up"                         | Repo-scoped primer: prior decisions, dead ends, the open thread                                                 |
+| `/recall`          | "what did I do on [project]"                                   | Searches by topic or file, digests the best candidates, expands only the matched exchanges                      |
+| `/standup`         | "standup", "what did I do yesterday"                           | Yesterday + today in compact format, terse bullets for Slack                                                    |
+| `/weekly-summary`  | "summarize my week", "weekly recap"                            | Fetches full digest for the past 7 days, writes structured report, then nudges toward any new memory candidates |
+| `/session-metrics` | "session stats", "which tool do I use most"                    | Tool/project breakdown, daily activity, active hours heatmap                                                    |
+| `/session-reflect` | "reflect on my workflow", "why do I keep correcting the agent" | Cited interaction patterns and workflow experiments, with no automatic memory or instruction changes            |
+| `/memory`          | "triage memory", "review memory"                               | Runs the mine, clusters paraphrases, merges them, and walks approve / reject / snooze                           |
 
 Skills work with Claude Code, Cursor, Codex, and any agent that supports the skills.sh format.
 

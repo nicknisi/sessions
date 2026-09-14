@@ -15,6 +15,7 @@ const ORDER: { name: string; outcome: string }[] = [
   { name: 'standup', outcome: 'Yesterday and today as terse bullets you can paste into Slack.' },
   { name: 'weekly-summary', outcome: 'A structured week, then a nudge toward any new memory worth keeping.' },
   { name: 'session-metrics', outcome: 'Which tool you actually use, and the hours you actually work.' },
+  { name: 'session-reflect', outcome: 'Cited patterns in prompting and delegation, with small workflow experiments.' },
   { name: 'memory', outcome: 'A mined batch clustered and triaged — approve, reject, or snooze each one.' },
 ];
 
