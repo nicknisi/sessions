@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.30.0](https://github.com/nicknisi/sessions/compare/v1.29.2...v1.30.0) (2026-09-14)
+
+
+### Features
+
+* bundle sessions-backed reflection skill ([#100](https://github.com/nicknisi/sessions/issues/100)) ([97357e8](https://github.com/nicknisi/sessions/commit/97357e8d9641b06d8bf777a20010b260f49e0a2a))
+
 ## [1.29.2](https://github.com/nicknisi/sessions/compare/v1.29.1...v1.29.2) (2026-09-01)
 
 
