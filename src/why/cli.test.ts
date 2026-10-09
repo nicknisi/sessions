@@ -22,7 +22,6 @@ function whyEnv() {
     SESSIONS_CACHE_DIR: join(tmp, 'cache'),
     SESSIONS_CLAUDE_DIR: join(tmp, 'claude'),
     SESSIONS_PI_DIR: join(tmp, 'pi'),
-    SESSIONS_RIKER_DIR: join(tmp, 'riker'),
     SESSIONS_OLLAMA_URL: 'http://127.0.0.1:1', // dead port: keep the semantic lane off a local Ollama
     SESSIONS_CODEX_DIR: join(tmp, 'codex'),
     SESSIONS_OPENCODE_DB: join(tmp, 'opencode.db'),

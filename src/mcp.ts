@@ -12,7 +12,7 @@ import {
   recentSessionsForRepo,
   resolveSessionFile,
 } from './cache';
-import { formatResult, buildResumeCommand, rikerTag } from './search-format';
+import { formatResult, buildResumeCommand } from './search-format';
 import { getSessionMessages, type PiForkMarker } from './parser';
 import { splitFrontmatter, frontmatterDescription } from './skill-frontmatter';
 import { buildSessionDigest, clip, renderDigestMarkdown } from './digest';
@@ -138,8 +138,6 @@ function toolError(message: string): ToolResult {
 
 /** One memory row in the review_agent_memories payload (schema-derived). */
 type ReviewedMemoryPayload = z.infer<typeof ReviewAgentMemoriesOutput>['memories'][number];
-/** One hit in the grep_sessions payload (schema-derived). */
-type GrepHitPayload = z.infer<typeof GrepSessionsOutput>['hits'][number];
 /** One message row in the get_session_messages payload (schema-derived). */
 type SessionMessagePayload = z.infer<typeof GetSessionMessagesOutput>['messages'][number];
 
@@ -394,22 +392,17 @@ export async function runGrepSessions(args: {
     totalSessions: result.totalSessions,
     returnedHits: result.returnedHits,
     truncated: result.truncated,
-    hits: result.hits.map((h) => {
-      const hit: GrepHitPayload = {
-        tool: h.tool,
-        // Same rule as search_sessions (formatResult): a Riker job's repo, not its worktree.
-        project: h.riker?.repo || h.project,
-        sessionId: h.sessionId,
-        filePath: h.filePath,
-        date: h.date,
-        role: h.role,
-        msgIndex: h.msgIndex,
-        snippet: h.snippet,
-        resumeCommand: buildResumeCommand(h.tool, h.project, h.sessionId),
-      };
-      if (h.riker) hit.riker = rikerTag(h.riker);
-      return hit;
-    }),
+    hits: result.hits.map((h) => ({
+      tool: h.tool,
+      project: h.project,
+      sessionId: h.sessionId,
+      filePath: h.filePath,
+      date: h.date,
+      role: h.role,
+      msgIndex: h.msgIndex,
+      snippet: h.snippet,
+      resumeCommand: buildResumeCommand(h.tool, h.project, h.sessionId),
+    })),
   };
 
   if (result.totalHits === 0) return sentinel('No matching messages found.', payload);

@@ -5,7 +5,7 @@ import { type Tool } from './types';
 import { getSessionMessages } from './parser';
 import { readSessionLines } from './session-io';
 import { isOpencodePath } from './opencode';
-import { getPiSessionsDir, rikerJobFromPath } from './paths';
+import { getPiSessionsDir } from './paths';
 
 /**
  * Infer the tool from a session file path. The selector TSV now carries filePath,
@@ -17,12 +17,11 @@ function toolFromPath(filePath: string): Tool | null {
   const home = homedir();
   const claudeDir = process.env.SESSIONS_CLAUDE_DIR || join(home, '.claude/projects');
   const codexDir = process.env.SESSIONS_CODEX_DIR || join(home, '.codex/sessions');
+  const piDir = getPiSessionsDir();
   const dir = dirname(filePath);
   if (dir.startsWith(claudeDir)) return 'claude';
   if (dir.startsWith(codexDir)) return 'codex';
-  // Riker job transcripts are Pi sessions too (see getPiSessionRoots). Matched by path
-  // rather than by listing job dirs, so a vault-only one whose job dir is gone still previews.
-  if (dir.startsWith(getPiSessionsDir()) || rikerJobFromPath(filePath) > 0) return 'pi';
+  if (dir.startsWith(piDir)) return 'pi';
   return null;
 }
 

@@ -60,7 +60,6 @@ function renderSession(s: WhySessionEvidence): void {
   const tag = s.confidence === 'files+time' ? `${C.green}files+time${C.reset}` : `${C.yellow}time-only${C.reset}`;
   w.write(`${C.bold}${s.headline || '(no title)'}${C.reset} ${C.dim}(${s.tool})${C.reset} [${tag}]\n`);
   w.write(`  ${C.dim}${s.startedAt || '?'} → ${s.endedAt ?? '?'}${C.reset}\n`);
-  if (s.riker) w.write(`  ${C.dim}${s.riker.label}${s.riker.prUrl ? ` · ${s.riker.prUrl}` : ''}${C.reset}\n`);
   if (s.overlappingFiles.length) {
     w.write(`  ${C.dim}files: ${s.overlappingFiles.join(', ')}${C.reset}\n`);
   }

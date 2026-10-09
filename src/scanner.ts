@@ -2,12 +2,12 @@ import { readdir } from 'node:fs/promises';
 import { join, basename } from 'node:path';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { type Tool, type SessionResult, type RikerProvenance } from './types';
+import { type Tool, type SessionResult } from './types';
 import { extractSessionMetadata, getCwdFromSession, firstPrompt, contentMatches, findMatchContext } from './parser';
 import { cwdUnder } from './repo';
 import { discoverOpencodeSessions } from './opencode';
 import { readSessionLines } from './session-io';
-import { getPiSessionRoots, rikerJobFromPath } from './paths';
+import { getPiSessionsDir } from './paths';
 
 const home = homedir();
 const CLAUDE_DIR = join(home, '.claude/projects');
@@ -60,7 +60,6 @@ async function processSession(
       // fork visibility is an indexed-search feature (zero-value defaults).
       branches: 0,
       forkedFrom: '',
-      riker: rikerFromPath(filePath, cwd),
     };
   }
 
@@ -81,15 +80,7 @@ async function processSession(
     errored: false,
     branches: 0,
     forkedFrom: '',
-    riker: rikerFromPath(filePath, cwd),
   };
-}
-
-/** Riker provenance as far as the path and header tell it: the job and its worktree.
- *  Repo, branch, and PR need git and Riker's jobs.db, which only the index consults. */
-function rikerFromPath(filePath: string, cwd: string): RikerProvenance | undefined {
-  const job = rikerJobFromPath(filePath);
-  return job > 0 ? { job, worktree: cwd, repo: '', branch: '', prUrl: '' } : undefined;
 }
 
 async function scanDir(
@@ -99,14 +90,12 @@ async function scanDir(
   repoRoot: string,
   searchAll: boolean,
   searchQuery: string,
-  /** A flat dir of transcripts (a Riker job's session/), not one slug dir per project. */
-  flat = false,
 ): Promise<SessionResult[]> {
   if (!existsSync(sessionDir)) return [];
   const results: SessionResult[] = [];
 
-  if (tool === 'codex' || flat) {
-    const glob = new Bun.Glob(flat ? '*.jsonl' : '**/*.jsonl');
+  if (tool === 'codex') {
+    const glob = new Bun.Glob('**/*.jsonl');
     for await (const path of glob.scan(sessionDir)) {
       const r = await processSession(join(sessionDir, path), tool, repoRoot, searchAll, searchQuery);
       if (r) results.push(r);
@@ -154,14 +143,9 @@ export async function scanSessions(
   if (toolFilter === '' || toolFilter === 'pi') {
     const piPrefix = repoRoot ? `-${claudePrefix}-` : '--';
     // Resolved per call (not frozen at import) via the shared resolver so the
-    // scanner sees the same roots as the index and the report: Pi's own tree
-    // (SESSIONS_PI_DIR / PI_CODING_AGENT_* honored) plus Riker job dirs. Riker
-    // sessions match a repo scope by cwd only here — mapping a job back to its
-    // original repo is an index feature, like fork lineage.
-    for (const root of getPiSessionRoots()) {
-      const flat = root.origin === 'riker';
-      scans.push(scanDir(root.dir, piPrefix, 'pi', repoRoot, searchAll, normalizedQuery, flat));
-    }
+    // scanner honors the same SESSIONS_PI_DIR / PI_CODING_AGENT_* overrides as
+    // the index and the report.
+    scans.push(scanDir(getPiSessionsDir(), piPrefix, 'pi', repoRoot, searchAll, normalizedQuery));
   }
   if (toolFilter === '' || toolFilter === 'codex') {
     scans.push(scanDir(CODEX_DIR, '', 'codex', repoRoot, searchAll, normalizedQuery));

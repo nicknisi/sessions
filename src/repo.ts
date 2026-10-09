@@ -74,22 +74,6 @@ export function resolveRepo(cwd: string): RepoInfo | null {
   return { gitCommonDir, container, currentWorktree, branches };
 }
 
-/**
- * The checkout a worktree belongs to and the branch it has out, from its git metadata —
- * how a Riker job's worktree is traced back to its repo. `repo` is the main checkout
- * (the parent of `.git`, or of `.bare` in the bare layout — the same dir `container`
- * names), so it compares against a repo's scope roots. `branch` is '' when detached.
- * Null when `dir` is not a git worktree (or no longer exists).
- */
-export function worktreeOrigin(dir: string): { repo: string; branch: string } | null {
-  const res = git(dir, ['rev-parse', '--git-common-dir', '--abbrev-ref', 'HEAD']);
-  const [common = '', branch = ''] = res.ok ? res.out.split('\n') : [];
-  if (!common) return null;
-  const abs = common.startsWith('/') ? common : resolve(dir, common);
-  const name = basename(abs);
-  return { repo: name === '.git' || name === '.bare' ? dirname(abs) : abs, branch: branch === 'HEAD' ? '' : branch };
-}
-
 /** Boundary-aware containment: true iff `cwd` is `root` or a descendant of `root`. */
 export function cwdUnder(cwd: string, root: string): boolean {
   return cwd === root || cwd.startsWith(root + '/');

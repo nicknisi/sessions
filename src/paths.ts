@@ -9,7 +9,6 @@
 
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import { existsSync, readdirSync } from 'node:fs';
 
 /**
  * Home root. `SESSIONS_HOME` exists so the installer can be exercised against a temp
@@ -47,10 +46,9 @@ export function getArchiveDir(): string {
 }
 
 /**
- * Where Pi keeps its own session transcripts. Session consumers (index, scanner,
- * report, preview) go through getPiSessionRoots below, which adds Riker's job dirs;
- * this single-dir form stays for src/memory/sources.ts, which derives Pi's config
- * siblings from it.
+ * Where Pi keeps its session transcripts. One resolver shared by the index
+ * (src/cache.ts), the no-index scanner (src/scanner.ts), and the usage report
+ * (src/report/extract.ts) so all three always look at the same tree.
  *
  * Order:
  *   1. SESSIONS_PI_DIR — this project's own override (tests, unusual setups);
@@ -65,62 +63,4 @@ export function getPiSessionsDir(): string {
   if (process.env.PI_CODING_AGENT_SESSION_DIR) return process.env.PI_CODING_AGENT_SESSION_DIR;
   if (process.env.PI_CODING_AGENT_DIR) return join(process.env.PI_CODING_AGENT_DIR, 'sessions');
   return join(homedir(), '.pi', 'agent', 'sessions');
-}
-
-/**
- * Riker's home: the coding-worker supervisor keeps one dir per job under `jobs/` and
- * its job table in `jobs.db`. Order: SESSIONS_RIKER_DIR (this project's override, the
- * same shape as SESSIONS_PI_DIR beating Pi's own vars) → RIKER_HOME (Riker's own) →
- * ~/.riker. Built on getHome() so SESSIONS_HOME sandboxes it; resolved lazily like
- * everything above.
- */
-export function getRikerHome(): string {
-  return process.env.SESSIONS_RIKER_DIR || process.env.RIKER_HOME || join(getHome(), '.riker');
-}
-
-/** Riker sessions are indexed by default; SESSIONS_RIKER=0 turns discovery off. */
-export function rikerEnabled(): boolean {
-  return process.env.SESSIONS_RIKER !== '0';
-}
-
-/** The job number when `filePath` is a Riker worker transcript (`<rikerHome>/jobs/<n>/session/*.jsonl`), else 0. */
-export function rikerJobFromPath(filePath: string): number {
-  const jobs = join(getRikerHome(), 'jobs') + '/';
-  if (!filePath.startsWith(jobs)) return 0;
-  const m = /^(\d+)\/session\/[^/]+\.jsonl$/.exec(filePath.slice(jobs.length));
-  return m ? Number(m[1]) : 0;
-}
-
-/**
- * One directory of Pi-format session transcripts. `pi` is Pi's own tree (one slug
- * dir per project, transcripts inside); `riker` is one Riker job's flat `session/` dir.
- */
-export interface PiSessionRoot {
-  dir: string;
-  origin: 'pi' | 'riker';
-}
-
-/**
- * Every place Pi-format transcripts live: Pi's own tree plus, unless SESSIONS_RIKER=0,
- * each Riker job's `session/` dir. Only `session/` — a job dir's `log.jsonl` and
- * `proof/` are Riker's own records, not transcripts. The one resolver behind the index,
- * the no-index scanner, the usage report, and preview, so all four see the same set.
- * (Riker's brain views under `<rikerHome>/sessions` are rebuilt copies and stay out.)
- */
-export function getPiSessionRoots(): PiSessionRoot[] {
-  const roots: PiSessionRoot[] = [{ dir: getPiSessionsDir(), origin: 'pi' }];
-  if (!rikerEnabled()) return roots;
-  const jobs = join(getRikerHome(), 'jobs');
-  let ids: string[];
-  try {
-    ids = readdirSync(jobs);
-  } catch {
-    return roots; // no Riker here
-  }
-  for (const id of ids) {
-    if (!/^\d+$/.test(id)) continue;
-    const dir = join(jobs, id, 'session');
-    if (existsSync(dir)) roots.push({ dir, origin: 'riker' });
-  }
-  return roots;
 }
