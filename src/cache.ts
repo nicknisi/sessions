@@ -18,7 +18,7 @@ import {
   type PrimerMemory,
 } from './types';
 import { activeMemoryFor } from './memory/retrieve';
-import { getPiSessionsDir, getArchiveDir } from './paths';
+import { getPiSessionRoots, getArchiveDir, rikerEnabled, rikerJobFromPath } from './paths';
 import type { MemoryRecord } from './memory/types';
 import {
   extractMessages,
@@ -68,12 +68,6 @@ export function getDbPath(): string {
 // runs have a stable env, so production behavior is unchanged by the laziness.
 function getClaudeDir(): string {
   return process.env.SESSIONS_CLAUDE_DIR || join(home, '.claude/projects');
-}
-function getPiDir(): string {
-  // Shared resolver (src/paths.ts): honors SESSIONS_PI_DIR and Pi's own
-  // PI_CODING_AGENT_SESSION_DIR / PI_CODING_AGENT_DIR overrides, and keeps the
-  // index, scanner, and report pointed at the same tree.
-  return getPiSessionsDir();
 }
 function getCodexDir(): string {
   return process.env.SESSIONS_CODEX_DIR || join(home, '.codex/sessions');
@@ -298,7 +292,6 @@ interface FileEntry {
 async function discoverFiles(): Promise<FileEntry[]> {
   const entries: FileEntry[] = [];
   const claudeDir = getClaudeDir();
-  const piDir = getPiDir();
   const codexDir = getCodexDir();
 
   if (existsSync(claudeDir)) {
@@ -317,19 +310,25 @@ async function discoverFiles(): Promise<FileEntry[]> {
     }
   }
 
-  if (existsSync(piDir)) {
+  // Shared resolver (src/paths.ts): Pi's own tree (SESSIONS_PI_DIR / PI_CODING_AGENT_*
+  // overrides honored) plus each Riker job's session/ dir, so the index, scanner,
+  // report, and preview all see the same set. Pi nests one slug dir per project; a
+  // Riker job dir is flat. Riker transcripts are ordinary Pi sessions (tool 'pi') —
+  // their provenance is read off the path when the row is written.
+  for (const root of getPiSessionRoots()) {
     let dirs: string[];
     try {
-      dirs = await readdir(piDir);
+      dirs = root.origin === 'pi' ? (await readdir(root.dir)).map((d) => join(root.dir, d)) : [root.dir];
     } catch {
       dirs = [];
     }
-    for (const dirname of dirs) {
-      const dirpath = join(piDir, dirname);
+    for (const dirpath of dirs) {
       const glob = new Bun.Glob('*.jsonl');
-      for await (const p of glob.scan(dirpath)) {
-        entries.push({ path: join(dirpath, p), tool: 'pi' });
-      }
+      try {
+        for await (const p of glob.scan(dirpath)) {
+          entries.push({ path: join(dirpath, p), tool: 'pi' });
+        }
+      } catch {} // vanished mid-walk (Riker cleaning up a job): its rows prune like any removed file
     }
   }
 
@@ -350,8 +349,13 @@ async function discoverFiles(): Promise<FileEntry[]> {
   // identity; parsing reads through the session-io vault fallback. Skip any path a
   // live source already produced — a vendor-restored file wins over its vault entry.
   const live = new Set(entries.map((e) => e.path));
+  // With SESSIONS_RIKER=0, archived Riker transcripts stay out too: the opt-out
+  // removes them from the index rather than freezing whatever was archived.
+  const riker = rikerEnabled();
   for (const archived of listArchived(getArchiveDir())) {
-    if (!live.has(archived.path)) entries.push({ path: archived.path, tool: archived.tool });
+    if (live.has(archived.path)) continue;
+    if (!riker && rikerJobFromPath(archived.path) > 0) continue;
+    entries.push({ path: archived.path, tool: archived.tool });
   }
 
   return entries;
