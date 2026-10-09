@@ -6,6 +6,7 @@ import { test, expect, beforeAll, beforeEach, afterAll } from 'bun:test';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { Database } from 'bun:sqlite';
 
 let tmp: string;
 let cache: typeof import('./cache');
@@ -59,6 +60,68 @@ function writeJobSession(job: number, id: string, cwd: string, text: string): st
   const path = jobSessionPath(job, id);
   mkdirSync(join(path, '..'), { recursive: true });
   writeFileSync(path, piTranscript(id, cwd, text));
+  return path;
+}
+
+// Isolate from the user's global git config (signing hooks, templates), as src/repo.test.ts does.
+const GIT_ENV = {
+  ...process.env,
+  GIT_AUTHOR_NAME: 'test',
+  GIT_AUTHOR_EMAIL: 'test@test',
+  GIT_COMMITTER_NAME: 'test',
+  GIT_COMMITTER_EMAIL: 'test@test',
+  GIT_CONFIG_GLOBAL: '/dev/null',
+  GIT_CONFIG_NOSYSTEM: '1',
+};
+
+function git(cwd: string, args: string[], env: Record<string, string> = {}): string {
+  const r = Bun.spawnSync(['git', '-C', cwd, '-c', 'commit.gpgsign=false', ...args], { env: { ...GIT_ENV, ...env } });
+  if (r.exitCode !== 0) throw new Error(`git ${args.join(' ')}: ${r.stderr.toString()}`);
+  return r.stdout.toString().trim();
+}
+
+let fixtureCount = 0;
+
+/** A fresh checkout with one commit, plus a Riker-style linked worktree for `job` on `branch`. */
+function repoWithJobWorktree(job: number, branch: string) {
+  const base = join(tmp, `fx${++fixtureCount}`);
+  const repo = join(base, 'repo');
+  const worktree = join(base, 'worktrees', String(job));
+  mkdirSync(repo, { recursive: true });
+  git(repo, ['init', '-q', '-b', 'main']);
+  writeFileSync(join(repo, 'README.md'), 'hi\n');
+  git(repo, ['add', '-A']);
+  git(repo, ['commit', '-qm', 'init']);
+  git(repo, ['worktree', 'add', '-q', '-b', branch, worktree]);
+  return { repo, worktree };
+}
+
+interface JobRow {
+  id: number;
+  repo: string;
+  branch: string | null;
+  pr_url: string | null;
+}
+
+/** A fixture jobs.db with Riker's column names (plus a NOT NULL goal we must never need). */
+function writeJobsDb(rows: JobRow[]): string {
+  const path = join(rikerHome(), 'jobs.db');
+  mkdirSync(rikerHome(), { recursive: true });
+  rmSync(path, { force: true });
+  const db = new Database(path);
+  db.run(
+    'CREATE TABLE jobs (id INTEGER PRIMARY KEY, goal TEXT NOT NULL, repo TEXT NOT NULL, branch TEXT, pr_url TEXT)',
+  );
+  for (const r of rows) {
+    db.run('INSERT INTO jobs (id, goal, repo, branch, pr_url) VALUES (?, ?, ?, ?, ?)', [
+      r.id,
+      'secret goal',
+      r.repo,
+      r.branch,
+      r.pr_url,
+    ]);
+  }
+  db.close();
   return path;
 }
 
@@ -124,4 +187,96 @@ test('the no-index scanner and the usage report see the same Riker roots as the 
   expect(defaultRoots().pi).toEqual(getPiSessionRoots().map((r) => r.dir));
   const events = await gatherEvents(defaultRoots(), new Set(['pi']), { noCache: true });
   expect(events.map((e) => e.sessionId)).toEqual(['r1']);
+});
+
+test('provenance from git metadata while the worktree exists: job, worktree, repo, branch', async () => {
+  const { repo, worktree } = repoWithJobWorktree(124, 'riker/124-zebra');
+  writeJobSession(124, 'r1', worktree, 'zebrafinch migration');
+
+  const [r] = await cache.searchSessions('zebrafinch');
+  expect(r!.tool).toBe('pi');
+  expect(r!.riker).toEqual({ job: 124, worktree, repo, branch: 'riker/124-zebra', prUrl: '' });
+});
+
+test('provenance from jobs.db once the worktree is gone, and the PR URL whenever Riker records one', async () => {
+  const { repo, worktree } = repoWithJobWorktree(124, 'riker/124-zebra');
+  git(repo, ['worktree', 'remove', '--force', worktree]);
+  writeJobSession(124, 'r1', worktree, 'zebrafinch migration');
+  writeJobsDb([{ id: 124, repo, branch: 'riker/124-zebra', pr_url: null }]);
+
+  const [before] = await cache.searchSessions('zebrafinch');
+  expect(before!.riker).toEqual({ job: 124, worktree, repo, branch: 'riker/124-zebra', prUrl: '' });
+  expect(before!.exists).toBe(false);
+
+  // The PR lands after the transcript stops changing; the next refresh still picks it up.
+  const db = new Database(join(rikerHome(), 'jobs.db'));
+  db.run("UPDATE jobs SET pr_url = 'https://github.com/acme/repo/pull/7' WHERE id = 124");
+  db.close();
+  const [after] = await cache.searchSessions('zebrafinch');
+  expect(after!.riker?.prUrl).toBe('https://github.com/acme/repo/pull/7');
+});
+
+test('git metadata wins over jobs.db for repo and branch; a bare-layout jobs.db path traces to its container', async () => {
+  const { repo, worktree } = repoWithJobWorktree(124, 'riker/124-zebra');
+  writeJobSession(124, 'r1', worktree, 'zebrafinch migration');
+  writeJobsDb([{ id: 124, repo: '/somewhere/else', branch: 'stale', pr_url: 'https://x/pull/1' }]);
+  const [r] = await cache.searchSessions('zebrafinch');
+  expect(r!.riker).toEqual({ job: 124, worktree, repo, branch: 'riker/124-zebra', prUrl: 'https://x/pull/1' });
+
+  // Bare layout: <container>/.bare with worktrees as siblings; Riker records the
+  // checkout it ran from (<container>/main), the index stores the container.
+  const container = join(tmp, `fx${++fixtureCount}`, 'cli');
+  mkdirSync(container, { recursive: true });
+  git(repo, ['clone', '-q', '--bare', repo, join(container, '.bare')]);
+  writeFileSync(join(container, '.git'), 'gitdir: ./.bare\n');
+  git(container, ['worktree', 'add', '-q', join(container, 'main'), 'main']);
+  writeJobSession(125, 'r2', join(tmp, 'gone', '125'), 'quokka');
+  writeJobsDb([{ id: 125, repo: join(container, 'main'), branch: 'riker/125-q', pr_url: null }]);
+  const [b] = await cache.searchSessions('quokka');
+  expect(b!.riker?.repo).toBe(container);
+});
+
+test('jobs.db is opened read-only: a write through the same handle fails', async () => {
+  const path = writeJobsDb([{ id: 1, repo: '/r', branch: null, pr_url: null }]);
+  const { openRikerJobsDb } = await import('./riker');
+  const db = openRikerJobsDb(path);
+  try {
+    expect(() => db.run("UPDATE jobs SET branch = 'x'")).toThrow(/readonly/i);
+  } finally {
+    db.close();
+  }
+});
+
+test('a missing jobs.db and a deleted worktree still index, with what is known', async () => {
+  const worktree = join(tmp, 'never-existed', '124');
+  writeJobSession(124, 'r1', worktree, 'zebrafinch migration');
+  const [r] = await cache.searchSessions('zebrafinch');
+  expect(r!.riker).toEqual({ job: 124, worktree, repo: '', branch: '', prUrl: '' });
+});
+
+test('a locked jobs.db does not break the refresh; provenance fills in once it frees up', async () => {
+  const worktree = join(tmp, 'never-existed', '124');
+  writeJobSession(124, 'r1', worktree, 'zebrafinch migration');
+  const path = writeJobsDb([{ id: 124, repo: '/r/repo', branch: 'riker/124-z', pr_url: null }]);
+  const holder = new Database(path);
+  holder.run('BEGIN EXCLUSIVE'); // rollback-journal mode: readers are locked out until COMMIT
+  try {
+    const [r] = await cache.searchSessions('zebrafinch');
+    expect(r!.riker).toEqual({ job: 124, worktree, repo: '', branch: '', prUrl: '' });
+  } finally {
+    holder.run('COMMIT');
+    holder.close();
+  }
+  const [r] = await cache.searchSessions('zebrafinch');
+  expect(r!.riker?.repo).toBe('/r/repo');
+  expect(r!.riker?.branch).toBe('riker/124-z');
+});
+
+test('non-Riker sessions carry no provenance', async () => {
+  const dir = join(tmp, 'pi', 'proj');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'p1.jsonl'), piTranscript('p1', '/repoPi', 'zebrafinch plain'));
+  const [r] = await cache.searchSessions('zebrafinch');
+  expect(r!.riker).toBeUndefined();
+  rmSync(dir, { recursive: true, force: true });
 });

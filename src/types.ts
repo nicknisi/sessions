@@ -8,6 +8,23 @@ export interface MessageHit {
   snippet: string;
 }
 
+/**
+ * Where a Riker worker session came from. Its presence is the `source: "riker"` tag:
+ * the transcript is an ordinary Pi session (`tool` stays 'pi') that a Riker job wrote.
+ */
+export interface RikerProvenance {
+  /** The Riker job number, from the transcript's path. */
+  job: number;
+  /** The job's worktree — the transcript header's cwd. Riker removes it after a merge. */
+  worktree: string;
+  /** The checkout the job came from; '' when neither git nor Riker's jobs.db knows. */
+  repo: string;
+  /** The job's branch; '' when unknown. */
+  branch: string;
+  /** The job's pull request, from Riker's jobs.db; '' when none. */
+  prUrl: string;
+}
+
 export interface SessionResult {
   date: string;
   createdAt: string;
@@ -33,6 +50,8 @@ export interface SessionResult {
   /** Top message-level matches (≤3, best first). Empty for metadata-only matches;
    *  absent from the no-index scanner fallback, which cannot localize hits. */
   messageHits?: MessageHit[];
+  /** Set only on sessions a Riker worker wrote. */
+  riker?: RikerProvenance;
 }
 
 export interface DigestSessionDetail {

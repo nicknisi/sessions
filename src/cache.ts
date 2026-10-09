@@ -16,6 +16,7 @@ import {
   type ContextHeadline,
   type MessageHit,
   type PrimerMemory,
+  type RikerProvenance,
 } from './types';
 import { activeMemoryFor } from './memory/retrieve';
 import { getPiSessionRoots, getArchiveDir, rikerEnabled, rikerJobFromPath } from './paths';
@@ -41,7 +42,8 @@ import { archiveFile, listArchived, loadManifest, saveManifest, type Manifest } 
 // primer's projection cap rather than being confused with extract-files.ts's own MAX_FILES
 // (50 — the bound on the indexed files_touched column, a different number for a different job).
 import { MAX_FILES as MAX_PRIMER_FILES } from './search-format';
-import { type RepoInfo, globPrefix, branchLabel, cwdUnder } from './repo';
+import { type RepoInfo, globPrefix, branchLabel, cwdUnder, worktreeOrigin } from './repo';
+import { readRikerJobs } from './riker';
 import { isTrivia, blendedScore, type ScorableSession } from './significance';
 import { detectEmbedder, embedQuery } from './semantic/embed';
 import { topKSimilar, fuseRRF, ABSTENTION_THRESHOLD, type VectorRow } from './semantic/fuse';
@@ -94,7 +96,11 @@ function getCodexDir(): string {
 // v12: adds session_vectors — optional per-session embeddings for the semantic
 // search lane. Embeddings are derived data (a rebuild re-embeds at the next
 // refresh when an embedder is present), so the drop/rebuild below is lossless.
-const SCHEMA_VERSION = 12;
+// v13: Riker provenance — sessions.riker_job / repo / pr_url (the job number, the
+// checkout the job came from, and its PR), with the job's branch in the existing
+// branch column. Riker job transcripts are new rows either way; the rebuild just
+// gives every row the columns.
+const SCHEMA_VERSION = 13;
 let _db: Database | null = null;
 let _refreshPromise: Promise<RefreshResult> | null = null;
 let _lastRefreshAt = 0;
@@ -190,7 +196,16 @@ function openDb(): Database {
       -- Zero/empty defaults for non-pi tools.
       branches INTEGER NOT NULL DEFAULT 0,
       fork_points TEXT NOT NULL DEFAULT '[]',
-      forked_from TEXT NOT NULL DEFAULT ''
+      forked_from TEXT NOT NULL DEFAULT '',
+      -- Riker provenance (v13). riker_job is the job number read off the transcript's
+      -- path (0 = not a Riker session); the worktree is the cwd column. repo and pr_url
+      -- (and branch, shared with Claude's gitBranch above) are filled after the write by
+      -- applyRikerProvenance, from the worktree's git metadata or Riker's jobs.db. repo
+      -- is what scopes a job's sessions to the checkout it came from once the worktree
+      -- is gone.
+      riker_job INTEGER NOT NULL DEFAULT 0,
+      repo TEXT NOT NULL DEFAULT '',
+      pr_url TEXT NOT NULL DEFAULT ''
     )
   `);
   // Session-level searchable text only — message text lives in message_fts (one row
@@ -499,8 +514,8 @@ function writeSessionRow(
   }
   db.run('DELETE FROM ignored_files WHERE file_path = ?', [filePath]);
   db.run(
-    `INSERT OR REPLACE INTO sessions (file_path, mtime, size, cwd, tool, session_id, date, created_at, started_at, ended_at, first_prompt, custom_title, message_count, files_touched, files_read, commands, errored, error_count, closing_user, closing_assistant, branch, branches, fork_points, forked_from)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT OR REPLACE INTO sessions (file_path, mtime, size, cwd, tool, session_id, date, created_at, started_at, ended_at, first_prompt, custom_title, message_count, files_touched, files_read, commands, errored, error_count, closing_user, closing_assistant, branch, branches, fork_points, forked_from, riker_job)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       filePath,
       stat.mtimeMs,
@@ -526,6 +541,7 @@ function writeSessionRow(
       branches,
       forkPoints,
       forkedFrom,
+      tool === 'pi' ? rikerJobFromPath(filePath) : 0,
     ],
   );
   db.run(
@@ -706,6 +722,8 @@ async function runRefreshIndex(): Promise<RefreshResult> {
   // One atomic manifest write for the whole refresh (see the ctx comment above).
   saveManifest(ctx.dir, ctx.manifest);
 
+  applyRikerProvenance(db);
+
   // Optional semantic lane: embed sessions missing (or with stale) vectors. Runs
   // after all index writes commit, is entirely skipped when no embedder is
   // present, and fails open — an embed error abandons embedding for THIS refresh
@@ -713,6 +731,55 @@ async function runRefreshIndex(): Promise<RefreshResult> {
   await embedMissingVectors(db);
 
   return { total: files.length, updated };
+}
+
+/**
+ * Fill repo / branch / pr_url on Riker rows that still lack any of them. Runs after
+ * every refresh rather than inside indexFile because a job's PR (and sometimes its
+ * branch) is recorded by Riker after the worker's transcript stops changing — an
+ * mtime-gated write would never see it.
+ *
+ * Repo and branch come from the worktree's own git metadata first, while it exists;
+ * otherwise from Riker's jobs.db, whose repo path is itself traced to its main checkout
+ * when that still exists (a bare layout's `cli/main` → `cli`). The PR URL only exists in
+ * jobs.db. jobs.db is queried once per refresh, read-only, and only when some row is
+ * incomplete; git runs only for rows with no repo yet, so a resolved row costs nothing.
+ * Nothing here can fail a refresh: unknown stays ''.
+ */
+function applyRikerProvenance(db: Database): void {
+  const rows = db
+    .query<{ file_path: string; riker_job: number; cwd: string; repo: string; branch: string; pr_url: string }, []>(
+      `SELECT file_path, riker_job, cwd, repo, branch, pr_url FROM sessions
+       WHERE riker_job > 0 AND (repo = '' OR branch = '' OR pr_url = '')`,
+    )
+    .all();
+  if (rows.length === 0) return;
+
+  const jobs = readRikerJobs([...new Set(rows.map((r) => r.riker_job))]);
+  const origins = new Map<string, { repo: string; branch: string } | null>();
+  const originOf = (dir: string) => {
+    if (!origins.has(dir)) origins.set(dir, existsSync(join(dir, '.git')) ? worktreeOrigin(dir) : null);
+    return origins.get(dir) ?? null;
+  };
+
+  const update = db.query('UPDATE sessions SET repo = ?, branch = ?, pr_url = ? WHERE file_path = ?');
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    for (const row of rows) {
+      const job = jobs.get(row.riker_job);
+      const git = row.repo ? null : originOf(row.cwd);
+      const repo = row.repo || git?.repo || (job?.repo ? (originOf(job.repo)?.repo ?? job.repo) : '');
+      const branch = row.branch || git?.branch || job?.branch || '';
+      const prUrl = job?.prUrl || row.pr_url;
+      if (repo !== row.repo || branch !== row.branch || prUrl !== row.pr_url) {
+        update.run(repo, branch, prUrl, row.file_path);
+      }
+    }
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
 }
 
 // The retrieval document embedded per session: title + first prompt + the files
@@ -920,6 +987,10 @@ export async function searchSessions(query: string, opts: SearchOptions = {}): P
     errored: number;
     branches: number;
     forked_from: string;
+    riker_job: number;
+    repo: string;
+    branch: string;
+    pr_url: string;
     snippet: string | null;
   }
 
@@ -1036,7 +1107,7 @@ export async function searchSessions(query: string, opts: SearchOptions = {}): P
         .query<SessionRow, any[]>(`
         SELECT file_path, cwd, tool, session_id, date, created_at, first_prompt,
                custom_title, message_count, files_touched, files_read, commands, errored,
-               branches, forked_from, NULL as snippet
+               branches, forked_from, riker_job, repo, branch, pr_url, NULL as snippet
         FROM sessions WHERE file_path IN (${placeholders}) ${extra}
       `)
         .all(...chunk, ...condParams);
@@ -1107,7 +1178,7 @@ export async function searchSessions(query: string, opts: SearchOptions = {}): P
               .query<SessionRow, any[]>(`
               SELECT file_path, cwd, tool, session_id, date, created_at, first_prompt,
                      custom_title, message_count, files_touched, files_read, commands, errored,
-                     branches, forked_from, NULL as snippet
+                     branches, forked_from, riker_job, repo, branch, pr_url, NULL as snippet
               FROM sessions WHERE file_path IN (${placeholders}) ${extraSem}
             `)
               .all(...chunk, ...condParams);
@@ -1146,7 +1217,7 @@ export async function searchSessions(query: string, opts: SearchOptions = {}): P
       .query<SessionRow, any[]>(`
       SELECT file_path, cwd, tool, session_id, date, created_at, first_prompt,
              custom_title, message_count, files_touched, files_read, commands, errored,
-             branches, forked_from, NULL as snippet
+             branches, forked_from, riker_job, repo, branch, pr_url, NULL as snippet
       FROM sessions ${where}
       ORDER BY ${orderBy} LIMIT ?
     `)
@@ -1173,6 +1244,7 @@ export async function searchSessions(query: string, opts: SearchOptions = {}): P
     branches: r.branches,
     forkedFrom: r.forked_from,
     messageHits: hitsByPath.get(r.file_path) ?? [],
+    riker: rikerProvenance(r),
   }));
 }
 
@@ -1204,6 +1276,8 @@ export interface GrepHit {
   /** Feeds get_session_messages(offset) directly — same numbering as message_fts. */
   msgIndex: number;
   snippet: string;
+  /** Set only on sessions a Riker worker wrote. */
+  riker?: RikerProvenance;
 }
 
 export interface GrepResult {
@@ -1293,10 +1367,15 @@ export async function grepSessions(pattern: string, opts: GrepOptions = {}): Pro
     cwd: string;
     date: string;
     sessionId: string;
+    riker_job: number;
+    repo: string;
+    branch: string;
+    pr_url: string;
   }
   const stmt = db.query<Row, any[]>(`
     SELECT m.file_path AS filePath, m.msg_index AS msgIndex, m.role AS role, m.text AS text,
-           s.tool AS tool, s.cwd AS cwd, s.date AS date, s.session_id AS sessionId
+           s.tool AS tool, s.cwd AS cwd, s.date AS date, s.session_id AS sessionId,
+           s.riker_job AS riker_job, s.repo AS repo, s.branch AS branch, s.pr_url AS pr_url
     FROM message_fts m JOIN sessions s ON s.file_path = m.file_path
     WHERE ${conditions.join(' AND ')}
   `);
@@ -1327,6 +1406,7 @@ export async function grepSessions(pattern: string, opts: GrepOptions = {}): Pro
         role: row.role as 'user' | 'assistant',
         msgIndex: row.msgIndex,
         snippet,
+        riker: rikerProvenance(row),
       });
     }
   }
@@ -1689,6 +1769,21 @@ function repoScopeClause(roots: string[]): ScopeClause {
   };
 }
 
+/** The columns a Riker row's provenance is read back from. */
+interface RikerColumns {
+  riker_job: number;
+  cwd: string;
+  repo: string;
+  branch: string;
+  pr_url: string;
+}
+
+/** A row's Riker provenance, or undefined for every non-Riker session. */
+export function rikerProvenance(r: RikerColumns): RikerProvenance | undefined {
+  if (r.riker_job <= 0) return undefined;
+  return { job: r.riker_job, worktree: r.cwd, repo: r.repo, branch: r.branch, prUrl: r.pr_url };
+}
+
 function parseFiles(json: string): string[] {
   try {
     // The files_touched column is written by the index from string[]; the JSON
@@ -1921,6 +2016,10 @@ export interface CandidateSessionRow {
   first_prompt: string;
   custom_title: string;
   files_touched: string;
+  riker_job: number;
+  repo: string;
+  branch: string;
+  pr_url: string;
 }
 
 /**
@@ -1945,7 +2044,8 @@ export async function candidateSessionsForRepoWindow(
 
   return db
     .query<CandidateSessionRow, any[]>(
-      `SELECT file_path, cwd, tool, session_id, date, started_at, ended_at, first_prompt, custom_title, files_touched
+      `SELECT file_path, cwd, tool, session_id, date, started_at, ended_at, first_prompt, custom_title, files_touched,
+              riker_job, repo, branch, pr_url
        FROM sessions ${where}
        ORDER BY started_at DESC, date DESC`,
     )
@@ -1968,7 +2068,8 @@ export async function sessionsTouchingFile(repo: RepoInfo, relPath: string): Pro
 
   return db
     .query<CandidateSessionRow, any[]>(
-      `SELECT file_path, cwd, tool, session_id, date, started_at, ended_at, first_prompt, custom_title, files_touched
+      `SELECT file_path, cwd, tool, session_id, date, started_at, ended_at, first_prompt, custom_title, files_touched,
+              riker_job, repo, branch, pr_url
        FROM sessions
        WHERE ${scope.clause} AND files_touched LIKE '%' || ? || '%' ESCAPE '\\'
        ORDER BY started_at DESC, date DESC`,

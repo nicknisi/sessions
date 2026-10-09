@@ -2,12 +2,12 @@ import { readdir } from 'node:fs/promises';
 import { join, basename } from 'node:path';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { type Tool, type SessionResult } from './types';
+import { type Tool, type SessionResult, type RikerProvenance } from './types';
 import { extractSessionMetadata, getCwdFromSession, firstPrompt, contentMatches, findMatchContext } from './parser';
 import { cwdUnder } from './repo';
 import { discoverOpencodeSessions } from './opencode';
 import { readSessionLines } from './session-io';
-import { getPiSessionRoots } from './paths';
+import { getPiSessionRoots, rikerJobFromPath } from './paths';
 
 const home = homedir();
 const CLAUDE_DIR = join(home, '.claude/projects');
@@ -60,6 +60,7 @@ async function processSession(
       // fork visibility is an indexed-search feature (zero-value defaults).
       branches: 0,
       forkedFrom: '',
+      riker: rikerTag(filePath, cwd),
     };
   }
 
@@ -80,7 +81,15 @@ async function processSession(
     errored: false,
     branches: 0,
     forkedFrom: '',
+    riker: rikerTag(filePath, cwd),
   };
+}
+
+/** Riker provenance as far as the path and header tell it: the job and its worktree.
+ *  Repo, branch, and PR need git and Riker's jobs.db, which only the index consults. */
+function rikerTag(filePath: string, cwd: string): RikerProvenance | undefined {
+  const job = rikerJobFromPath(filePath);
+  return job > 0 ? { job, worktree: cwd, repo: '', branch: '', prUrl: '' } : undefined;
 }
 
 async function scanDir(
