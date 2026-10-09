@@ -1020,8 +1020,9 @@ export async function searchSessions(query: string, opts: SearchOptions = {}): P
   if (project) {
     // Boundary-aware: the project root itself or a descendant, never a sibling
     // sharing a prefix (e.g. `dotfiles-v2` must not match `dotfiles`).
-    conditions.push('(cwd = ? OR cwd GLOB ?)');
-    condParams.push(project, globPrefix(project));
+    const scope = underRoot(project);
+    conditions.push(scope.clause);
+    condParams.push(...scope.params);
   }
   if (opts.errored) conditions.push('errored = 1');
   // Files filter: substring match over the JSON-array text columns — callers pass a
@@ -1334,8 +1335,9 @@ export async function grepSessions(pattern: string, opts: GrepOptions = {}): Pro
     params.push(opts.tool);
   }
   if (opts.project) {
-    conditions.push('(s.cwd = ? OR s.cwd GLOB ?)');
-    params.push(opts.project, globPrefix(opts.project));
+    const scope = underRoot(opts.project, 's.');
+    conditions.push(scope.clause);
+    params.push(...scope.params);
   }
   if (opts.after) {
     conditions.push('s.date >= ?');
@@ -1497,8 +1499,9 @@ function queryDateRange(
     params.push(toolFilter);
   }
   if (project) {
-    conditions.push('(cwd = ? OR cwd GLOB ?)');
-    params.push(project, globPrefix(project));
+    const scope = underRoot(project);
+    conditions.push(scope.clause);
+    params.push(...scope.params);
   }
 
   const where = 'WHERE ' + conditions.join(' AND ');
@@ -1753,19 +1756,38 @@ function repoRoots(repo: RepoInfo, worktreeOnly = false): string[] {
   return coveringRoots([repo.container, ...repo.branches.keys()]);
 }
 
-/** A boundary-aware `cwd` predicate over several roots. Parenthesized as a whole: OR'd
+/** A boundary-aware `cwd` (or Riker `repo`) predicate over several roots. Parenthesized as a whole: OR'd
  *  alternatives inside a clause that gets AND'd with tool/date filters must not leak. */
 interface ScopeClause {
   clause: string;
   params: string[];
 }
 
-function repoScopeClause(roots: string[]): ScopeClause {
+/**
+ * Sessions belonging to `root`: recorded in `root` or a descendant, or — for a Riker
+ * job — run on behalf of a checkout that is. A Riker session's cwd is the job's
+ * worktree (~/.riker/worktrees/<n>), which a repo's `git worktree list` names only
+ * while the job is live; `repo` is the checkout the job came from, recorded by
+ * applyRikerProvenance, and it outlives the worktree. Same boundary rule on both
+ * columns, so a `…-v2` sibling's jobs stay out exactly as its own sessions do.
+ * `alias` qualifies the columns for a join (`s.`); `byRepo` false keeps to cwd alone.
+ */
+function underRoot(root: string, alias = '', byRepo = true): ScopeClause {
+  const glob = globPrefix(root);
+  if (!byRepo) return { clause: `(${alias}cwd = ? OR ${alias}cwd GLOB ?)`, params: [root, glob] };
+  return {
+    clause: `(${alias}cwd = ? OR ${alias}cwd GLOB ? OR ${alias}repo = ? OR ${alias}repo GLOB ?)`,
+    params: [root, glob, root, glob],
+  };
+}
+
+function repoScopeClause(roots: string[], byRepo = true): ScopeClause {
   // No roots means no repo, which must select nothing rather than everything.
   if (roots.length === 0) return { clause: '(1 = 0)', params: [] };
+  const scopes = roots.map((root) => underRoot(root, '', byRepo));
   return {
-    clause: '(' + roots.map(() => '(cwd = ? OR cwd GLOB ?)').join(' OR ') + ')',
-    params: roots.flatMap((root) => [root, globPrefix(root)]),
+    clause: '(' + scopes.map((s) => s.clause).join(' OR ') + ')',
+    params: scopes.flatMap((s) => s.params),
   };
 }
 
@@ -1854,7 +1876,9 @@ export async function getContextPrimer(repo: RepoInfo, opts: ContextOptions): Pr
   // Boundary-aware scope: every root of this repo (or just the current worktree) and their
   // descendants — captures linked worktrees wherever git put them, while excluding a
   // same-prefix `…-v2` sibling that is not a worktree of this repo at all.
-  const scope = repoScopeClause(repoRoots(repo, opts.worktreeOnly));
+  // --worktree narrows to sessions recorded in this worktree, so a Riker job's (which
+  // ran in a worktree of its own) only joins the repo-wide view.
+  const scope = repoScopeClause(repoRoots(repo, opts.worktreeOnly), !opts.worktreeOnly);
   const conditions: string[] = [scope.clause];
   const params: (string | number)[] = [...scope.params];
 

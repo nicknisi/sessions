@@ -7,6 +7,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } from 'nod
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Database } from 'bun:sqlite';
+import { closeMemoryDb } from './memory/store';
 
 let tmp: string;
 let cache: typeof import('./cache');
@@ -23,6 +24,7 @@ function setEnv(): void {
   process.env.SESSIONS_CODEX_DIR = join(tmp, 'codex');
   process.env.SESSIONS_OPENCODE_DB = join(tmp, 'opencode.db');
   process.env.SESSIONS_ARCHIVE_DIR = join(tmp, 'archive');
+  process.env.SESSIONS_DATA_DIR = join(tmp, 'data'); // the primer reads the memory store
   process.env.SESSIONS_REFRESH_INTERVAL_MS = '0';
   delete process.env.SESSIONS_RIKER;
 }
@@ -141,6 +143,7 @@ beforeEach(() => {
 
 afterAll(() => {
   cache.closeDb();
+  closeMemoryDb(); // the primer opened it here; the next file must not inherit this handle
   rmSync(tmp, { recursive: true, force: true });
 });
 
@@ -279,4 +282,62 @@ test('non-Riker sessions carry no provenance', async () => {
   const [r] = await cache.searchSessions('zebrafinch');
   expect(r!.riker).toBeUndefined();
   rmSync(dir, { recursive: true, force: true });
+});
+
+// ——— repo scoping: a job's sessions belong to the checkout the job came from ———
+
+test('repo-scoped search, primer, and why find Riker sessions from the checkout, live or after the worktree is gone', async () => {
+  const { repo, worktree } = repoWithJobWorktree(124, 'riker/124-zebra');
+  writeJobSession(124, 'r1', worktree, 'zebrafinch migration');
+  // Job 125 ran and was cleaned up before sessions ever saw it: only jobs.db knows its repo.
+  const gone = join(tmp, 'gone-worktrees', '125');
+  writeJobSession(125, 'r2', gone, 'zebrafinch followup');
+  writeJobsDb([{ id: 125, repo, branch: 'riker/125-follow', pr_url: 'https://github.com/acme/repo/pull/9' }]);
+  // A commit landing inside both sessions' window, for `why`.
+  writeFileSync(join(repo, 'zebra.ts'), 'export {};\n');
+  git(repo, ['add', '-A']);
+  git(repo, ['commit', '-qm', 'zebra'], {
+    GIT_AUTHOR_DATE: '2026-10-09T17:30:00Z',
+    GIT_COMMITTER_DATE: '2026-10-09T17:30:00Z',
+  });
+  const sha = git(repo, ['rev-parse', 'HEAD']);
+
+  const { resolveRepo } = await import('./repo');
+  const { why } = await import('./why/correlate');
+  const expectBoth = async () => {
+    const searched = await cache.searchSessions('zebrafinch', { project: repo });
+    expect(searched.map((r) => r.sessionId).sort()).toEqual(['r1', 'r2']);
+    const grepped = await cache.grepSessions('zebrafinch', { project: repo });
+    expect(grepped.totalSessions).toBe(2);
+    const primer = await cache.getContextPrimer(resolveRepo(repo)!, {});
+    expect([...primer.recent, ...primer.headlines].map((s) => s.branch).sort()).toEqual([
+      'riker/124-zebra',
+      'riker/125-follow',
+    ]);
+    const outcome = await why(sha, repo);
+    expect(outcome.kind).toBe('evidence');
+    if (outcome.kind === 'evidence')
+      expect(outcome.evidence.sessions.map((s) => s.sessionId).sort()).toEqual(['r1', 'r2']);
+  };
+
+  await expectBoth(); // job 124's worktree is live (and listed by git worktree list)
+  git(repo, ['worktree', 'remove', '--force', worktree]);
+  await expectBoth(); // gone: matched by the recorded repo alone
+});
+
+test('a sibling repo sharing the prefix keeps its Riker sessions to itself', async () => {
+  const { repo } = repoWithJobWorktree(124, 'riker/124-zebra');
+  const sibling = repo + '-v2';
+  mkdirSync(sibling);
+  git(sibling, ['init', '-q', '-b', 'main']);
+  writeFileSync(join(sibling, 'README.md'), 'v2\n');
+  git(sibling, ['add', '-A']);
+  git(sibling, ['commit', '-qm', 'init']);
+  writeJobSession(126, 'r3', join(tmp, 'gone-worktrees', '126'), 'zebrafinch sibling');
+  writeJobsDb([{ id: 126, repo: sibling, branch: 'riker/126-v2', pr_url: null }]);
+
+  const { resolveRepo } = await import('./repo');
+  expect(await cache.searchSessions('zebrafinch', { project: repo })).toEqual([]);
+  expect((await cache.getContextPrimer(resolveRepo(repo)!, {})).isEmpty).toBe(true);
+  expect((await cache.searchSessions('zebrafinch', { project: sibling })).map((r) => r.sessionId)).toEqual(['r3']);
 });
