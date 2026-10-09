@@ -60,7 +60,7 @@ async function processSession(
       // fork visibility is an indexed-search feature (zero-value defaults).
       branches: 0,
       forkedFrom: '',
-      riker: rikerTag(filePath, cwd),
+      riker: rikerFromPath(filePath, cwd),
     };
   }
 
@@ -81,13 +81,13 @@ async function processSession(
     errored: false,
     branches: 0,
     forkedFrom: '',
-    riker: rikerTag(filePath, cwd),
+    riker: rikerFromPath(filePath, cwd),
   };
 }
 
 /** Riker provenance as far as the path and header tell it: the job and its worktree.
  *  Repo, branch, and PR need git and Riker's jobs.db, which only the index consults. */
-function rikerTag(filePath: string, cwd: string): RikerProvenance | undefined {
+function rikerFromPath(filePath: string, cwd: string): RikerProvenance | undefined {
   const job = rikerJobFromPath(filePath);
   return job > 0 ? { job, worktree: cwd, repo: '', branch: '', prUrl: '' } : undefined;
 }

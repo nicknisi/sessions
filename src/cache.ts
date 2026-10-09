@@ -199,7 +199,7 @@ function openDb(): Database {
       forked_from TEXT NOT NULL DEFAULT '',
       -- Riker provenance (v13). riker_job is the job number read off the transcript's
       -- path (0 = not a Riker session); the worktree is the cwd column. repo and pr_url
-      -- (and branch, shared with Claude's gitBranch above) are filled after the write by
+      -- (and the job's branch, in the branch column above) are filled after the write by
       -- applyRikerProvenance, from the worktree's git metadata or Riker's jobs.db. repo
       -- is what scopes a job's sessions to the checkout it came from once the worktree
       -- is gone.
@@ -762,19 +762,24 @@ function applyRikerProvenance(db: Database): void {
     return origins.get(dir) ?? null;
   };
 
+  const updates: [string, string, string, string][] = [];
+  for (const row of rows) {
+    const job = jobs.get(row.riker_job);
+    const git = row.repo ? null : originOf(row.cwd);
+    const repo = row.repo || git?.repo || (job?.repo ? (originOf(job.repo)?.repo ?? job.repo) : '');
+    const branch = row.branch || git?.branch || job?.branch || '';
+    const prUrl = job?.prUrl || row.pr_url;
+    if (repo !== row.repo || branch !== row.branch || prUrl !== row.pr_url) {
+      updates.push([repo, branch, prUrl, row.file_path]);
+    }
+  }
+  // A job that never gets a PR stays incomplete forever; it must not cost a write lock per refresh.
+  if (updates.length === 0) return;
+
   const update = db.query('UPDATE sessions SET repo = ?, branch = ?, pr_url = ? WHERE file_path = ?');
   db.exec('BEGIN IMMEDIATE');
   try {
-    for (const row of rows) {
-      const job = jobs.get(row.riker_job);
-      const git = row.repo ? null : originOf(row.cwd);
-      const repo = row.repo || git?.repo || (job?.repo ? (originOf(job.repo)?.repo ?? job.repo) : '');
-      const branch = row.branch || git?.branch || job?.branch || '';
-      const prUrl = job?.prUrl || row.pr_url;
-      if (repo !== row.repo || branch !== row.branch || prUrl !== row.pr_url) {
-        update.run(repo, branch, prUrl, row.file_path);
-      }
-    }
+    for (const u of updates) update.run(...u);
     db.exec('COMMIT');
   } catch (error) {
     db.exec('ROLLBACK');
@@ -1756,7 +1761,7 @@ function repoRoots(repo: RepoInfo, worktreeOnly = false): string[] {
   return coveringRoots([repo.container, ...repo.branches.keys()]);
 }
 
-/** A boundary-aware `cwd` (or Riker `repo`) predicate over several roots. Parenthesized as a whole: OR'd
+/** A boundary-aware `cwd` predicate over several roots. Parenthesized as a whole: OR'd
  *  alternatives inside a clause that gets AND'd with tool/date filters must not leak. */
 interface ScopeClause {
   clause: string;
