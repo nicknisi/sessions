@@ -1,4 +1,5 @@
-import { dirname, basename, resolve } from 'node:path';
+import { readFileSync, statSync } from 'node:fs';
+import { dirname, basename, join, resolve } from 'node:path';
 
 export interface RepoInfo {
   /** Canonical repo key (absolute path to the common git dir). */
@@ -72,6 +73,38 @@ export function resolveRepo(cwd: string): RepoInfo | null {
   }
 
   return { gitCommonDir, container, currentWorktree, branches };
+}
+
+/**
+ * The main checkout behind `cwd` when `cwd` is in a linked worktree, else ''.
+ *
+ * A linked worktree's `.git` is a file (`gitdir: <common>/worktrees/<name>`) whose
+ * gitdir holds a `commondir` pointer; a main checkout's `.git` is the directory itself,
+ * and a submodule's gitdir has no `commondir`. The main checkout is the common dir's
+ * parent — for the bare layout (`cli/.bare`) that is the container (`cli`), the same
+ * dir resolveRepo calls `container`. Read from disk rather than by spawning git, since
+ * the index calls this for every session it writes. '' when `cwd` is gone, not in a
+ * repo, or anything is unreadable.
+ */
+export function mainCheckoutOf(cwd: string): string {
+  try {
+    statSync(cwd);
+    for (let dir = cwd; ; dir = dirname(dir)) {
+      const dotGit = statSync(join(dir, '.git'), { throwIfNoEntry: false });
+      if (dotGit?.isDirectory()) return '';
+      if (dotGit) {
+        const gitdir = /^gitdir: (.+)$/m.exec(readFileSync(join(dir, '.git'), 'utf8'))?.[1]?.trim();
+        if (!gitdir) return '';
+        const abs = resolve(dir, gitdir);
+        const common = resolve(abs, readFileSync(join(abs, 'commondir'), 'utf8').trim());
+        const name = basename(common);
+        return name === '.git' || name === '.bare' ? dirname(common) : common;
+      }
+      if (dir === dirname(dir)) return '';
+    }
+  } catch {
+    return '';
+  }
 }
 
 /** Boundary-aware containment: true iff `cwd` is `root` or a descendant of `root`. */

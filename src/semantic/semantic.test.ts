@@ -228,6 +228,7 @@ function setEnv(): void {
   process.env.SESSIONS_CACHE_DIR = join(tmp, 'cache');
   process.env.SESSIONS_CLAUDE_DIR = join(tmp, 'claude');
   process.env.SESSIONS_PI_DIR = join(tmp, 'pi');
+  delete process.env.SESSIONS_PI_EXTRA_DIRS; // a developer's own extra Pi folders must not leak in
   process.env.SESSIONS_OLLAMA_URL = 'http://127.0.0.1:1'; // dead port: keep the semantic lane off a local Ollama
   process.env.SESSIONS_CODEX_DIR = join(tmp, 'codex');
   process.env.SESSIONS_OPENCODE_DB = join(tmp, 'opencode.db');
@@ -358,6 +359,7 @@ describe('absence identity (no embedder ⇒ lexical behavior)', () => {
     process.env.SESSIONS_CACHE_DIR = join(etmp, 'cache');
     process.env.SESSIONS_CLAUDE_DIR = join(etmp, 'claude');
     process.env.SESSIONS_PI_DIR = join(etmp, 'pi');
+    delete process.env.SESSIONS_PI_EXTRA_DIRS; // a developer's own extra Pi folders must not leak in
     process.env.SESSIONS_OLLAMA_URL = 'http://127.0.0.1:1'; // dead port: keep the semantic lane off a local Ollama
     process.env.SESSIONS_CODEX_DIR = join(etmp, 'codex');
     process.env.SESSIONS_OPENCODE_DB = join(etmp, 'opencode.db');

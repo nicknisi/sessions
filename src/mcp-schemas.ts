@@ -55,6 +55,8 @@ const formattedResult = z.object({
   forkedFrom: z.string(),
   // Absent on the no-index scanner fallback, empty on a metadata-only match.
   messageHits: z.array(messageHit).optional(),
+  // The main checkout, only when the session ran in a linked worktree.
+  repo: z.string().optional(),
 });
 
 export const SearchSessionsOutput = z.object({

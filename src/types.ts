@@ -33,6 +33,8 @@ export interface SessionResult {
   /** Top message-level matches (≤3, best first). Empty for metadata-only matches;
    *  absent from the no-index scanner fallback, which cannot localize hits. */
   messageHits?: MessageHit[];
+  /** The main checkout, when the session ran in a linked git worktree (cwd is that worktree). */
+  repo?: string;
 }
 
 export interface DigestSessionDetail {

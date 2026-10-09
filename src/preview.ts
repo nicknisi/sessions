@@ -5,7 +5,7 @@ import { type Tool } from './types';
 import { getSessionMessages } from './parser';
 import { readSessionLines } from './session-io';
 import { isOpencodePath } from './opencode';
-import { getPiSessionsDir } from './paths';
+import { getPiSessionsDir, getPiExtraDirs } from './paths';
 
 /**
  * Infer the tool from a session file path. The selector TSV now carries filePath,
@@ -17,11 +17,10 @@ function toolFromPath(filePath: string): Tool | null {
   const home = homedir();
   const claudeDir = process.env.SESSIONS_CLAUDE_DIR || join(home, '.claude/projects');
   const codexDir = process.env.SESSIONS_CODEX_DIR || join(home, '.codex/sessions');
-  const piDir = getPiSessionsDir();
   const dir = dirname(filePath);
   if (dir.startsWith(claudeDir)) return 'claude';
   if (dir.startsWith(codexDir)) return 'codex';
-  if (dir.startsWith(piDir)) return 'pi';
+  if ([getPiSessionsDir(), ...getPiExtraDirs()].some((piDir) => dir.startsWith(piDir))) return 'pi';
   return null;
 }
 

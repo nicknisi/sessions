@@ -18,6 +18,7 @@ for (const d of [claudeDir, piDir, codexDir, cacheDir]) mkdirSync(d, { recursive
 
 process.env.SESSIONS_CLAUDE_DIR = claudeDir;
 process.env.SESSIONS_PI_DIR = piDir;
+delete process.env.SESSIONS_PI_EXTRA_DIRS; // a developer's own extra Pi folders must not leak in
 process.env.SESSIONS_OLLAMA_URL = 'http://127.0.0.1:1'; // dead port: keep the semantic lane off a local Ollama
 process.env.SESSIONS_CODEX_DIR = codexDir;
 process.env.SESSIONS_CACHE_DIR = cacheDir;
@@ -32,6 +33,7 @@ beforeEach(() => {
   // query below then reopens against this fixture's index.db — order-independent.
   process.env.SESSIONS_CLAUDE_DIR = claudeDir;
   process.env.SESSIONS_PI_DIR = piDir;
+  delete process.env.SESSIONS_PI_EXTRA_DIRS; // a developer's own extra Pi folders must not leak in
   process.env.SESSIONS_OLLAMA_URL = 'http://127.0.0.1:1'; // dead port: keep the semantic lane off a local Ollama
   process.env.SESSIONS_CODEX_DIR = codexDir;
   process.env.SESSIONS_CACHE_DIR = cacheDir;
