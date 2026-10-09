@@ -7,7 +7,7 @@ import { extractSessionMetadata, getCwdFromSession, firstPrompt, contentMatches,
 import { cwdUnder } from './repo';
 import { discoverOpencodeSessions } from './opencode';
 import { readSessionLines } from './session-io';
-import { getPiSessionsDir } from './paths';
+import { getPiSessionsDir, getPiExtraDirs, PI_EXTRA_GLOBS } from './paths';
 
 const home = homedir();
 const CLAUDE_DIR = join(home, '.claude/projects');
@@ -90,12 +90,14 @@ async function scanDir(
   repoRoot: string,
   searchAll: boolean,
   searchQuery: string,
+  /** Glob every transcript with this instead of walking slug dirs (extra Pi folders). */
+  pattern = '',
 ): Promise<SessionResult[]> {
   if (!existsSync(sessionDir)) return [];
   const results: SessionResult[] = [];
 
-  if (tool === 'codex') {
-    const glob = new Bun.Glob('**/*.jsonl');
+  if (tool === 'codex' || pattern) {
+    const glob = new Bun.Glob(pattern || '**/*.jsonl');
     for await (const path of glob.scan(sessionDir)) {
       const r = await processSession(join(sessionDir, path), tool, repoRoot, searchAll, searchQuery);
       if (r) results.push(r);
@@ -146,6 +148,11 @@ export async function scanSessions(
     // scanner honors the same SESSIONS_PI_DIR / PI_CODING_AGENT_* overrides as
     // the index and the report.
     scans.push(scanDir(getPiSessionsDir(), piPrefix, 'pi', repoRoot, searchAll, normalizedQuery));
+    for (const dir of getPiExtraDirs()) {
+      for (const pattern of PI_EXTRA_GLOBS) {
+        scans.push(scanDir(dir, '', 'pi', repoRoot, searchAll, normalizedQuery, pattern));
+      }
+    }
   }
   if (toolFilter === '' || toolFilter === 'codex') {
     scans.push(scanDir(CODEX_DIR, '', 'codex', repoRoot, searchAll, normalizedQuery));

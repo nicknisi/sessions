@@ -21,6 +21,8 @@ interface JsonLine {
   sessionId?: string;
   gitBranch?: string;
   customTitle?: string;
+  /** Pi `session_info` entries: the session's name (`pi --name`, `/name`). */
+  name?: string;
   promptSource?: string | null;
   /** Claude marks auto-generated context-carryover turns (the "continued from a
    *  previous conversation" summary written on compaction) with this flag. */
@@ -105,6 +107,7 @@ export function extractSessionMetadata(lines: string[], tool: Tool): SessionMeta
     }
 
     if (d.type === 'custom-title') title = d.customTitle ?? '';
+    else if (d.type === 'session_info') title = piSessionName(d);
 
     if (d.timestamp?.[0] === '2') {
       const date = d.timestamp.slice(0, 10);
@@ -282,9 +285,20 @@ export function customTitle(lines: string[]): string {
     if (!d) continue;
     if (d.type === 'custom-title') {
       title = asJsonString(d.customTitle) ?? '';
+    } else if (d.type === 'session_info') {
+      title = piSessionName(d);
     }
   }
   return title;
+}
+
+/**
+ * The name a Pi `session_info` entry sets (`pi --name`, `/name`). The latest entry
+ * wins, including a clear: Pi reads `name?.trim() || undefined`, so an empty or
+ * missing name removes the title rather than leaving the previous one.
+ */
+function piSessionName(d: JsonLine): string {
+  return asJsonString(d.name)?.trim() ?? '';
 }
 
 export function firstTimestamp(lines: string[]): string {

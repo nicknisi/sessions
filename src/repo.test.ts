@@ -1,9 +1,9 @@
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { realpathSync } from 'node:fs';
-import { cwdUnder, globPrefix, branchLabel, resolveRepo, showCommit } from './repo';
+import { cwdUnder, globPrefix, branchLabel, resolveRepo, showCommit, mainCheckoutOf } from './repo';
 
 describe('cwdUnder', () => {
   test('a sibling with a shared prefix is NOT under root (dotfiles vs dotfiles-v2)', () => {
@@ -123,5 +123,50 @@ describe('showCommit merge flag', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('mainCheckoutOf', () => {
+  let dir: string;
+  let repo: string;
+
+  beforeAll(() => {
+    dir = realpathSync(mkdtempSync(join(tmpdir(), 'sessions-main-')));
+    repo = join(dir, 'app');
+    mkdirSync(repo);
+    sh(repo, ['init', '-q', '-b', 'main']);
+    writeFileSync(join(repo, 'a.txt'), 'hi\n');
+    sh(repo, ['add', 'a.txt']);
+    sh(repo, ['commit', '-q', '-m', 'init']);
+  });
+
+  afterAll(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('a linked worktree (and any dir inside it) traces to the main checkout', () => {
+    const wt = join(dir, 'worktrees', 'feature');
+    sh(repo, ['worktree', 'add', '-q', '-b', 'feature', wt]);
+    mkdirSync(join(wt, 'src'));
+    expect(mainCheckoutOf(wt)).toBe(repo);
+    expect(mainCheckoutOf(join(wt, 'src'))).toBe(repo);
+  });
+
+  test('the bare layout traces to the container, not the checkout it was added from', () => {
+    const container = join(dir, 'cli');
+    mkdirSync(container);
+    sh(dir, ['clone', '-q', '--bare', repo, join(container, '.bare')]);
+    writeFileSync(join(container, '.git'), 'gitdir: ./.bare\n');
+    sh(container, ['worktree', 'add', '-q', join(container, 'main'), 'main']);
+    sh(container, ['worktree', 'add', '-q', '-b', 'x', join(dir, 'elsewhere')]);
+    expect(mainCheckoutOf(join(container, 'main'))).toBe(container);
+    expect(mainCheckoutOf(join(dir, 'elsewhere'))).toBe(container);
+    expect(mainCheckoutOf(container)).toBe(''); // the container itself is no linked worktree
+  });
+
+  test("'' for the main checkout, a non-repo dir, and a missing cwd", () => {
+    expect(mainCheckoutOf(repo)).toBe('');
+    expect(mainCheckoutOf(dir)).toBe('');
+    expect(mainCheckoutOf(join(dir, 'gone', 'worktree'))).toBe('');
   });
 });

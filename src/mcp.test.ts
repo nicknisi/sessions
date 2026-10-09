@@ -81,6 +81,8 @@ function setEnv(): void {
   process.env.SESSIONS_CACHE_DIR = join(tmp, 'cache');
   process.env.SESSIONS_CLAUDE_DIR = join(tmp, 'claude');
   process.env.SESSIONS_PI_DIR = join(tmp, 'pi');
+  delete process.env.SESSIONS_PI_EXTRA_DIRS; // a developer's own extra Pi folders must not leak in
+  process.env.SESSIONS_OLLAMA_URL = 'http://127.0.0.1:1'; // dead port: keep the semantic lane off a local Ollama
   process.env.SESSIONS_CODEX_DIR = join(tmp, 'codex');
   process.env.SESSIONS_OPENCODE_DB = join(tmp, 'opencode.db'); // absent → no OpenCode sessions leak in
   // Required now that tools/call reaches get_memory from this file: without it the memory
@@ -895,6 +897,8 @@ describe('empty results', () => {
     process.env.SESSIONS_CACHE_DIR = join(emptyTmp, 'cache');
     process.env.SESSIONS_CLAUDE_DIR = join(emptyTmp, 'claude');
     process.env.SESSIONS_PI_DIR = join(emptyTmp, 'pi');
+    delete process.env.SESSIONS_PI_EXTRA_DIRS; // a developer's own extra Pi folders must not leak in
+    process.env.SESSIONS_OLLAMA_URL = 'http://127.0.0.1:1'; // dead port: keep the semantic lane off a local Ollama
     process.env.SESSIONS_CODEX_DIR = join(emptyTmp, 'codex');
     process.env.SESSIONS_OPENCODE_DB = join(emptyTmp, 'opencode.db');
     process.env.SESSIONS_DATA_DIR = join(emptyTmp, 'data');

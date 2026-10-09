@@ -18,7 +18,7 @@ import {
   type PrimerMemory,
 } from './types';
 import { activeMemoryFor } from './memory/retrieve';
-import { getPiSessionsDir, getArchiveDir } from './paths';
+import { getPiSessionsDir, getPiExtraDirs, PI_EXTRA_GLOBS, getArchiveDir } from './paths';
 import type { MemoryRecord } from './memory/types';
 import {
   extractMessages,
@@ -41,7 +41,7 @@ import { archiveFile, listArchived, loadManifest, saveManifest, type Manifest } 
 // primer's projection cap rather than being confused with extract-files.ts's own MAX_FILES
 // (50 — the bound on the indexed files_touched column, a different number for a different job).
 import { MAX_FILES as MAX_PRIMER_FILES } from './search-format';
-import { type RepoInfo, globPrefix, branchLabel, cwdUnder } from './repo';
+import { type RepoInfo, globPrefix, branchLabel, cwdUnder, mainCheckoutOf } from './repo';
 import { isTrivia, blendedScore, type ScorableSession } from './significance';
 import { detectEmbedder, embedQuery } from './semantic/embed';
 import { topKSimilar, fuseRRF, ABSTENTION_THRESHOLD, type VectorRow } from './semantic/fuse';
@@ -100,7 +100,10 @@ function getCodexDir(): string {
 // v12: adds session_vectors — optional per-session embeddings for the semantic
 // search lane. Embeddings are derived data (a rebuild re-embeds at the next
 // refresh when an embedder is present), so the drop/rebuild below is lossless.
-const SCHEMA_VERSION = 12;
+// v13: adds sessions.repo — the main checkout when a session ran in a linked git
+// worktree, recorded at index time so repo scoping still finds the session after the
+// worktree is removed.
+const SCHEMA_VERSION = 13;
 let _db: Database | null = null;
 let _refreshPromise: Promise<RefreshResult> | null = null;
 let _lastRefreshAt = 0;
@@ -196,7 +199,11 @@ function openDb(): Database {
       -- Zero/empty defaults for non-pi tools.
       branches INTEGER NOT NULL DEFAULT 0,
       fork_points TEXT NOT NULL DEFAULT '[]',
-      forked_from TEXT NOT NULL DEFAULT ''
+      forked_from TEXT NOT NULL DEFAULT '',
+      -- v13: the main checkout behind cwd when cwd was a linked worktree ('' otherwise,
+      -- or when cwd was already gone at index time). Repo scoping matches cwd OR repo,
+      -- so a worktree session keeps belonging to its repo once the worktree is deleted.
+      repo TEXT NOT NULL DEFAULT ''
     )
   `);
   // Session-level searchable text only — message text lives in message_fts (one row
@@ -330,6 +337,16 @@ async function discoverFiles(): Promise<FileEntry[]> {
       for await (const p of glob.scan(dirpath)) {
         entries.push({ path: join(dirpath, p), tool: 'pi' });
       }
+    }
+  }
+
+  // SESSIONS_PI_EXTRA_DIRS (src/paths.ts): more Pi-format transcripts, each folder
+  // either flat or in Pi's one-subfolder-per-project layout.
+  for (const dir of getPiExtraDirs()) {
+    for (const pattern of PI_EXTRA_GLOBS) {
+      try {
+        for await (const p of new Bun.Glob(pattern).scan(dir)) entries.push({ path: join(dir, p), tool: 'pi' });
+      } catch {} // removed since getPiExtraDirs listed it: its rows prune like any vanished file
     }
   }
 
@@ -495,8 +512,8 @@ function writeSessionRow(
   }
   db.run('DELETE FROM ignored_files WHERE file_path = ?', [filePath]);
   db.run(
-    `INSERT OR REPLACE INTO sessions (file_path, mtime, size, cwd, tool, session_id, date, created_at, started_at, ended_at, first_prompt, custom_title, message_count, files_touched, files_read, commands, errored, error_count, closing_user, closing_assistant, branch, branches, fork_points, forked_from)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT OR REPLACE INTO sessions (file_path, mtime, size, cwd, tool, session_id, date, created_at, started_at, ended_at, first_prompt, custom_title, message_count, files_touched, files_read, commands, errored, error_count, closing_user, closing_assistant, branch, branches, fork_points, forked_from, repo)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       filePath,
       stat.mtimeMs,
@@ -522,6 +539,7 @@ function writeSessionRow(
       branches,
       forkPoints,
       forkedFrom,
+      mainCheckoutOf(metadata.cwd),
     ],
   );
   db.run(
@@ -916,6 +934,7 @@ export async function searchSessions(query: string, opts: SearchOptions = {}): P
     errored: number;
     branches: number;
     forked_from: string;
+    repo: string;
     snippet: string | null;
   }
 
@@ -945,8 +964,9 @@ export async function searchSessions(query: string, opts: SearchOptions = {}): P
   if (project) {
     // Boundary-aware: the project root itself or a descendant, never a sibling
     // sharing a prefix (e.g. `dotfiles-v2` must not match `dotfiles`).
-    conditions.push('(cwd = ? OR cwd GLOB ?)');
-    condParams.push(project, globPrefix(project));
+    const scope = underRoot(project);
+    conditions.push(scope.clause);
+    condParams.push(...scope.params);
   }
   if (opts.errored) conditions.push('errored = 1');
   // Files filter: substring match over the JSON-array text columns — callers pass a
@@ -1032,7 +1052,7 @@ export async function searchSessions(query: string, opts: SearchOptions = {}): P
         .query<SessionRow, any[]>(`
         SELECT file_path, cwd, tool, session_id, date, created_at, first_prompt,
                custom_title, message_count, files_touched, files_read, commands, errored,
-               branches, forked_from, NULL as snippet
+               branches, forked_from, repo, NULL as snippet
         FROM sessions WHERE file_path IN (${placeholders}) ${extra}
       `)
         .all(...chunk, ...condParams);
@@ -1103,7 +1123,7 @@ export async function searchSessions(query: string, opts: SearchOptions = {}): P
               .query<SessionRow, any[]>(`
               SELECT file_path, cwd, tool, session_id, date, created_at, first_prompt,
                      custom_title, message_count, files_touched, files_read, commands, errored,
-                     branches, forked_from, NULL as snippet
+                     branches, forked_from, repo, NULL as snippet
               FROM sessions WHERE file_path IN (${placeholders}) ${extraSem}
             `)
               .all(...chunk, ...condParams);
@@ -1142,7 +1162,7 @@ export async function searchSessions(query: string, opts: SearchOptions = {}): P
       .query<SessionRow, any[]>(`
       SELECT file_path, cwd, tool, session_id, date, created_at, first_prompt,
              custom_title, message_count, files_touched, files_read, commands, errored,
-             branches, forked_from, NULL as snippet
+             branches, forked_from, repo, NULL as snippet
       FROM sessions ${where}
       ORDER BY ${orderBy} LIMIT ?
     `)
@@ -1169,6 +1189,7 @@ export async function searchSessions(query: string, opts: SearchOptions = {}): P
     branches: r.branches,
     forkedFrom: r.forked_from,
     messageHits: hitsByPath.get(r.file_path) ?? [],
+    repo: r.repo || undefined,
   }));
 }
 
@@ -1256,8 +1277,9 @@ export async function grepSessions(pattern: string, opts: GrepOptions = {}): Pro
     params.push(opts.tool);
   }
   if (opts.project) {
-    conditions.push('(s.cwd = ? OR s.cwd GLOB ?)');
-    params.push(opts.project, globPrefix(opts.project));
+    const scope = underRoot(opts.project, 's.');
+    conditions.push(scope.clause);
+    params.push(...scope.params);
   }
   if (opts.after) {
     conditions.push('s.date >= ?');
@@ -1413,8 +1435,9 @@ function queryDateRange(
     params.push(toolFilter);
   }
   if (project) {
-    conditions.push('(cwd = ? OR cwd GLOB ?)');
-    params.push(project, globPrefix(project));
+    const scope = underRoot(project);
+    conditions.push(scope.clause);
+    params.push(...scope.params);
   }
 
   const where = 'WHERE ' + conditions.join(' AND ');
@@ -1676,12 +1699,29 @@ interface ScopeClause {
   params: string[];
 }
 
-function repoScopeClause(roots: string[]): ScopeClause {
+/**
+ * Sessions belonging to `root`: recorded in `root` or a descendant, or in a linked
+ * worktree whose main checkout (`repo`, recorded at index time) is. A live worktree is
+ * also in `git worktree list`, but only `repo` survives the worktree's removal. Same
+ * boundary rule on both columns, so a `…-v2` sibling stays out. `alias` qualifies the
+ * columns for a join (`s.`); `byRepo` false matches on cwd alone.
+ */
+function underRoot(root: string, alias = '', byRepo = true): ScopeClause {
+  const glob = globPrefix(root);
+  if (!byRepo) return { clause: `(${alias}cwd = ? OR ${alias}cwd GLOB ?)`, params: [root, glob] };
+  return {
+    clause: `(${alias}cwd = ? OR ${alias}cwd GLOB ? OR ${alias}repo = ? OR ${alias}repo GLOB ?)`,
+    params: [root, glob, root, glob],
+  };
+}
+
+function repoScopeClause(roots: string[], byRepo = true): ScopeClause {
   // No roots means no repo, which must select nothing rather than everything.
   if (roots.length === 0) return { clause: '(1 = 0)', params: [] };
+  const scopes = roots.map((root) => underRoot(root, '', byRepo));
   return {
-    clause: '(' + roots.map(() => '(cwd = ? OR cwd GLOB ?)').join(' OR ') + ')',
-    params: roots.flatMap((root) => [root, globPrefix(root)]),
+    clause: '(' + scopes.map((s) => s.clause).join(' OR ') + ')',
+    params: scopes.flatMap((s) => s.params),
   };
 }
 
@@ -1755,7 +1795,9 @@ export async function getContextPrimer(repo: RepoInfo, opts: ContextOptions): Pr
   // Boundary-aware scope: every root of this repo (or just the current worktree) and their
   // descendants — captures linked worktrees wherever git put them, while excluding a
   // same-prefix `…-v2` sibling that is not a worktree of this repo at all.
-  const scope = repoScopeClause(repoRoots(repo, opts.worktreeOnly));
+  // --worktree means sessions recorded in this worktree; matching `repo` would pull in
+  // every other worktree's sessions whenever this one is the main checkout.
+  const scope = repoScopeClause(repoRoots(repo, opts.worktreeOnly), !opts.worktreeOnly);
   const conditions: string[] = [scope.clause];
   const params: (string | number)[] = [...scope.params];
 

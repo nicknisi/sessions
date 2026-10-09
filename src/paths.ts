@@ -7,7 +7,8 @@
 // living beside its consumers is the same shape as getCacheDir/getDbPath in
 // src/cache.ts — this file is that, for the durable directory.
 
-import { join } from 'node:path';
+import { statSync } from 'node:fs';
+import { delimiter, join } from 'node:path';
 import { homedir } from 'node:os';
 
 /**
@@ -46,9 +47,9 @@ export function getArchiveDir(): string {
 }
 
 /**
- * Where Pi keeps its session transcripts. One resolver shared by the index
- * (src/cache.ts), the no-index scanner (src/scanner.ts), and the usage report
- * (src/report/extract.ts) so all three always look at the same tree.
+ * Where Pi keeps its session transcripts. Shared, with getPiExtraDirs below, by the
+ * index (src/cache.ts), the no-index scanner (src/scanner.ts), the usage report
+ * (src/report/extract.ts), and preview, so all of them look at the same trees.
  *
  * Order:
  *   1. SESSIONS_PI_DIR — this project's own override (tests, unusual setups);
@@ -63,4 +64,50 @@ export function getPiSessionsDir(): string {
   if (process.env.PI_CODING_AGENT_SESSION_DIR) return process.env.PI_CODING_AGENT_SESSION_DIR;
   if (process.env.PI_CODING_AGENT_DIR) return join(process.env.PI_CODING_AGENT_DIR, 'sessions');
   return join(homedir(), '.pi', 'agent', 'sessions');
+}
+
+/** Transcripts in an extra Pi folder: directly inside it, or one project folder down.
+ *  Two patterns, not one `{a,b}` brace glob: Bun.Glob's scan matches nothing for those. */
+export const PI_EXTRA_GLOBS = ['*.jsonl', '*/*.jsonl'];
+
+// Extra folders of Pi-format transcripts — tools that run Pi with their own session
+// dir, e.g. Riker's workers (`~/.riker/jobs/*/session`). SESSIONS_PI_EXTRA_DIRS is a
+// PATH-style list; a leading `~` is the home dir and `*` / `?` glob within a segment.
+// Only existing directories come back — a missing folder or a glob that matches
+// nothing is skipped silently. Unset means none: Pi's own dir alone, as before.
+// Resolved lazily, like everything above.
+export function getPiExtraDirs(): string[] {
+  const dirs = new Set<string>();
+  for (const raw of (process.env.SESSIONS_PI_EXTRA_DIRS ?? '').split(delimiter)) {
+    const entry = raw.trim();
+    if (!entry) continue;
+    const path = entry === '~' || entry.startsWith('~/') ? join(getHome(), entry.slice(1)) : entry;
+    for (const dir of expandDirGlob(path)) dirs.add(dir);
+  }
+  return [...dirs];
+}
+
+/** `path` itself, or every directory its glob matches, in sorted order. */
+function expandDirGlob(path: string): string[] {
+  const segments = path.split('/');
+  const first = segments.findIndex((s) => /[*?]/.test(s));
+  if (first < 0) return isDir(path) ? [path] : [];
+  const base = segments.slice(0, first).join('/') || '/';
+  try {
+    const glob = new Bun.Glob(segments.slice(first).join('/'));
+    return [...glob.scanSync({ cwd: base, onlyFiles: false })]
+      .map((p) => join(base, p))
+      .filter(isDir)
+      .sort();
+  } catch {
+    return []; // base folder missing or unreadable
+  }
+}
+
+function isDir(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
 }

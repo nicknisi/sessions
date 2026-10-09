@@ -50,6 +50,8 @@ export interface FormattedResult {
    *  Present whenever the source result carries hits (indexed search always does — it may
    *  be empty for metadata-only matches); absent for the no-index scanner fallback. */
   messageHits?: MessageHit[];
+  /** The main checkout when the session ran in a linked git worktree; absent otherwise. */
+  repo?: string;
 }
 
 /** Single source of truth for the search-result payload shared across surfaces. */
@@ -75,5 +77,6 @@ export function formatResult(r: SessionResult): FormattedResult {
     forkedFrom: r.forkedFrom ? basename(r.forkedFrom) : '',
   };
   if (r.messageHits) out.messageHits = r.messageHits;
+  if (r.repo) out.repo = r.repo;
   return out;
 }
