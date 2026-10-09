@@ -218,6 +218,27 @@ describe('customTitle', () => {
     );
     expect(customTitle(lines)).toBe('Final Name');
   });
+
+  // Pi's session name (`pi --name`, `/name`) is a session_info entry; the latest wins.
+  const piHeader = { type: 'session', id: 's', cwd: '/r', timestamp: '2026-01-01T00:00:00Z' };
+  const piInfo = { type: 'session_info', id: 'i', parentId: null };
+  const piName = (name?: string) => (name === undefined ? piInfo : { ...piInfo, name });
+
+  test('pi: a session_info name is the title', () => {
+    const lines = jsonl(piHeader, piName('  Fix the login flow '));
+    expect(customTitle(lines)).toBe('Fix the login flow');
+    expect(extractSessionMetadata(lines, 'pi').customTitle).toBe('Fix the login flow');
+  });
+
+  test('pi: the last session_info name wins', () => {
+    const lines = jsonl(piHeader, piName('First'), piName('Second'));
+    expect(extractSessionMetadata(lines, 'pi').customTitle).toBe('Second');
+  });
+
+  test('pi: a later empty or missing name clears the title', () => {
+    expect(extractSessionMetadata(jsonl(piHeader, piName('First'), piName('')), 'pi').customTitle).toBe('');
+    expect(extractSessionMetadata(jsonl(piHeader, piName('First'), piName()), 'pi').customTitle).toBe('');
+  });
 });
 
 describe('firstTimestamp', () => {
