@@ -32,6 +32,16 @@ const messageHit = z.object({
   snippet: z.string(),
 });
 
+/** Mirrors RikerTag (src/search-format.ts): present only on sessions a Riker worker wrote. */
+const rikerTag = z.object({
+  job: z.number(),
+  label: z.string(),
+  worktree: z.string(),
+  repo: z.string(),
+  branch: z.string(),
+  prUrl: z.string(),
+});
+
 /** Mirrors FormattedResult (src/search-format.ts), including the two truncation counts. */
 const formattedResult = z.object({
   sessionId: z.string(),
@@ -55,6 +65,7 @@ const formattedResult = z.object({
   forkedFrom: z.string(),
   // Absent on the no-index scanner fallback, empty on a metadata-only match.
   messageHits: z.array(messageHit).optional(),
+  riker: rikerTag.optional(),
 });
 
 export const SearchSessionsOutput = z.object({
@@ -227,6 +238,7 @@ export const GrepSessionsOutput = z.object({
       msgIndex: z.number(),
       snippet: z.string(),
       resumeCommand: z.string(),
+      riker: rikerTag.optional(),
     }),
   ),
 });
@@ -363,6 +375,7 @@ const WhySession = z.object({
   confidence: z.enum(['files+time', 'time-only']),
   excerpts: z.array(z.object({ msgIndex: z.number(), role: z.string(), text: z.string() })),
   resume: z.string(),
+  riker: rikerTag.optional(),
 });
 
 export const WhyDidThisChangeOutput = z.object({

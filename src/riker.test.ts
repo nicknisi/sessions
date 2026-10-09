@@ -341,3 +341,67 @@ test('a sibling repo sharing the prefix keeps its Riker sessions to itself', asy
   expect((await cache.getContextPrimer(resolveRepo(repo)!, {})).isEmpty).toBe(true);
   expect((await cache.searchSessions('zebrafinch', { project: sibling })).map((r) => r.sessionId)).toEqual(['r3']);
 });
+
+// ——— what a hit shows ———
+
+test('display: the CLI list names the job, repo, and (clipped) branch instead of the worktree path', async () => {
+  const { formatLine } = await import('./display');
+  const base = {
+    date: '2026-10-09',
+    createdAt: '2026-10-09',
+    cwd: '/home/u/.riker/worktrees/124',
+    tool: 'pi' as const,
+    sessionId: 'r1',
+    displayText: 'zebrafinch',
+    customTitle: '',
+    messageCount: 2,
+    filePath: '/home/u/.riker/jobs/124/session/r1.jsonl',
+    exists: false,
+    files: [],
+    commands: [],
+    errored: false,
+    branches: 0,
+    forkedFrom: '',
+  };
+  const riker = { job: 124, worktree: base.cwd, repo: '/src/riker-live', branch: 'riker/124-zebra', prUrl: '' };
+  const display = (r: typeof base & { riker?: typeof riker }) => formatLine(r, 120).split('\t').at(-1)!;
+
+  expect(display({ ...base, riker })).toContain('Riker job 124 · riker-live (riker/124-zebra)');
+  expect(display({ ...base, riker: { ...riker, branch: 'riker/124-a-very-long-goal-slug' } })).toContain(
+    'Riker job 124 · riker-live (riker/124-a-ver…)',
+  );
+  expect(display({ ...base, riker: { ...riker, repo: '', branch: '' } })).toContain('Riker job 124 ');
+  expect(display({ ...base, riker })).not.toContain('worktrees');
+  // The resume path (TSV field 2) is still the worktree: that is where the session ran.
+  expect(formatLine({ ...base, riker }, 120).split('\t')[1]).toBe(base.cwd);
+});
+
+test('MCP: search, grep, and why carry "Riker job N" and the job repo, and validate against their schemas', async () => {
+  const { repo, worktree } = repoWithJobWorktree(124, 'riker/124-zebra');
+  writeJobSession(124, 'r1', worktree, 'zebrafinch migration');
+  writeJobsDb([{ id: 124, repo, branch: 'riker/124-zebra', pr_url: 'https://github.com/acme/repo/pull/7' }]);
+  const label = `Riker job 124 · repo (riker/124-zebra)`;
+  const riker = {
+    job: 124,
+    label,
+    worktree,
+    repo,
+    branch: 'riker/124-zebra',
+    prUrl: 'https://github.com/acme/repo/pull/7',
+  };
+
+  const { runSearchSessions, runGrepSessions, runWhy } = await import('./mcp');
+  const { SearchSessionsOutput, GrepSessionsOutput, WhyDidThisChangeOutput } = await import('./mcp-schemas');
+
+  const search = SearchSessionsOutput.parse((await runSearchSessions({ query: 'zebrafinch' })).structuredContent);
+  expect(search.results[0]!.riker).toEqual(riker);
+  expect(search.results[0]!.project).toBe(repo);
+  expect(search.results[0]!.tool).toBe('pi');
+
+  const grep = GrepSessionsOutput.parse((await runGrepSessions({ pattern: 'zebrafinch' })).structuredContent);
+  expect(grep.hits[0]!.riker).toEqual(riker);
+  expect(grep.hits[0]!.project).toBe(repo);
+
+  const why = WhyDidThisChangeOutput.parse((await runWhy({ target: 'zebrafinch', cwd: repo })).structuredContent);
+  expect(why.sessions[0]!.riker?.label).toBe(label);
+});

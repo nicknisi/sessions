@@ -7,10 +7,11 @@ import {
   sessionsTouchingFile,
   sessionExcerpts,
   searchSessions,
+  rikerProvenance,
   type CandidateSessionRow,
 } from '../cache';
-import { buildResumeCommand } from '../search-format';
-import type { Tool } from '../types';
+import { buildResumeCommand, rikerTag, type RikerTag } from '../search-format';
+import type { RikerProvenance, Tool } from '../types';
 
 /** A commit lands after the session that produced it; this bounds how long after. */
 export const SLACK_AFTER_MS = 2 * 60 * 60 * 1000; // 2 hours
@@ -34,6 +35,14 @@ export interface WhySessionEvidence {
   confidence: 'files+time' | 'time-only';
   excerpts: Array<{ msgIndex: number; role: string; text: string }>;
   resume: string;
+  /** Present only on sessions a Riker worker wrote. */
+  riker?: RikerTag;
+}
+
+/** `evidence`, tagged with its Riker job when it has one. */
+function withRiker(evidence: WhySessionEvidence, p: RikerProvenance | undefined): WhySessionEvidence {
+  if (p) evidence.riker = rikerTag(p);
+  return evidence;
 }
 
 export interface WhyEvidence {
@@ -173,7 +182,7 @@ function correlateCommit(repo: RepoInfo, commit: CommitInfo, rows: CandidateSess
         // SAFETY: the tool column is written by the index from Tool values only.
         resume: buildResumeCommand(row.tool as Tool, row.cwd, row.session_id),
       };
-      return { evidence, score, startedAt: row.started_at };
+      return { evidence: withRiker(evidence, rikerProvenance(row)), score, startedAt: row.started_at };
     })
     .filter((x): x is NonNullable<typeof x> => x !== null);
 
@@ -216,7 +225,7 @@ async function findUnlandedAttempts(
     const landed = commitTimes.some((t) => startMs <= t && t <= endMs + SLACK_AFTER_MS);
     if (landed) continue;
 
-    attempts.push({
+    const attempt: WhySessionEvidence = {
       filePath: row.file_path,
       tool: row.tool,
       sessionId: row.session_id,
@@ -234,7 +243,8 @@ async function findUnlandedAttempts(
       })),
       // SAFETY: the tool column is written by the index from Tool values only.
       resume: buildResumeCommand(row.tool as Tool, row.cwd, row.session_id),
-    });
+    };
+    attempts.push(withRiker(attempt, rikerProvenance(row)));
     if (attempts.length >= limit) break;
   }
   return attempts;
@@ -259,18 +269,23 @@ function commitForFile(repo: RepoInfo, target: Extract<WhyTarget, { kind: 'file'
 async function correlateQuery(repo: RepoInfo | null, cwd: string, text: string, limit: number): Promise<WhyEvidence> {
   const project = repo ? repo.container : cwd;
   const results = await searchSessions(text, { project, limit });
-  const sessions: WhySessionEvidence[] = results.slice(0, limit).map((r) => ({
-    filePath: r.filePath,
-    tool: r.tool,
-    sessionId: r.sessionId,
-    startedAt: r.createdAt,
-    endedAt: null,
-    headline: r.customTitle || r.displayText,
-    overlappingFiles: [],
-    confidence: 'time-only',
-    excerpts: (r.messageHits ?? []).map((h) => ({ msgIndex: h.index, role: h.role, text: h.snippet })),
-    resume: buildResumeCommand(r.tool, r.cwd, r.sessionId),
-  }));
+  const sessions: WhySessionEvidence[] = results.slice(0, limit).map((r) =>
+    withRiker(
+      {
+        filePath: r.filePath,
+        tool: r.tool,
+        sessionId: r.sessionId,
+        startedAt: r.createdAt,
+        endedAt: null,
+        headline: r.customTitle || r.displayText,
+        overlappingFiles: [],
+        confidence: 'time-only',
+        excerpts: (r.messageHits ?? []).map((h) => ({ msgIndex: h.index, role: h.role, text: h.snippet })),
+        resume: buildResumeCommand(r.tool, r.cwd, r.sessionId),
+      },
+      r.riker,
+    ),
+  );
   return { commit: null, sessions, unlandedAttempts: [] };
 }
 

@@ -1,6 +1,10 @@
 import { basename } from 'node:path';
 import { C, toolColor } from './colors';
 import { type SessionResult } from './types';
+import { rikerLabel } from './search-format';
+
+/** Riker branch names run long (`riker/<n>-<slug of the goal>`); the list shows a prefix. */
+const RIKER_BRANCH_MAX = 16;
 
 function relativeDate(isoDate: string): string {
   try {
@@ -19,7 +23,9 @@ function relativeDate(isoDate: string): string {
 }
 
 export function formatLine(r: SessionResult, cols: number): string {
-  const dirName = basename(r.cwd) || '(root)';
+  // A Riker session's cwd is the job's worktree (~/.riker/worktrees/<n>), whose
+  // basename is just the job number — name the job and where it came from instead.
+  const dirName = r.riker ? rikerListLabel(r.riker) : basename(r.cwd) || '(root)';
   const prompt = r.displayText || '(no prompt)';
 
   const dotColor = r.exists ? C.green : C.red;
@@ -51,6 +57,11 @@ export function formatLine(r: SessionResult, cols: number): string {
   // filePath leads so the selector's fzf --preview can reference {1} directly;
   // --with-nth skips it (and the other metadata fields) to show only `display`.
   return `${r.filePath}\t${r.cwd}\t${r.tool}\t${r.sessionId}\t${r.exists ? 'exists' : 'deleted'}\t${prompt}\t${display}`;
+}
+
+function rikerListLabel(p: NonNullable<SessionResult['riker']>): string {
+  const branch = p.branch.length > RIKER_BRANCH_MAX ? p.branch.slice(0, RIKER_BRANCH_MAX - 1) + '…' : p.branch;
+  return rikerLabel({ ...p, branch });
 }
 
 /**

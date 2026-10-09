@@ -6,7 +6,7 @@ import { scanSessions } from './src/scanner';
 import { formatLine, formatLineage } from './src/display';
 import { selectSession } from './src/select';
 import { copyToClipboard } from './src/clipboard';
-import { buildResumeCommand } from './src/search-format';
+import { buildResumeCommand, rikerLabel } from './src/search-format';
 import type { Tool } from './src/types';
 
 if (Bun.argv.includes('--version') || Bun.argv.includes('-v')) {
@@ -157,15 +157,20 @@ const exists = parts[4]!;
 const prompt = parts[5]!;
 const dirName = basename(fullPath);
 
+// Lineage (pi /tree forks + /fork parent) and Riker provenance come from the
+// SessionResult, not the TSV fields — match the selection back to its result by
+// sessionId+tool. Display-only: formatLineage basenames the raw parent path and never
+// joins it back to the index.
+const selected = results.find((r) => r.sessionId === sessionId && r.tool === tool);
+const heading = selected?.riker ? rikerLabel(selected.riker) : dirName;
 process.stderr.write('\n');
-process.stderr.write(`  ${C.bold}${dirName}${C.reset} ${C.dim}(${tool})${C.reset}\n`);
+process.stderr.write(`  ${C.bold}${heading}${C.reset} ${C.dim}(${tool})${C.reset}\n`);
+if (selected?.riker?.prUrl) {
+  process.stderr.write(`  ${C.dim}${selected.riker.prUrl}${C.reset}\n`);
+}
 if (prompt) {
   process.stderr.write(`  ${C.dim}${prompt}${C.reset}\n`);
 }
-// Lineage (pi /tree forks + /fork parent) comes from the SessionResult, not the TSV
-// fields — match the selection back to its result by sessionId+tool. Display-only:
-// formatLineage basenames the raw parent path and never joins it back to the index.
-const selected = results.find((r) => r.sessionId === sessionId && r.tool === tool);
 const lineage = selected ? formatLineage(selected) : '';
 if (lineage) {
   process.stderr.write(`  ${C.dim}${lineage}${C.reset}\n`);
