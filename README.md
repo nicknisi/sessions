@@ -446,6 +446,16 @@ Each session file is parsed to extract:
 - **Timestamps** — first and last timestamps for session duration and date-range queries
 - **Subagent content** — for Claude Code, user messages from subagent sidecar files are folded into the search index
 
+### Extra session folders
+
+Tools that run Pi with their own session directory can be indexed too. Set `SESSIONS_PI_EXTRA_DIRS` to a `:`-separated list of folders (like `PATH`); a leading `~` is your home directory and `*` (or `?`) matches within a path segment. For example, to include Riker's coding workers:
+
+```sh
+export SESSIONS_PI_EXTRA_DIRS='~/.riker/jobs/*/session'
+```
+
+Each folder may hold transcripts directly or in Pi's one-subfolder-per-project layout; only `*.jsonl` files are read. Folders that don't exist and globs that match nothing are skipped. The default is none. Sessions found this way are ordinary Pi sessions: search, grep, digests, primers, `why`, and usage reports all include them, and a session's Pi name (`pi --name`) is its title.
+
 ### Search index
 
 Both the CLI and the MCP server share a SQLite + FTS5 index at `~/.cache/sessions/index.db`. Messages are indexed individually, so a hit localizes to the exact message that matched — not just the session. The index is built automatically on first use (under a minute for a few thousand sessions) and updated incrementally on subsequent runs by checking file modification times — only new or changed sessions are re-indexed.
@@ -484,6 +494,8 @@ sessions --clear-cache
 ### Scoping with `--here`
 
 When `--here` is passed, `sessions` resolves the current git repo root and only shows sessions whose working directory falls under that root. This works with bare repo worktrees — if a `.git` file points to a `.bare` directory, the parent is used as the repo root.
+
+Sessions that ran in a linked git worktree count toward the repo it belongs to, wherever the worktree lives. The main checkout is recorded when the session is indexed, so `--here`, project filters, the context primer, and `why` keep finding those sessions after the worktree is removed, and `search_sessions` results carry a `repo` field naming the main checkout. A sibling that only shares a name prefix (`app-v2` next to `app`) stays separate.
 
 ## Development
 
