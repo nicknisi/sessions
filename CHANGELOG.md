@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.31.0](https://github.com/nicknisi/sessions/compare/v1.30.0...v1.31.0) (2026-10-09)
+
+
+### Features
+
+* index extra Pi session folders and scope worktree sessions to their repo ([#102](https://github.com/nicknisi/sessions/issues/102)) ([47b16ab](https://github.com/nicknisi/sessions/commit/47b16abd9542b52d373bb3f6f4ce39c1181b3ab1))
+
 ## [1.30.0](https://github.com/nicknisi/sessions/compare/v1.29.2...v1.30.0) (2026-09-14)
 
 
