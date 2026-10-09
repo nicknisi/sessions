@@ -434,6 +434,7 @@ The fun slides are **dynamically selected**: every candidate stat is scored for 
 | ----------- | ------------------------------------- |
 | Claude Code | `~/.claude/projects/<project>/`       |
 | Pi          | `~/.pi/agent/sessions/`               |
+| Riker       | `~/.riker/jobs/<n>/session/`          |
 | Codex       | `~/.codex/sessions/`                  |
 | OpenCode    | `~/.local/share/opencode/opencode.db` |
 
@@ -445,6 +446,22 @@ Each session file is parsed to extract:
 - **Message count** — total user + assistant messages in the session
 - **Timestamps** — first and last timestamps for session duration and date-range queries
 - **Subagent content** — for Claude Code, user messages from subagent sidecar files are folded into the search index
+
+### Riker worker sessions
+
+Riker's coding workers are Pi sessions, written to `~/.riker/jobs/<n>/session/*.jsonl` with the job's worktree (`~/.riker/worktrees/<n>`) as their working directory. `sessions` indexes them **by default** whenever `~/.riker/jobs` exists, so search, `grep_sessions`, `why`, digests, and context primers cover work Riker did. Only each job's `session/` directory is read; the rest of the job directory (`log.jsonl`, `proof/`) and Riker's own conversation views are not sessions and stay out.
+
+Each Riker session is tagged with its job number and worktree, and — where it can be found — the repo the job came from, its branch, and its pull request. Repo and branch come from the worktree's git metadata while it exists, otherwise from Riker's `jobs.db` (opened read-only; only the `repo`, `branch`, and `pr_url` columns are read). The PR URL comes from `jobs.db`. If `jobs.db` is missing or busy, the session is still indexed with what is known.
+
+A hit reads **`Riker job 124 · riker-live (riker/124-fix-login)`** instead of a bare worktree path: in the CLI list (branch clipped), and as a `riker` object (`job`, `label`, `worktree`, `repo`, `branch`, `prUrl`) on `search_sessions`, `grep_sessions`, and `why_did_this_change` results, whose `project` is then the job's repo. Unknown parts drop out, down to a plain `Riker job 124`. The tool stays `pi`, and the resume command still points at the worktree.
+
+Repo scoping (`--here`, `project` filters, the context primer, `why`) counts a job's sessions as part of the repo it came from, including after Riker removes the worktree. A sibling checkout that only shares a name prefix (`riker-live-v2`) stays separate.
+
+| Variable             | Effect                                                                  |
+| -------------------- | ----------------------------------------------------------------------- |
+| `SESSIONS_RIKER=0`   | Don't index Riker sessions (archived copies included)                   |
+| `SESSIONS_RIKER_DIR` | Riker home to read (`jobs/` and `jobs.db`); beats `RIKER_HOME`          |
+| `RIKER_HOME`         | Riker's own home override, honored when `SESSIONS_RIKER_DIR` is not set |
 
 ### Search index
 
