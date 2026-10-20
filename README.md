@@ -408,6 +408,15 @@ Cost is estimated from [LiteLLM](https://github.com/BerriAI/litellm) pricing dat
 
 `sessions wrapped` turns your year of AI pairing into a Spotify-Wrapped-style scroll-through story and opens it in your browser: tokens with a human-scale equivalence, the API-rate receipt, streaks, a rhythm heatmap, top projects and models, your most significant session — and a set of fun stats mined from what you and your agents actually said to each other (the interrupt census, the two-sided apology scoreboard, how many times Claude told you "you're absolutely right", your word of the year). It ends with a coding-personality reveal built from three behavioral axes, with the evidence printed on the card, followed by a shareable image you can download or copy straight to the clipboard — at 1200 × 630 for timelines or 1080 × 1920 for stories, in whichever of six accents you like.
 
+No install needed — this downloads the binary for your machine, checks it against the release's `checksums.txt`, caches it in `~/.cache/sessions/bin`, and runs `sessions wrapped`:
+
+```sh
+curl -fsSL https://sessions.engineering/wrapped | sh
+curl -fsSL https://sessions.engineering/wrapped | sh -s -- --year 2025   # pass options after --
+```
+
+The script is plain text at that URL, so you can read it before piping it. With `sessions` installed:
+
 ```sh
 sessions wrapped                     # this year, opens in your browser
 sessions wrapped --year 2025         # a past calendar year
