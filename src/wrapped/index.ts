@@ -188,6 +188,8 @@ function progressLine(label: string): (done: number, total: number) => void {
   if (!process.stderr.isTTY) return () => {};
   let last = 0;
   return (done, total) => {
+    // A warm run re-reads a handful of changed files; only a real backlog is worth a counter.
+    if (total < 50) return;
     const now = Date.now();
     if (done < total && now - last < 100) return;
     last = now;
