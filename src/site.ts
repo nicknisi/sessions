@@ -13,3 +13,7 @@
  */
 export const SITE_HOST = 'sessions.engineering';
 export const SITE_URL = `https://${SITE_HOST}`;
+
+/** The no-install command, printed on every wrapped image: an image cannot be
+ *  clicked, but a command someone can read off it can be typed. */
+export const WRAPPED_CMD = `curl -fsSL ${SITE_HOST}/wrapped | sh`;

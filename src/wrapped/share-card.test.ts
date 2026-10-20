@@ -186,6 +186,9 @@ class StubEl {
   getAttribute(k: string): string | null {
     return this.attrs[k] ?? null;
   }
+  hasAttribute(k: string): boolean {
+    return k in this.attrs;
+  }
   setAttribute(k: string, v: string): void {
     this.attrs[k] = v;
   }
@@ -205,6 +208,10 @@ class StubEl {
 
 interface StubPage {
   painted: Painted[];
+  /** Per-slide share buttons, keyed `copy:<id>` / `save:<id>`. */
+  slideButtons: Map<string, StubEl>;
+  /** What the per-slide painter drew, newest canvas last. */
+  slidePainted: Painted[][];
   canvas: StubEl;
   byId: Map<string, StubEl>;
   seg: StubEl[];
@@ -214,6 +221,16 @@ interface StubPage {
 
 function runPage(data: WrappedData): StubPage {
   const html = renderWrappedHtml(data);
+  const shareIds = [...html.matchAll(/data-copy="([^"]+)"/g)].map((m) => m[1]!);
+  const slideButtons = new Map<string, StubEl>();
+  for (const id of shareIds) {
+    for (const kind of ['copy', 'save']) {
+      const el = new StubEl();
+      el.attrs[`data-${kind}`] = id;
+      slideButtons.set(`${kind}:${id}`, el);
+    }
+  }
+  const slidePainted: Painted[][] = [];
   const script = /<script>([\s\S]*?)<\/script>/.exec(html);
   if (!script) throw new Error('no inline script found in the wrapped page');
   const cardJson = /<script type="application\/json" id="wcard-data">([\s\S]*?)<\/script>/.exec(html);
@@ -231,6 +248,8 @@ function runPage(data: WrappedData): StubPage {
   mk('wcard-data').textContent = cardJson[1]!;
   mk('tip');
   mk('wc-flash');
+  const slideJson = /<script type="application\/json" id="slide-shares">([\s\S]*?)<\/script>/.exec(html);
+  if (slideJson) mk('slide-shares').textContent = slideJson[1]!;
   for (const id of ['wc-png', 'wc-img', 'wc-txt', 'wc-eq']) mk(id);
 
   const slide = mk('share');
@@ -254,7 +273,23 @@ function runPage(data: WrappedData): StubPage {
     body: new StubEl(),
     getElementById: (id: string) => byId.get(id) ?? null,
     querySelector: (sel: string) => (sel === 'main' ? main : null),
-    querySelectorAll: (sel: string) => (sel === '.seg button' ? seg : sel === '.swatches .sw' ? swatches : []),
+    querySelectorAll: (sel: string) =>
+      sel === '.seg button'
+        ? seg
+        : sel === '.swatches .sw'
+          ? swatches
+          : sel === '[data-copy],[data-save]'
+            ? [...slideButtons.values()]
+            : [],
+    createElement: (tag: string) => {
+      const el = new StubEl();
+      if (tag === 'canvas') {
+        const rec = makeCtx();
+        el.ctx = rec.ctx;
+        slidePainted.push(rec.painted);
+      }
+      return el;
+    },
     addEventListener: () => {},
     // A promise that never settles: the painter re-draws on fonts.ready, and a
     // resolved one would land after the test body and double the paint log.
@@ -283,7 +318,7 @@ function runPage(data: WrappedData): StubPage {
     script[1]!,
   );
   fn(doc, win, win.IntersectionObserver, win.requestAnimationFrame, win.setTimeout, win.clearTimeout, win.console, {});
-  return { painted, canvas, byId, seg, swatches, slide };
+  return { painted, canvas, byId, seg, swatches, slide, slideButtons, slidePainted };
 }
 
 describe('wrapped share card', () => {
@@ -477,5 +512,58 @@ describe('short reel', () => {
     expect(html).toContain('<body>');
     expect(ids(html, ' data-reel')).toEqual([]);
     expect(html).not.toContain('id="fullcut"');
+  });
+});
+
+describe('per-slide images', () => {
+  const RICH: WrappedData = {
+    ...DATA,
+    fun: [
+      {
+        id: 'friction',
+        kicker: 'the friction reel',
+        title: 'It wasn’t always pretty.',
+        stats: [
+          { big: '649', label: 'times you cut Claude off mid-task', sub: 'you hit Escape like it owed you money.' },
+          { big: '11,609', label: 'errors weathered together' },
+        ],
+        score: 0.9,
+      },
+    ],
+    wordOfYear: { word: 'refactor', count: 40, sessions: 10, runnersUp: ['real'] },
+    extras: [{ headline: 'You paid $4k to be told you were right.', footnote: 'improvised by Claude from your stats' }],
+  };
+
+  test('the shareable slides each get copy and save buttons', () => {
+    const { slideButtons } = runPage(RICH);
+    const ids = [...new Set([...slideButtons.keys()].map((k) => k.split(':')[1]))].sort();
+    expect(ids).toEqual(['extra-0', 'fun-friction', 'tokens', 'word']);
+  });
+
+  test('save paints the slide’s words and the command, inside the poster', () => {
+    const { slideButtons, slidePainted } = runPage(RICH);
+    slideButtons.get('save:fun-friction')!.click();
+    const painted = slidePainted.at(-1)!;
+    const all = painted.map((p) => p.text).join(' | ');
+    expect(all).toContain('THE FRICTION REEL');
+    expect(all).toContain('649');
+    expect(all).toContain('times you cut Claude off mid-task');
+    expect(all).toContain('11,609');
+    expect(all).toContain(`curl -fsSL ${SITE_HOST}/wrapped | sh`);
+    for (const p of painted) {
+      expect(p.x).toBeGreaterThanOrEqual(0);
+      expect(p.x + p.text.length * p.size * 0.5).toBeLessThanOrEqual(1080);
+      expect(p.y).toBeLessThanOrEqual(1350);
+    }
+  });
+
+  test('a roast slide keeps its provenance on the image', () => {
+    const { slideButtons, slidePainted } = runPage(RICH);
+    slideButtons.get('copy:extra-0')!.click();
+    const all = slidePainted
+      .at(-1)!
+      .map((p) => p.text)
+      .join(' ');
+    expect(all).toContain('improvised by Claude');
   });
 });

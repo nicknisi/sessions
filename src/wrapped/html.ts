@@ -8,7 +8,7 @@
 import type { WrappedData, FunCard, WrappedExtra } from './types.ts';
 import { prettyModel } from './model-name.ts';
 import { equivalenceChoices, pickEquivalence } from '../equivalence.ts';
-import { SITE_HOST, SITE_URL } from '../site.ts';
+import { SITE_HOST, SITE_URL, WRAPPED_CMD } from '../site.ts';
 
 // Re-exported so existing importers (and tests) keep resolving prettyModel here.
 export { prettyModel } from './model-name.ts';
@@ -117,10 +117,26 @@ export function heroClass(text: string, min: 'num' | 'word' = 'num'): string {
   return 'big punchline';
 }
 
+/** What a slide's own share image shows — the slide's words, poster-sized.
+ *  Painted in the browser, like the share card. */
+interface SlideShare {
+  kicker: string;
+  title?: string;
+  hero: string;
+  lede?: string;
+  /** The slide's joke line under the lede, when it has one. */
+  quip?: string;
+  /** Supporting [figure, label] pairs. */
+  rows: [string, string][];
+  /** Provenance that must travel with the image (a roast's "improvised by"). */
+  note?: string;
+}
+
 interface Card {
   id: string;
   cls?: string;
   body: string;
+  share?: SlideShare;
 }
 
 function kicker(text: string): string {
@@ -214,6 +230,14 @@ function funCard(card: FunCard): Card {
     .join('');
   return {
     id: `fun-${card.id}`,
+    share: {
+      kicker: card.kicker,
+      title: card.title,
+      hero: lead!.big,
+      lede: lead!.label,
+      quip: lead!.sub,
+      rows: rest.map((s): [string, string] => [s.big, s.label]),
+    },
     body: `${echo(lead!.big.length <= 8 ? lead!.big : '!?')}<div class="panel">${kicker(card.kicker)}<h2>${esc(card.title)}</h2><div class="${heroClass(lead!.big)}"><span class="n">${esc(lead!.big)}</span></div><p class="lede">${esc(lead!.label)}${lead!.sub ? ` <em>· ${esc(lead!.sub)}</em>` : ''}</p>${restRows}${card.footnote ? foot(card.footnote) : ''}</div>`,
   };
 }
@@ -221,6 +245,7 @@ function funCard(card: FunCard): Card {
 function extraCard(x: WrappedExtra, i: number): Card {
   return {
     id: `extra-${i}`,
+    share: { kicker: x.title ?? 'guest appearance', hero: x.headline, lede: x.subline, rows: [], note: x.footnote },
     body: `<div class="panel">${kicker(x.title ?? 'guest appearance')}<div class="${heroClass(x.headline, 'word')}"><span class="n">${esc(x.headline)}</span></div>${x.subline ? `<p class="lede">${esc(x.subline)}</p>` : ''}${x.footnote ? foot(x.footnote) : ''}</div>`,
   };
 }
@@ -337,7 +362,7 @@ function shareCardData(d: WrappedData, accentStart: number): ShareCard {
   if (d.projects[0]) summary.push(`Most of it went to ${d.projects[0].name}.`);
   // Last line of the copied text, so it carries the domain — a pasted summary
   // is otherwise unattributable.
-  summary.push(`Generated locally with sessions wrapped · ${SITE_HOST}`);
+  summary.push(`Generated locally with sessions wrapped. Make yours: ${WRAPPED_CMD}`);
 
   return {
     brand: 'SESSIONS WRAPPED',
@@ -354,7 +379,7 @@ function shareCardData(d: WrappedData, accentStart: number): ShareCard {
     // than a second line. This image is the thing that actually travels.
     footer: [
       `${fmtInt(t.activeDays)} active days · ${fmtInt(d.projects.length)} ${plural(d.projects.length, 'project')}`,
-      SITE_HOST,
+      WRAPPED_CMD,
     ],
     summary,
     eqSlot,
@@ -472,6 +497,13 @@ ${empty ? `<p class="lede">A quiet year — no sessions found. The mystery of yo
       const equiv = tokenEquivalence(d.totals.tokens, `${d.year}|tokencard`);
       cards.push({
         id: 'tokens',
+        share: {
+          kicker: 'the year in tokens',
+          title: 'You and your agents had a lot to say.',
+          hero: fmtTokens(d.totals.tokens),
+          lede: `tokens exchanged${equiv ? ` — ${equiv}` : ''}`,
+          rows: [],
+        },
         body: `${echo(fmtTokens(d.totals.tokens))}<div class="panel center">${kicker('the year in tokens')}<h2>You and your agents had a lot to say.</h2>${bigNum(d.totals.tokens, 'tok')}<p class="lede">tokens exchanged${equiv ? ` — ${esc(equiv)}` : ''}</p>${foot('input + output + cache writes · same math as sessions report')}</div>`,
       });
     }
@@ -640,6 +672,14 @@ ${heatmap(d.rhythm.heat, d.rhythm.peakHour, d.rhythm.peakWeekday)}
       const ratio = lp.medianMs >= 1000 ? L.durationMs / lp.medianMs : null;
       cards.push({
         id: 'loop',
+        share: {
+          kicker: 'the loop',
+          title: 'You hit enter. And walked away.',
+          hero: dur,
+          lede: `of unsupervised machine — ${fmtInt(L.steps)} model ${plural(L.steps, 'call')} back to back, zero human input`,
+          quip: L.prompt ? `last known human words: “${L.prompt}”` : undefined,
+          rows: [],
+        },
         body: `${echo(dur)}<div class="panel center">${kicker('the loop')}<h2>You hit enter. And walked away.</h2><div class="${heroClass(dur, 'word')}"><span class="n">${esc(dur)}</span></div><p class="lede">of unsupervised machine — <b>${fmtInt(L.steps)}</b> model ${plural(L.steps, 'call')} back to back${
           L.tokens > 0 ? `, <b>${fmtTokens(L.tokens)}</b> tokens` : ''
         }, zero human input · from <b>${esc(L.startClock)}</b>, ${esc(formatDate(L.date))}, on <b>${esc(L.project)}</b></p>${
@@ -658,6 +698,13 @@ ${heatmap(d.rhythm.heat, d.rhythm.peakHour, d.rhythm.peakWeekday)}
       const w = d.wordOfYear;
       cards.push({
         id: 'word',
+        share: {
+          kicker: 'your word of the year',
+          hero: w.word,
+          lede: `in ${fmtInt(w.count)} of your ${plural(w.count, 'message')} across ${fmtInt(w.sessions)} ${plural(w.sessions, 'session')}`,
+          quip: w.runnersUp.length > 0 ? `also in rotation: ${w.runnersUp.join(', ')}` : undefined,
+          rows: [],
+        },
         body: `${echo(w.word)}<div class="panel center">${kicker('your word of the year')}<div class="big bigword"><span class="n">${esc(w.word)}</span></div><p class="lede">in <b>${fmtInt(w.count)}</b> of your ${plural(w.count, 'message')} across <b>${fmtInt(w.sessions)}</b> ${plural(w.sessions, 'session')}</p>${
           w.runnersUp.length > 0 ? `<p class="lede"><em>also in rotation: ${esc(w.runnersUp.join(', '))}</em></p>` : ''
         }${foot('mined from your own prompts · common words excluded')}</div>`,
@@ -751,9 +798,24 @@ ${foot('a description of how you worked this year, not who you are · the next s
   const sections = cards
     .map((c, i) => {
       const accent = ACCENTS[i % ACCENTS.length]!;
-      return `<section class="card ${c.cls ?? ''}" id="${c.id}"${inReel(c.id)} style="--a:${accent.c}">${c.body}</section>`;
+      const share = c.share
+        ? `<div class="slideshare"><button type="button" data-copy="${c.id}">copy image</button><button type="button" data-save="${c.id}">save image</button></div>`
+        : '';
+      return `<section class="card ${c.cls ?? ''}" id="${c.id}"${inReel(c.id)} style="--a:${accent.c}">${c.body}${share}</section>`;
     })
     .join('\n');
+
+  const slideShares = {
+    meta: {
+      bg: 'oklch(13% 0.01 280)',
+      ink: 'oklch(97% 0 0)',
+      ink2: 'oklch(72% 0 0)',
+      year: String(d.year),
+      cta: WRAPPED_CMD,
+      file: `sessions-wrapped-${d.year}`,
+    },
+    slides: Object.fromEntries(cards.filter((c) => c.share).map((c) => [c.id, c.share!])),
+  };
 
   const bars = cards
     .map((c) => `<button type="button" data-for="${c.id}"${inReel(c.id)} aria-label="${esc(c.id)}"></button>`)
@@ -769,6 +831,7 @@ ${sections}
 </main>
 <nav class="bars" aria-label="slides">${bars}</nav>
 <div class="tip" id="tip"></div>
+<script type="application/json" id="slide-shares">${jsonForScript(slideShares)}</script>
 <script>${JS}</script>
 </body></html>`;
 }
@@ -864,6 +927,11 @@ h2{font-size:clamp(1.5rem,4vw,2.2rem);font-weight:800;letter-spacing:-.01em;line
 .actions .swatches .sw:hover{transform:scale(1.16);border-color:transparent;}
 .actions .swatches .sw.on{border-color:var(--ink);transform:scale(1.16);}
 #wc-flash{font-family:var(--mono);font-size:11px;color:var(--muted);}
+/* Per-slide share: quiet, bottom-centre, out of the panel's reveal choreography. */
+.slideshare{position:absolute;left:50%;bottom:20px;transform:translateX(-50%);z-index:2;display:flex;gap:8px;}
+.slideshare button{font-family:var(--mono);font-size:10.5px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;padding:7px 12px;border-radius:8px;cursor:pointer;background:color-mix(in oklch,var(--bg) 70%,transparent);color:var(--muted);border:1px solid var(--track);}
+.slideshare button:hover{color:var(--a);border-color:var(--a);}
+.slideshare button:focus-visible{outline:2px solid var(--a);outline-offset:2px;}
 /* Stories-style progress: one segment per slide, filled up to the current one. */
 .bars{position:fixed;top:0;left:0;right:0;display:flex;gap:4px;padding:6px 14px 0;z-index:5;background:linear-gradient(var(--bg),transparent);}
 .bars button{flex:1;height:14px;border:0;padding:0;background:none;cursor:pointer;}
@@ -920,6 +988,20 @@ document.body.classList.remove('reel');var row=fc.parentNode;row.parentNode.remo
 var tip=document.getElementById('tip');
 document.addEventListener('mousemove',function(e){var el=e.target&&e.target.closest?e.target.closest('[data-tip]'):null;if(!el){tip.style.opacity='0';return;}tip.textContent=el.getAttribute('data-tip');tip.style.opacity='1';tip.style.left=e.clientX+'px';tip.style.top=e.clientY+'px';});
 
+// Canvas text helpers, shared by the share card and the per-slide images.
+function sans(wt,sz){return wt+' '+sz+'px -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-serif';}
+function mono(wt,sz){return wt+' '+sz+'px ui-monospace,SFMono-Regular,Menlo,monospace';}
+function wrap(c,s,maxW){var w=s.split(' '),out=[],cur='';
+for(var i=0;i<w.length;i++){var t=cur?cur+' '+w[i]:w[i];
+if(cur&&c.measureText(t).width>maxW){out.push(cur);cur=w[i];}else cur=t;}
+if(cur)out.push(cur);return out;}
+// The largest size at which the text still fits in the given line count.
+// Shrinking to
+// a single line is right for a 630-tall banner and wrong for a poster: it caps
+// a long persona name at banner size on a canvas with three times the room.
+function fit(c,s,maxW,size,wt,min,lines){c.font=sans(wt,size);
+while(size>min&&wrap(c,s,maxW).length>lines){size-=2;c.font=sans(wt,size);}return size;}
+
 // --- share card ----------------------------------------------------------
 // A block list painted twice: once dry to measure the stack, once for real to
 // paint it centred. Nothing is pinned to a fixed y, because the comparison line
@@ -933,18 +1015,6 @@ function PAL(){return WCD.palettes[accIdx];}
 // back the vertical space the strip needs; the narrower story format stacks 2x2
 // and has height to spare.
 var SPEC={wide:{w:1200,h:630,pad:64,g:1,cols:4,scale:1,ml:1,chrome:1},story:{w:1080,h:1920,pad:80,g:3,cols:2,scale:2.1,ml:2,chrome:1.7}};
-function sans(wt,sz){return wt+' '+sz+'px -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-serif';}
-function mono(wt,sz){return wt+' '+sz+'px ui-monospace,SFMono-Regular,Menlo,monospace';}
-function wrap(c,s,maxW){var w=s.split(' '),out=[],cur='';
-for(var i=0;i<w.length;i++){var t=cur?cur+' '+w[i]:w[i];
-if(cur&&c.measureText(t).width>maxW){out.push(cur);cur=w[i];}else cur=t;}
-if(cur)out.push(cur);return out;}
-// The largest size at which the text still fits in the given line count.
-// Shrinking to
-// a single line is right for a 630-tall banner and wrong for a poster: it caps
-// a long persona name at banner size on a canvas with three times the room.
-function fit(c,s,maxW,size,wt,min,lines){c.font=sans(wt,size);
-while(size>min&&wrap(c,s,maxW).length>lines){size-=2;c.font=sans(wt,size);}return size;}
 
 // The cursor is the TOP of the next block, never a baseline. Advancing between
 // baselines by a fixed gap was the first version's bug: the gap knew nothing
@@ -1037,10 +1107,10 @@ c.restore();}
 /** The year strip is chrome, not flow: pinned above the footer so the card has
  *  a defined base at any aspect, and so a long year cannot push the payoff off
  *  the bottom edge. Returns the y it occupies. */
-function stripBox(w,C,H,P){
-if(!WCD.strip.length)return {h:0,top:H-P};
+function stripBox(w,C,H,P,F){
+if(!WCD.strip.length)return {h:0,top:H-P-F};
 var cg=2.4*C,cs=Math.min(11*C,w/WCD.strip.length-cg),h=7*(cs+cg)-cg;
-return {h:h,cs:cs,cg:cg,top:H-P-26*C-h};}
+return {h:h,cs:cs,cg:cg,top:H-P-26*C-F-h};}
 
 function draw(){
 var sp=SPEC[aspect],DPR=2,W=sp.w,H=sp.h,P=sp.pad,K=W/1200,G=sp.g;
@@ -1059,7 +1129,11 @@ ls((4*C)+'px');c.font=mono(700,15*C);c.fillStyle=PAL().c;c.fillText(WCD.brand,x,
 c.font=mono(700,15*C);c.fillStyle=WCD.ink2;
 c.fillText(WCD.year,W-P-c.measureText(WCD.year).width,P+15*C);ls('0px');
 
-var sb=stripBox(w,C,H,P);
+// Footer first: side by side when the stats and the command fit on one line,
+// otherwise stacked, and the strip above moves up to make room.
+ls((2*C)+'px');c.font=mono(700,13*C);
+var f1=WCD.footer[1],side=!f1||c.measureText(WCD.footer[0]).width+c.measureText(f1).width+40*C<=w;ls('0px');
+var sb=stripBox(w,C,H,P,side?0:22*C);
 var top=P+52*C,bottom=sb.top-30*C,band=bottom-top;
 // Type is scaled to the aspect, not to the width — a 1080x1920 poster wants
 // bigger type than a 1200x630 banner, and scaling on width alone made the
@@ -1076,8 +1150,8 @@ var hx=sx+col*(sb.cs+sb.cg),hy=sb.top+r*(sb.cs+sb.cg);
 if(c.roundRect){c.beginPath();c.roundRect(hx,hy,sb.cs,sb.cs,2*C);c.fill();}else c.fillRect(hx,hy,sb.cs,sb.cs);}}}
 
 ls((2*C)+'px');c.font=mono(700,13*C);c.fillStyle=WCD.ink2;
-c.fillText(WCD.footer[0],x,H-P);
-if(WCD.footer[1])c.fillText(WCD.footer[1],W-P-c.measureText(WCD.footer[1]).width,H-P);ls('0px');}
+c.fillText(WCD.footer[0],x,side?H-P:H-P-22*C);
+if(f1)c.fillText(f1,side?W-P-c.measureText(f1).width:x,H-P);ls('0px');}
 
 var fl=document.getElementById('wc-flash'),ft=null;
 function flash(m){if(!fl)return;fl.textContent=m;clearTimeout(ft);ft=setTimeout(function(){fl.textContent='';},2400);}
@@ -1106,6 +1180,54 @@ if(slide)slide.style.setProperty('--a',PAL().c);
 draw();flash(PAL().name+'.');});});
 draw();
 if(document.fonts&&document.fonts.ready)document.fonts.ready.then(draw);})();}
+
+// --- per-slide images ------------------------------------------------------
+// One poster per shareable slide: the slide's own words at 1080x1350 (4:5, the
+// portrait shape every feed shows uncropped), in that slide's accent, with the
+// no-install command along the bottom.
+var SS=null;
+try{var sj=document.getElementById('slide-shares');if(sj)SS=JSON.parse(sj.textContent);}catch(e){}
+function slideCanvas(id){
+var sh=SS&&SS.slides[id];if(!sh)return null;var M=SS.meta;
+var sec=document.getElementById(id),A=(sec&&sec.style.getPropertyValue&&sec.style.getPropertyValue('--a'))||'oklch(70% 0.24 350)';
+var W=1080,H=1350,P=84,DPR=2,w=W-2*P,cv=document.createElement('canvas');
+cv.width=W*DPR;cv.height=H*DPR;var c=cv.getContext('2d');if(!c)return null;
+function ls(v){try{c.letterSpacing=v;}catch(e){}}
+c.setTransform(DPR,0,0,DPR,0,0);c.textBaseline='alphabetic';
+c.fillStyle=M.bg;c.fillRect(0,0,W,H);
+var g=c.createRadialGradient(W/2,H*1.05,0,W/2,H*1.05,W);
+g.addColorStop(0,A.replace(')',' / 0.24)'));g.addColorStop(1,A.replace(')',' / 0)'));
+c.fillStyle=g;c.fillRect(0,0,W,H);
+// The deck's signature: the hero, enormous and outlined, bleeding off a corner.
+if(sh.hero.length<=8){c.save();c.translate(W*1.02,H*0.97);c.rotate(-8*Math.PI/180);
+c.font=sans(900,H*0.36);c.strokeStyle=A.replace(')',' / 0.16)');c.lineWidth=5;
+c.strokeText(sh.hero,-c.measureText(sh.hero).width,0);c.restore();}
+ls('4px');c.font=mono(700,22);c.fillStyle=A;c.fillText('SESSIONS WRAPPED',P,P+22);
+c.fillStyle=M.ink2;c.fillText(M.year,W-P-c.measureText(M.year).width,P+22);ls('0px');
+// Blocks top to bottom: [lines, font, size, line height, colour, gap after, spacing].
+var B=[];function add(text,font,size,lh,color,gap,sp){ls(sp||'0px');c.font=font;B.push([wrap(c,text,w),font,size,lh,color,gap,sp||'0px']);ls('0px');}
+add(sh.kicker.toUpperCase(),mono(700,24),24,32,A,28,'5px');
+if(sh.title)add(sh.title,sans(800,48),48,58,M.ink,30);
+var hs=fit(c,sh.hero,w,sh.hero.length<=8?260:120,900,56,3);add(sh.hero,sans(900,hs),hs,hs*1.05,A,26);
+if(sh.lede)add(sh.lede,sans(600,38),38,48,M.ink,14);
+if(sh.quip)add(sh.quip,sans(500,30),30,40,M.ink2,14);
+for(var i=0;i<sh.rows.length;i++){add(sh.rows[i][0],sans(900,52),52,60,A,2);add(sh.rows[i][1],sans(500,28),28,36,M.ink,14);}
+if(sh.note)add(sh.note,mono(500,22),22,30,M.ink2,0);
+var total=0;B.forEach(function(b){total+=(b[0].length-1)*b[3]+b[2]*1.02+b[5];});
+var top=P+70,band=H-P-70-top,y=top+Math.max(0,(band-total)/2);
+B.forEach(function(b){c.font=b[1];c.fillStyle=b[4];ls(b[6]);
+for(var j=0;j<b[0].length;j++){var t=b[0][j];c.fillText(t,P+(w-c.measureText(t).width)/2,y+b[2]*0.78+j*b[3]);}
+ls('0px');y+=(b[0].length-1)*b[3]+b[2]*1.02+b[5];});
+ls('1px');var cs=26;c.font=mono(700,cs);while(cs>14&&c.measureText(M.cta).width>w){cs-=1;c.font=mono(700,cs);}
+c.fillStyle=M.ink2;c.fillText(M.cta,P+(w-c.measureText(M.cta).width)/2,H-P);ls('0px');
+return cv;}
+document.querySelectorAll('[data-copy],[data-save]').forEach(function(b){b.addEventListener('click',function(){
+var save=b.hasAttribute('data-save'),id=b.getAttribute(save?'data-save':'data-copy'),cv=slideCanvas(id);if(!cv)return;
+var label=b.textContent;function say(m){b.textContent=m;setTimeout(function(){b.textContent=label;},1800);}
+if(save){var a=document.createElement('a');a.download=SS.meta.file+'-'+id+'.png';a.href=cv.toDataURL('image/png');a.click();say('saved \\u2713');return;}
+if(!navigator.clipboard||!window.ClipboardItem){say('use save');return;}
+cv.toBlob(function(bl){navigator.clipboard.write([new ClipboardItem({'image/png':bl})])
+.then(function(){say('copied \\u2713');}).catch(function(){say('use save');});},'image/png');});});
 
 console.log('sessions wrapped \\u2014 generated locally from your own session logs. No telemetry.');
 })();`;
