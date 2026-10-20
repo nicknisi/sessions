@@ -37,6 +37,8 @@ export interface WrappedOptions {
   roast?: boolean;
   /** Force a specific roast CLI instead of autodetecting. */
   roastWith?: RoastToolId;
+  /** Open on every slide instead of the short reel. */
+  full?: boolean;
   /** Test injection, same convention as report. */
   roots?: ReportRoots;
   now?: string;
@@ -76,11 +78,14 @@ from what you and your agents actually said. Everything is computed locally.
 Usage:
   sessions wrapped                  This year, opened in your browser
   sessions wrapped --year 2025      A past calendar year
+  sessions wrapped --full           Open on every slide, not the short reel
   sessions wrapped --out w.html     Write the page to a file instead of opening
   sessions wrapped --stdout         Print the underlying JSON (no HTML)
 
 Options:
   --year <YYYY>    Calendar year to wrap (default: current year)
+  --full           Open on the whole deck instead of the short reel (the
+                   page can switch to it either way)
   --tool <name>    Only one tool: claude, codex, pi, or opencode
   --tz <zone>      Timezone for day/hour bucketing (default: TIMEZONE env or America/Chicago)
   --extras <path>  JSON file of extra slides: [{"headline": "...", "title"?, "subline"?, "footnote"?}]
@@ -143,6 +148,9 @@ export function parseWrappedArgs(argv: string[]): WrappedOptions {
         break;
       case '--roast':
         opts.roast = true;
+        break;
+      case '--full':
+        opts.full = true;
         break;
       case '--roast-with': {
         const v = argv[++i] ?? '';
@@ -458,7 +466,7 @@ export async function runWrapped(opts: WrappedOptions): Promise<WrappedResult> {
     return result;
   }
 
-  const html = renderWrappedHtml(data);
+  const html = renderWrappedHtml(data, { full: opts.full });
   const p = opts.out ?? join(await mkdtemp(join(tmpdir(), 'sessions-wrapped-')), 'wrapped.html');
   await writeFile(p, html, 'utf8');
   result.htmlPath = p;

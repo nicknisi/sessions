@@ -248,9 +248,12 @@ function runPage(data: WrappedData): StubPage {
     return el;
   });
 
+  const main = new StubEl();
   const doc = {
     documentElement: new StubEl(),
+    body: new StubEl(),
     getElementById: (id: string) => byId.get(id) ?? null,
+    querySelector: (sel: string) => (sel === 'main' ? main : null),
     querySelectorAll: (sel: string) => (sel === '.seg button' ? seg : sel === '.swatches .sw' ? swatches : []),
     addEventListener: () => {},
     // A promise that never settles: the painter re-draws on fonts.ready, and a
@@ -428,5 +431,51 @@ describe('wrapped share card', () => {
     // this has to check for the data block itself.
     expect(html).not.toContain('id="wcard-data"');
     expect(html).not.toContain('class="card sharecard"');
+  });
+});
+
+describe('short reel', () => {
+  const fun = (id: string, score: number) => ({
+    id,
+    kicker: 'k',
+    title: 't',
+    stats: [{ big: '12', label: 'x' }],
+    score,
+  });
+  const RICH: WrappedData = {
+    ...DATA,
+    fun: [fun('friction', 0.5), fun('relationship', 0.9), fun('lies', 0.7)],
+    wordOfYear: { word: 'refactor', count: 40, sessions: 10, runnersUp: [] },
+  };
+  const ids = (html: string, attr = '') =>
+    [...html.matchAll(new RegExp(`<section class="card[^"]*" id="([^"]+)"${attr}`, 'g'))].map((m) => m[1]);
+
+  test('keeps the hook, the headline, the two best fun cards, the word, the payoff and the share', () => {
+    const html = renderWrappedHtml(RICH);
+    expect(ids(html, ' data-reel')).toEqual([
+      'cover',
+      'tokens',
+      'fun-relationship',
+      'fun-lies',
+      'word',
+      'persona',
+      'share',
+    ]);
+    // Everything else is still on the page, one click away.
+    expect(ids(html).length).toBeGreaterThan(ids(html, ' data-reel').length + 2);
+  });
+
+  test('opens on the reel by default and on everything with full', () => {
+    const html = renderWrappedHtml(RICH);
+    expect(html).toContain('<body class="reel">');
+    expect(html).toMatch(/id="fullcut">▸ The full cut — all \d+ slides/);
+    expect(renderWrappedHtml(RICH, { full: true })).toContain('<body>');
+  });
+
+  test('a deck too short to cut has no reel', () => {
+    const html = renderWrappedHtml({ ...DATA, totals: { ...DATA.totals, sessions: 0 } });
+    expect(html).toContain('<body>');
+    expect(ids(html, ' data-reel')).toEqual([]);
+    expect(html).not.toContain('id="fullcut"');
   });
 });

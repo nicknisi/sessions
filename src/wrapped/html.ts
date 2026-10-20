@@ -382,7 +382,7 @@ function shareCardData(d: WrappedData, accentStart: number): ShareCard {
   };
 }
 
-function shareCardSlide(card: ShareCard): Card {
+function shareCardSlide(card: ShareCard, fullCut: number | null): Card {
   return {
     id: 'share',
     cls: 'sharecard',
@@ -407,11 +407,42 @@ ${card.equivalents.length > 1 ? `<button type="button" id="wc-eq">↻ Another co
       .join('')}</span>
 <span id="wc-flash" role="status" aria-live="polite"></span>
 </div>
+${fullCut ? `<div class="actions"><button type="button" id="fullcut">▸ The full cut — all ${fullCut} slides</button></div>` : ''}
 <script type="application/json" id="wcard-data">${jsonForScript(card)}</script></div>`,
   };
 }
 
-export function renderWrappedHtml(d: WrappedData): string {
+/** Fun-card ids worth a slot in the short reel, best first — the deck's
+ *  shareable moments, so the short cut leads with them. */
+const REEL_FILL = ['loop', 'bigday', 'showedup', 'magnum', 'rhythm', 'projects'];
+const REEL_MIN = 6;
+
+/** Which slides the short reel keeps: the hook, the headline number, the two
+ *  most notable fun cards, the word, any extras, the payoff, and the share.
+ *  Topped up from REEL_FILL on a thin year so it never collapses to three. */
+export function reelIds(d: WrappedData, cardIds: string[]): Set<string> {
+  const have = new Set(cardIds);
+  const keep = new Set<string>();
+  const add = (id: string) => {
+    if (have.has(id)) keep.add(id);
+  };
+  add('cover');
+  add(d.totals.tokens > 0 ? 'tokens' : 'showedup');
+  for (const c of [...d.fun].sort((a, b) => b.score - a.score).slice(0, 2)) add(`fun-${c.id}`);
+  add('word');
+  for (let i = 0; i < Math.min(2, d.extras.length); i++) add(`extra-${i}`);
+  add('persona');
+  add('share');
+  for (const id of REEL_FILL) if (keep.size < REEL_MIN + 1) add(id);
+  return keep;
+}
+
+export interface RenderOptions {
+  /** Open on the whole deck instead of the short reel. */
+  full?: boolean;
+}
+
+export function renderWrappedHtml(d: WrappedData, opts: RenderOptions = {}): string {
   const cards: Card[] = [];
   const empty = d.totals.sessions === 0;
 
@@ -427,7 +458,7 @@ export function renderWrappedHtml(d: WrappedData): string {
 <p class="brand">sessions</p>
 <h1><span>your</span> <span class="yr">${d.year}</span> <span>wrapped</span></h1>
 <p class="lede">${esc(formatDate(d.period.from))} → ${esc(formatDate(d.period.to))}${d.period.to.slice(5) !== '12-31' ? ' · so far' : ''}</p>
-${empty ? `<p class="lede">A quiet year — no sessions found. The mystery of you deepens.</p>` : `<p class="hint">scroll<span class="chev">▾</span></p>`}
+${empty ? `<p class="lede">A quiet year — no sessions found. The mystery of you deepens.</p>` : `<p class="hint">tap, scroll, or press →<span class="chev">▾</span></p>`}
 <p class="foot">generated locally from your own transcripts · nothing leaves your machine${horizon ? ` · ${esc(horizon)}` : ''}</p>
 </div>`,
   });
@@ -663,7 +694,12 @@ ${foot('a description of how you worked this year, not who you are · the next s
   // the accent its position in the rotation would have given it, so the image
   // matches the slide the reader is looking at while they save it.
   const shareCard = empty ? null : shareCardData(d, cards.length % ACCENTS.length);
-  if (shareCard) cards.push(shareCardSlide(shareCard));
+  // The credits slide is pushed below, so the full deck is one longer than now.
+  const fullLength = cards.length + (shareCard ? 1 : 0) + 1;
+  const reel = reelIds(d, [...cards.map((c) => c.id), 'share']);
+  // A reel that would cut fewer than three slides isn't worth a second mode.
+  const useReel = fullLength - reel.size >= 3;
+  if (shareCard) cards.push(shareCardSlide(shareCard, useReel ? fullLength : null));
 
   const creditRows: [string, string][] = [];
   if (d.models[0]) creditRows.push(['starring', prettyModel(d.models[0].label)]);
@@ -711,26 +747,27 @@ ${foot('a description of how you worked this year, not who you are · the next s
       )}</dl><p class="foot">sessions wrapped ${d.year} · generated ${esc(d.generatedAt.slice(0, 10))} · locally, with no telemetry<br /><a href="${SITE_URL}">${SITE_HOST}</a></p></div>`,
   });
 
+  const inReel = (id: string): string => (useReel && reel.has(id) ? ' data-reel' : '');
   const sections = cards
     .map((c, i) => {
       const accent = ACCENTS[i % ACCENTS.length]!;
-      return `<section class="card ${c.cls ?? ''}" id="${c.id}" style="--a:${accent.c}">${c.body}</section>`;
+      return `<section class="card ${c.cls ?? ''}" id="${c.id}"${inReel(c.id)} style="--a:${accent.c}">${c.body}</section>`;
     })
     .join('\n');
 
-  const dots = cards
-    .map((c) => `<button type="button" data-for="${c.id}" aria-label="${esc(c.id)}"></button>`)
+  const bars = cards
+    .map((c) => `<button type="button" data-for="${c.id}"${inReel(c.id)} aria-label="${esc(c.id)}"></button>`)
     .join('');
 
   return `<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>sessions wrapped ${d.year}</title>
 <style>${CSS}</style></head>
-<body>
+<body${useReel && !opts.full ? ' class="reel"' : ''}>
 <main>
 ${sections}
 </main>
-<nav class="dots" aria-label="slides">${dots}</nav>
+<nav class="bars" aria-label="slides">${bars}</nav>
 <div class="tip" id="tip"></div>
 <script>${JS}</script>
 </body></html>`;
@@ -827,9 +864,13 @@ h2{font-size:clamp(1.5rem,4vw,2.2rem);font-weight:800;letter-spacing:-.01em;line
 .actions .swatches .sw:hover{transform:scale(1.16);border-color:transparent;}
 .actions .swatches .sw.on{border-color:var(--ink);transform:scale(1.16);}
 #wc-flash{font-family:var(--mono);font-size:11px;color:var(--muted);}
-.dots{position:fixed;right:14px;top:50%;transform:translateY(-50%);display:flex;flex-direction:column;gap:8px;z-index:5;}
-.dots button{width:8px;height:8px;border-radius:50%;border:0;padding:0;background:var(--track);cursor:pointer;transition:background .2s,transform .2s;}
-.dots button.on{background:var(--ink);transform:scale(1.3);}
+/* Stories-style progress: one segment per slide, filled up to the current one. */
+.bars{position:fixed;top:0;left:0;right:0;display:flex;gap:4px;padding:6px 14px 0;z-index:5;background:linear-gradient(var(--bg),transparent);}
+.bars button{flex:1;height:14px;border:0;padding:0;background:none;cursor:pointer;}
+.bars button::before{content:'';display:block;height:3px;border-radius:2px;background:oklch(100% 0 0 / .18);transition:background .2s;}
+.bars button.past::before,.bars button.on::before{background:var(--ink);}
+.bars button:focus-visible{outline:2px solid var(--ink);outline-offset:2px;}
+body.reel .card:not([data-reel]),body.reel .bars button:not([data-reel]){display:none;}
 .tip{position:fixed;pointer-events:none;background:var(--ink);color:var(--bg);font-family:var(--mono);font-size:11px;padding:4px 7px;border-radius:4px;opacity:0;transform:translate(-50%,-130%);white-space:nowrap;z-index:10;}
 .card .panel>*,.card .echo{opacity:0;transform:translateY(18px);transition:opacity .7s ease-out,transform .7s ease-out;}
 .card .echo{transform:rotate(-6deg) translateY(24px);transition-duration:1.1s;}
@@ -843,11 +884,11 @@ h2{font-size:clamp(1.5rem,4vw,2.2rem);font-weight:800;letter-spacing:-.01em;line
 .card.live .panel>*:nth-child(n+7){transition-delay:.56s}
 .card.live .rank li,.card.live .substat,.card.live .axis,.card.live .creditlist div{opacity:0;transform:translateY(14px);animation:rise .6s ease-out forwards;animation-delay:calc(.3s + var(--i,0)*.18s);}
 @keyframes rise{to{opacity:1;transform:translateY(0)}}
-@media (max-width:640px){.dots{display:none;}.rank li{grid-template-columns:1.4em 1fr auto;}.rank .rtrack{display:none;}}
+@media (max-width:640px){.rank li{grid-template-columns:1.4em 1fr auto;}.rank .rtrack{display:none;}}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;}.card .panel>*,.card .echo,.card.live .rank li,.card.live .substat,.card.live .axis,.card.live .creditlist div{opacity:1!important;transform:none!important;}}
 `;
 
-// Count-up + card reveal + tooltip + dots. textContent only — never innerHTML.
+// Count-up + card reveal + tooltip + stories nav. textContent only — never innerHTML.
 const JS = `(function(){
 var reduce=window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 function fmt(n,kind){if(kind==='usd')return '$'+Math.round(n).toLocaleString('en-US');if(kind==='tok'){if(n>=1e9)return (n/1e9).toFixed(2)+'B';if(n>=1e6)return (n/1e6).toFixed(1)+'M';if(n>=1e3)return (n/1e3).toFixed(1)+'K';return String(Math.round(n));}return Math.round(n).toLocaleString('en-US');}
@@ -855,9 +896,27 @@ function countUp(el){var n=Number(el.getAttribute('data-n'));var kind=el.getAttr
 var seen=new WeakSet();
 var obs=new IntersectionObserver(function(entries){entries.forEach(function(en){if(!en.isIntersecting)return;var card=en.target;card.classList.add('live');dotFor(card.id);if(!seen.has(card)){seen.add(card);card.querySelectorAll('[data-n]').forEach(countUp);}});},{threshold:0.45});
 document.querySelectorAll('.card').forEach(function(c){obs.observe(c);});
-var dots=document.querySelectorAll('.dots button');
-function dotFor(id){dots.forEach(function(b){b.classList.toggle('on',b.getAttribute('data-for')===id);});}
-dots.forEach(function(b){b.addEventListener('click',function(){var el=document.getElementById(b.getAttribute('data-for'));if(el)el.scrollIntoView({behavior:reduce?'auto':'smooth'});});});
+// Stories navigation over whichever slides are showing (the reel or the full cut).
+var bars=document.querySelectorAll('.bars button'),cur='cover';
+function deck(){return [].slice.call(document.querySelectorAll(document.body.classList.contains('reel')?'.card[data-reel]':'.card'));}
+function show(el){if(el)el.scrollIntoView({behavior:reduce?'auto':'smooth'});}
+function dotFor(id){cur=id;var ids=deck().map(function(c){return c.id;}),at=ids.indexOf(id);
+bars.forEach(function(b){var i=ids.indexOf(b.getAttribute('data-for'));b.classList.toggle('on',i===at);b.classList.toggle('past',i>=0&&i<at);});}
+function go(step){var d=deck(),i=d.map(function(c){return c.id;}).indexOf(cur);show(d[Math.max(0,Math.min(d.length-1,i+step))]);}
+bars.forEach(function(b){b.addEventListener('click',function(){show(document.getElementById(b.getAttribute('data-for')));});});
+document.addEventListener('keydown',function(e){if(e.metaKey||e.ctrlKey||e.altKey)return;
+var t=e.target&&e.target.closest?e.target.closest('button,a,input'):null;
+var k=e.key,next=k==='ArrowRight'||k==='ArrowDown'||k==='PageDown'||(k===' '&&!t),prev=k==='ArrowLeft'||k==='ArrowUp'||k==='PageUp';
+if(next||prev){e.preventDefault();go(next?1:-1);}});
+// Tap the right of a slide for the next one, the left edge for the previous —
+// except on anything that does something itself.
+document.querySelector('main').addEventListener('click',function(e){
+if(e.target.closest('button,a,canvas,.scrollx,.rank,.actions'))return;
+if(window.getSelection&&String(window.getSelection())!=='')return;
+go(e.clientX<window.innerWidth*0.3?-1:1);});
+var fc=document.getElementById('fullcut');
+if(fc)fc.addEventListener('click',function(){var hidden=document.querySelector('.card:not([data-reel])');
+document.body.classList.remove('reel');var row=fc.parentNode;row.parentNode.removeChild(row);dotFor(cur);show(hidden);});
 var tip=document.getElementById('tip');
 document.addEventListener('mousemove',function(e){var el=e.target&&e.target.closest?e.target.closest('[data-tip]'):null;if(!el){tip.style.opacity='0';return;}tip.textContent=el.getAttribute('data-tip');tip.style.opacity='1';tip.style.left=e.clientX+'px';tip.style.top=e.clientY+'px';});
 
