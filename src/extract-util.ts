@@ -13,22 +13,32 @@ const jsonValueSchema: z.ZodType<JsonValue> = z.lazy(() =>
 );
 export const jsonObjectSchema = z.record(z.string(), jsonValueSchema);
 
+// The hot-path schemas, built once: constructing `z.string()` per call and
+// re-validating every nested value of a line JSON.parse just produced were
+// most of the index build's time.
+const stringSchema = z.string();
+const numberSchema = z.number();
+/** A JSON object whose values are already JSON — what JSON.parse guarantees —
+ *  so only the top level needs checking. */
+const parsedObjectSchema = z.record(z.string(), z.custom<JsonValue>());
+
 /** Narrow to a JSON object: primitives and arrays fall out. */
 export function asJsonObject(v: JsonValue | undefined): JsonObject | undefined {
   if (v === null || v === undefined || Array.isArray(v)) return undefined;
-  const parsed = jsonObjectSchema.safeParse(v);
+  // v is already a JsonValue, so its members are too; only the top level needs checking.
+  const parsed = parsedObjectSchema.safeParse(v);
   return parsed.success ? parsed.data : undefined;
 }
 
 /** Narrow to a string; anything else falls out. */
 export function asJsonString(v: JsonValue | undefined): string | undefined {
-  const parsed = z.string().safeParse(v);
+  const parsed = stringSchema.safeParse(v);
   return parsed.success ? parsed.data : undefined;
 }
 
 /** Narrow to a number; anything else falls out. */
 export function asJsonNumber(v: JsonValue | undefined): number | undefined {
-  const parsed = z.number().safeParse(v);
+  const parsed = numberSchema.safeParse(v);
   return parsed.success ? parsed.data : undefined;
 }
 
@@ -56,7 +66,7 @@ export type MessageLine = {
 /** Parse one JSONL line to an object, or null — never throws, never yields a bare primitive. */
 export function tryParse(line: string): JsonObject | null {
   try {
-    const parsed = jsonObjectSchema.safeParse(JSON.parse(line));
+    const parsed = parsedObjectSchema.safeParse(JSON.parse(line));
     return parsed.success ? parsed.data : null;
   } catch {
     return null;
