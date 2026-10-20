@@ -9,6 +9,7 @@ import {
   resolveAgentTypes,
   mergeAgentNames,
   type AgentName,
+  type ClaudeUserTurn,
 } from './parsers/claude-code.ts';
 import { parsePi, parsePiFile } from './parsers/pi.ts';
 import { parseCodex, parseCodexFile } from './parsers/codex.ts';
@@ -57,6 +58,9 @@ export interface GatherOptions {
   since?: string;
   /** Skip the incremental parse cache and read every file. */
   noCache?: boolean;
+  /** Files parsed so far out of those needing a parse, per source tree. Cached
+   *  path only; a warm run parses nothing and never calls it. */
+  onProgress?: (done: number, total: number) => void;
 }
 
 /** A file-tree source: how to enumerate it, and how to parse one of its files. */
@@ -102,18 +106,39 @@ export async function gatherEvents(
   tools?: Set<ToolId>,
   opts: GatherOptions = {},
 ): Promise<UsageEvent[]> {
+  return (await gatherUsage(roots, tools, opts)).events;
+}
+
+export interface GatheredUsage {
+  events: UsageEvent[];
+  /** Claude human-typed turns from the same pass. Null when the uncached path
+   *  ran, which does not collect them — callers that need turns walk instead. */
+  userTurns: ClaudeUserTurn[] | null;
+}
+
+/** gatherEvents, plus the Claude user turns the cached parse already extracted. */
+export async function gatherUsage(
+  roots: ReportRoots = defaultRoots(),
+  tools?: Set<ToolId>,
+  opts: GatherOptions = {},
+): Promise<GatheredUsage> {
   const want = (t: ToolId): boolean => !tools || tools.has(t);
 
   // OpenCode is one SQLite database, not a file tree, so it has nothing to
   // incrementally re-walk and stays on the direct path either way.
   const opencode: UsageEvent[] = want('opencode') && roots.opencode ? await parseOpencode(roots.opencode) : [];
 
+  const direct = async (): Promise<GatheredUsage> => ({
+    events: [...(await gatherDirect(roots, want, opts.since)), ...opencode],
+    userTurns: null,
+  });
   const db = opts.noCache ? null : openEventCache();
-  if (!db) return [...(await gatherDirect(roots, want, opts.since)), ...opencode];
+  if (!db) return direct();
 
   try {
     const threshold = pruneThreshold(opts.since);
     const collected: UsageEvent[] = [];
+    const userTurns: ClaudeUserTurn[] = [];
     const agentTypes: Record<string, AgentName> = {};
     const livePaths = new Set<string>();
     const enumeratedRoots: string[] = [];
@@ -126,14 +151,19 @@ export async function gatherEvents(
       const files = await statAll(walkJsonl(source.root));
       for (const f of files) livePaths.add(f.path);
 
-      const { stale, fresh } = planRefresh(db, files);
+      const { stale, fresh } = planRefresh(db, files, source.root);
       // A stale file older than the period cannot hold an in-range event, so it
       // is left unparsed. It stays absent from the cache and will be picked up by
       // the first run whose window includes it.
       const toParse = threshold === undefined ? stale : stale.filter((f) => f.mtimeMs >= threshold);
 
+      let done = 0;
       const parsed = await Promise.all(
-        toParse.map(async (f): Promise<[FileStat, FileParse]> => [f, await source.parseFile(f.path)]),
+        toParse.map(async (f): Promise<[FileStat, FileParse]> => {
+          const p = await source.parseFile(f.path);
+          opts.onProgress?.(++done, toParse.length);
+          return [f, p];
+        }),
       );
       db.transaction(() => {
         for (const [f, p] of parsed) putFile(db, f, p);
@@ -143,12 +173,14 @@ export async function gatherEvents(
       for (const [f, p] of parsed) {
         if (!inWindow(f.mtimeMs)) continue;
         collected.push(...p.events);
+        if (p.userTurns) userTurns.push(...p.userTurns);
         mergeAgentNames(agentTypes, p.agentTypes);
       }
       for (const row of fresh.values()) {
         if (!inWindow(row.mtime_ms)) continue;
         const p = decodeRow(row);
         collected.push(...p.events);
+        if (p.userTurns) userTurns.push(...p.userTurns);
         mergeAgentNames(agentTypes, p.agentTypes);
       }
     }
@@ -161,10 +193,10 @@ export async function gatherEvents(
     // than in the per-file parse the cache stores.
     const events = dedupeEvents(collected);
     resolveAgentTypes(events, agentTypes);
-    return [...events, ...opencode];
+    return { events: [...events, ...opencode], userTurns };
   } catch {
     // Any cache-path failure falls back to a plain read rather than a bad report.
-    return [...(await gatherDirect(roots, want, opts.since)), ...opencode];
+    return direct();
   } finally {
     try {
       db.close();

@@ -19,7 +19,7 @@ import { join } from 'node:path';
 import { stat } from 'node:fs/promises';
 import { getCacheDir } from '../cache.ts';
 import type { UsageEvent } from './parsers/types.ts';
-import type { AgentName } from './parsers/claude-code.ts';
+import type { AgentName, ClaudeUserTurn } from './parsers/claude-code.ts';
 
 // Bump when the stored shape changes, so an old cache is discarded rather than
 // misread. v1: per-file events blob + agent-name map.
@@ -27,17 +27,19 @@ import type { AgentName } from './parsers/claude-code.ts';
 // attribution, compaction usage, zero-usage skips) — a v1 pi parse served from
 // cache would silently miss all of it, so old caches are rebuilt.
 // v3: Claude events retain the Fast mode flag used for historical pricing.
-const SCHEMA_VERSION = 3;
+// v4: Claude files also store their human-typed turns (wrapped's loop stat).
+const SCHEMA_VERSION = 4;
 
 export function getEventCachePath(): string {
   return join(getCacheDir(), 'usage.db');
 }
 
 /** What one source file contributes. `agentTypes` is empty for tools without
- *  subagent dispatches. */
+ *  subagent dispatches; `userTurns` is Claude-only. */
 export interface FileParse {
   events: UsageEvent[];
   agentTypes: Record<string, AgentName>;
+  userTurns?: ClaudeUserTurn[];
 }
 
 export interface FileStat {
@@ -52,6 +54,7 @@ interface Row {
   size: number;
   events: string;
   agent_types: string;
+  user_turns: string;
 }
 
 export function openEventCache(): Database | null {
@@ -73,7 +76,8 @@ export function openEventCache(): Database | null {
       mtime_ms    REAL NOT NULL,
       size        INTEGER NOT NULL,
       events      TEXT NOT NULL,
-      agent_types TEXT NOT NULL DEFAULT '{}'
+      agent_types TEXT NOT NULL DEFAULT '{}',
+      user_turns  TEXT NOT NULL DEFAULT '[]'
     )`);
     return db;
   } catch {
@@ -114,14 +118,19 @@ export interface CachePlan {
   fresh: Map<string, Row>;
 }
 
-/** Split the current files into "already parsed" and "needs parsing". */
-export function planRefresh(db: Database, files: FileStat[]): CachePlan {
+/** Split the current files under `root` into "already parsed" and "needs parsing".
+ *  Reads only that root's rows: with many roots (one per extra Pi folder) a
+ *  whole-table read per root decoded every cached blob once per root. */
+export function planRefresh(db: Database, files: FileStat[], root: string): CachePlan {
   const known = new Map<string, Row>();
   try {
     // SAFETY: bun:sqlite returns untyped rows; the SELECT list fixes the shape.
-    for (const r of db.query('SELECT path, mtime_ms, size, events, agent_types FROM files').all() as Row[]) {
-      known.set(r.path, r);
-    }
+    const rows = db
+      .query(
+        'SELECT path, mtime_ms, size, events, agent_types, user_turns FROM files WHERE path >= ?1 AND path < ?1 || char(1114111)',
+      )
+      .all(root) as Row[];
+    for (const r of rows) known.set(r.path, r);
   } catch {
     // Unreadable table: treat everything as stale.
   }
@@ -140,13 +149,17 @@ export function planRefresh(db: Database, files: FileStat[]): CachePlan {
 /** Store one file's parse. */
 export function putFile(db: Database, file: FileStat, parsed: FileParse): void {
   try {
-    db.run('INSERT OR REPLACE INTO files (path, mtime_ms, size, events, agent_types) VALUES (?, ?, ?, ?, ?)', [
-      file.path,
-      file.mtimeMs,
-      file.size,
-      JSON.stringify(parsed.events),
-      JSON.stringify(parsed.agentTypes),
-    ]);
+    db.run(
+      'INSERT OR REPLACE INTO files (path, mtime_ms, size, events, agent_types, user_turns) VALUES (?, ?, ?, ?, ?, ?)',
+      [
+        file.path,
+        file.mtimeMs,
+        file.size,
+        JSON.stringify(parsed.events),
+        JSON.stringify(parsed.agentTypes),
+        JSON.stringify(parsed.userTurns ?? []),
+      ],
+    );
   } catch {
     // A failed write costs a re-parse next run, nothing more.
   }
@@ -186,8 +199,9 @@ export function decodeRow(row: Row): FileParse {
     return {
       events: JSON.parse(row.events) as UsageEvent[],
       agentTypes: JSON.parse(row.agent_types) as Record<string, AgentName>,
+      userTurns: JSON.parse(row.user_turns) as ClaudeUserTurn[],
     };
   } catch {
-    return { events: [], agentTypes: {} };
+    return { events: [], agentTypes: {}, userTurns: [] };
   }
 }

@@ -3,7 +3,8 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { UsageEvent } from '../report/parsers/types.ts';
-import { collectClaudeUserTurns, type UserTurn } from './loops.ts';
+import { collectClaudeUserTurns, groupUserTurns, type UserTurn } from './loops.ts';
+import { gatherUsage } from '../report/extract.ts';
 import { computeLoops, SITTING_GAP_MS } from './compute.ts';
 
 const tmp = mkdtempSync(join(tmpdir(), 'sessions-loops-'));
@@ -74,6 +75,24 @@ describe('collectClaudeUserTurns', () => {
 
   test('a missing root yields an empty map, not a crash', async () => {
     expect((await collectClaudeUserTurns(join(tmp, 'nope'))).size).toBe(0);
+  });
+
+  test('the cached usage pass collects the same turns as the walk, cold and warm', async () => {
+    const prev = process.env.SESSIONS_CACHE_DIR;
+    process.env.SESSIONS_CACHE_DIR = join(tmp, 'cache');
+    try {
+      const roots = { claudeCode: root, pi: join(tmp, 'no-pi'), codex: join(tmp, 'no-codex') };
+      const walked = await collectClaudeUserTurns(root);
+      const cold = await gatherUsage(roots);
+      const warm = await gatherUsage(roots);
+      expect(groupUserTurns(cold.userTurns!)).toEqual(walked);
+      expect(groupUserTurns(warm.userTurns!)).toEqual(walked);
+      // The uncached path does not collect turns; wrapped walks instead.
+      expect((await gatherUsage(roots, undefined, { noCache: true })).userTurns).toBeNull();
+    } finally {
+      if (prev === undefined) delete process.env.SESSIONS_CACHE_DIR;
+      else process.env.SESSIONS_CACHE_DIR = prev;
+    }
   });
 });
 

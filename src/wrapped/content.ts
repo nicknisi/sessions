@@ -271,6 +271,8 @@ export interface ContentOptions {
   tool?: string;
   /** Days of silence before a project counts as abandoned. */
   abandonedAfterDays?: number;
+  /** Index-build progress, for a first run that has to build it. */
+  onProgress?: (done: number, total: number) => void;
 }
 
 export async function computeContentStats(opts: ContentOptions): Promise<
@@ -278,7 +280,9 @@ export async function computeContentStats(opts: ContentOptions): Promise<
     sessionOfYear: WrappedSessionOfYear | null;
   }
 > {
-  const db = await getIndexDb();
+  // Wrapped never searches, so it skips the embedding pass a fresh index would
+  // otherwise spend minutes on; the next search refresh fills it in.
+  const db = await getIndexDb({ embed: false, onProgress: opts.onProgress });
   const tool = opts.tool ? (INDEX_TOOL[opts.tool] ?? opts.tool) : null;
   const params: SqlParams = { $from: opts.from, $to: opts.to };
   let toolWhere = '';

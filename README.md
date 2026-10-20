@@ -408,7 +408,7 @@ Cost is estimated from [LiteLLM](https://github.com/BerriAI/litellm) pricing dat
 
 `sessions wrapped` turns your year of AI pairing into a Spotify-Wrapped-style scroll-through story and opens it in your browser: tokens with a human-scale equivalence, the API-rate receipt, streaks, a rhythm heatmap, top projects and models, your most significant session — and a set of fun stats mined from what you and your agents actually said to each other (the interrupt census, the two-sided apology scoreboard, how many times Claude told you "you're absolutely right", your word of the year). It ends with a coding-personality reveal built from three behavioral axes, with the evidence printed on the card, followed by a shareable image you can download or copy straight to the clipboard — at 1200 × 630 for timelines or 1080 × 1920 for stories, in whichever of six accents you like.
 
-No install needed — this downloads the binary for your machine, checks it against the release's `checksums.txt`, caches it in `~/.cache/sessions/bin`, and runs `sessions wrapped`:
+No install needed — this downloads the binary for your machine, checks it against the release's `checksums.txt`, caches it in `~/.cache/sessions/bin`, and runs `sessions wrapped`. A one-off run builds the search index in `~/.cache/sessions` (so a re-run is fast) but skips the transcript archive, and tells you how to delete what it cached:
 
 ```sh
 curl -fsSL https://sessions.engineering/wrapped | sh
@@ -481,7 +481,7 @@ sessions --clear-cache
 
 The search index is a disposable cache: it prunes rows when source transcripts vanish, and any schema change drops every table and rebuilds from whatever files still exist. Vendors garbage-collect transcripts on a rolling schedule (Claude Code deletes them after 30 days by default), so left to the index alone, history is lost.
 
-The **vault** is the durable copy. On every index refresh, each parseable transcript is archived to `~/.local/share/sessions/archive/` (raw bytes, one file per session, latest snapshot per file). This directory is the same durable-data convention that `sessions uninstall` already leaves alone, and it is **on by default** — the point is that archiving happens before anyone remembers to enable it. Set `SESSIONS_ARCHIVE_DIR` to relocate it.
+The **vault** is the durable copy. On every index refresh, each parseable transcript is archived to `~/.local/share/sessions/archive/` (raw bytes, one file per session, latest snapshot per file). This directory is the same durable-data convention that `sessions uninstall` already leaves alone, and it is **on by default** — the point is that archiving happens before anyone remembers to enable it. Set `SESSIONS_ARCHIVE_DIR` to relocate it, or `SESSIONS_ARCHIVE=0` to skip it for a run (the curl one-liner does this, so a one-off wrapped leaves no copy behind).
 
 The vault is also a **discovery source**: a session whose source file is gone is re-indexed from its vault copy under its original path, so search, resume commands, and message reads keep working. OpenCode is the one exception to raw-bytes archiving — its sessions are SQLite rows with no files, so a normalized JSONL export (the same shape the parser reads) is archived instead.
 

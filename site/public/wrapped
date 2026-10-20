@@ -11,7 +11,9 @@
 #   3. Keeps it in ~/.cache/sessions/bin/<version>, so a second run skips the download.
 #   4. Runs `sessions wrapped`, which reads the transcripts your agents already left on
 #      disk, builds a local search index in ~/.cache/sessions, and opens the result in
-#      your browser. Nothing is uploaded.
+#      your browser. Nothing is uploaded. Unlike an installed `sessions`, this one-off
+#      run does not copy your transcripts into the archive (SESSIONS_ARCHIVE=0).
+#   5. Says how much it cached and how to delete it.
 #
 # Pin a version with SESSIONS_VERSION=v1.32.0. Source: https://github.com/nicknisi/sessions
 
@@ -95,7 +97,13 @@ main() {
     done
   fi
 
-  exec "$bin" wrapped "$@"
+  status=0
+  SESSIONS_ARCHIVE=0 "$bin" wrapped "$@" || status=$?
+  cache="${SESSIONS_CACHE_DIR:-$HOME/.cache/sessions}"
+  size=$(du -sh "$cache" 2>/dev/null | awk '{print $1}')
+  say "cached ${size:-some files} in $cache so a re-run is fast. Remove it any time: rm -rf $cache"
+  say "search and agent memory over these sessions: brew install nicknisi/formulae/sessions"
+  return "$status"
 }
 
 main "$@"

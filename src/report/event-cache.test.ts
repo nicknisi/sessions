@@ -165,9 +165,9 @@ describe('cache bookkeeping', () => {
     write('proj/a.jsonl', line({ id: '1' }));
     const db = openEventCache()!;
     const files = await statAll(walkJsonl(roots.claudeCode));
-    expect(planRefresh(db, files).stale).toHaveLength(1);
+    expect(planRefresh(db, files, roots.claudeCode).stale).toHaveLength(1);
     putFile(db, files[0]!, { events: [], agentTypes: {} });
-    const after = planRefresh(db, files);
+    const after = planRefresh(db, files, roots.claudeCode);
     expect(after.stale).toHaveLength(0);
     expect(after.fresh.size).toBe(1);
     db.close();
@@ -188,6 +188,19 @@ describe('cache bookkeeping', () => {
     const db = openEventCache()!;
     putFile(db, { path: '/a/b.jsonl', mtimeMs: 1, size: 1 }, { events: [], agentTypes: {} });
     expect(pruneMissing(db, new Set(), [])).toBe(0);
+    db.close();
+  });
+});
+
+describe('planRefresh scope', () => {
+  test('only reads rows under the root it plans', async () => {
+    write('proj/a.jsonl', line({ id: '1' }));
+    const db = openEventCache()!;
+    const files = await statAll(walkJsonl(roots.claudeCode));
+    putFile(db, files[0]!, { events: [], agentTypes: {} });
+    expect(planRefresh(db, files, roots.claudeCode).fresh.size).toBe(1);
+    // The same file planned under an unrelated root has no cached row to match.
+    expect(planRefresh(db, files, join(box, 'elsewhere')).stale).toHaveLength(1);
     db.close();
   });
 });
