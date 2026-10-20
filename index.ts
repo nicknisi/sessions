@@ -78,6 +78,10 @@ if (command === 'wrapped') {
   const { parseWrappedArgs, runWrapped } = await import('./src/wrapped/index.ts');
   const opts = parseWrappedArgs(Bun.argv.slice(3));
   const res = await runWrapped(opts);
+  if (!opts.stdout && process.stderr.isTTY) {
+    const { renderTerminalCard } = await import('./src/wrapped/terminal.ts');
+    process.stderr.write(renderTerminalCard(res.data));
+  }
   if (res.htmlPath) process.stderr.write(`wrote ${res.htmlPath}\n`);
   if (res.htmlPath && !opts.out && !opts.stdout) {
     const opener = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';

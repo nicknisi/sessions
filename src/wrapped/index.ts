@@ -8,14 +8,14 @@ import { writeFile, mkdtemp, readFile, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ToolId } from '../report/types.ts';
-import { gatherEvents, defaultRoots, type ReportRoots } from '../report/extract.ts';
+import { gatherUsage, defaultRoots, type ReportRoots } from '../report/extract.ts';
 import { aggregate } from '../report/aggregate.ts';
 import { drainPricingWarnings, resetPricingWarnings, mergeRuntimePricing } from '../report/pricing.ts';
 import { loadRuntimePricing } from '../report/pricing-cache.ts';
 import { localDate } from '../report/parsers/util.ts';
 import { writeStdoutFully } from '../stdout.ts';
 import { computeEventStats, computeLoops, longestGapRange, longestStreakRange } from './compute.ts';
-import { collectClaudeUserTurns } from './loops.ts';
+import { collectClaudeUserTurns, groupUserTurns } from './loops.ts';
 import { computeContentStats } from './content.ts';
 import { selectFunCards, selectPersona, selectWordOfYear } from './select.ts';
 import { renderWrappedHtml } from './html.ts';
@@ -37,6 +37,8 @@ export interface WrappedOptions {
   roast?: boolean;
   /** Force a specific roast CLI instead of autodetecting. */
   roastWith?: RoastToolId;
+  /** Open on every slide instead of the short reel. */
+  full?: boolean;
   /** Test injection, same convention as report. */
   roots?: ReportRoots;
   now?: string;
@@ -54,6 +56,7 @@ const ROAST_TOOLS: RoastToolByName = { claude: 'claude', codex: 'codex', pi: 'pi
 export interface WrappedResult {
   htmlPath?: string;
   json: string;
+  data: WrappedData;
 }
 
 interface ToolIdByName {
@@ -76,11 +79,14 @@ from what you and your agents actually said. Everything is computed locally.
 Usage:
   sessions wrapped                  This year, opened in your browser
   sessions wrapped --year 2025      A past calendar year
+  sessions wrapped --full           Open on every slide, not the short reel
   sessions wrapped --out w.html     Write the page to a file instead of opening
   sessions wrapped --stdout         Print the underlying JSON (no HTML)
 
 Options:
   --year <YYYY>    Calendar year to wrap (default: current year)
+  --full           Open on the whole deck instead of the short reel (the
+                   page can switch to it either way)
   --tool <name>    Only one tool: claude, codex, pi, or opencode
   --tz <zone>      Timezone for day/hour bucketing (default: TIMEZONE env or America/Chicago)
   --extras <path>  JSON file of extra slides: [{"headline": "...", "title"?, "subline"?, "footnote"?}]
@@ -144,6 +150,9 @@ export function parseWrappedArgs(argv: string[]): WrappedOptions {
       case '--roast':
         opts.roast = true;
         break;
+      case '--full':
+        opts.full = true;
+        break;
       case '--roast-with': {
         const v = argv[++i] ?? '';
         const mapped = ROAST_TOOLS[v];
@@ -173,6 +182,22 @@ export function parseExtras(raw: string): WrappedExtra[] {
   return coerceExtras(parsed);
 }
 
+/** A one-line stderr counter for a first run's slow passes. Silent when stderr
+ *  is not a terminal; throttled so a parse of thousands of files can't flood it. */
+function progressLine(label: string): (done: number, total: number) => void {
+  if (!process.stderr.isTTY) return () => {};
+  let last = 0;
+  return (done, total) => {
+    // A warm run re-reads a handful of changed files; only a real backlog is worth a counter.
+    if (total < 50) return;
+    const now = Date.now();
+    if (done < total && now - last < 100) return;
+    last = now;
+    const n = (x: number) => x.toLocaleString('en-US');
+    process.stderr.write(`\r\x1b[2Ksessions: ${label} ${n(done)}/${n(total)}${done >= total ? '\n' : ''}`);
+  };
+}
+
 export async function runWrapped(opts: WrappedOptions): Promise<WrappedResult> {
   const now = opts.now ?? new Date().toISOString();
   const tz = opts.tz;
@@ -184,7 +209,12 @@ export async function runWrapped(opts: WrappedOptions): Promise<WrappedResult> {
 
   const tools = opts.tool ? new Set<ToolId>([opts.tool]) : undefined;
   const roots = opts.roots ?? defaultRoots();
-  const events = await gatherEvents(roots, tools);
+  // `since` skips transcripts last written before the year — they cannot hold
+  // an in-range event — the same bound `sessions report` uses.
+  const { events, userTurns } = await gatherUsage(roots, tools, {
+    since: from,
+    onProgress: progressLine('reading transcripts'),
+  });
   // The spend/volume headline (tokens, cost, messages, sessions, rhythm, models,
   // projects) is computed from the SAME events as `sessions report` so the two
   // reconcile exactly — automated eval/tmp runs cost real money and belong in the
@@ -213,14 +243,15 @@ export async function runWrapped(opts: WrappedOptions): Promise<WrappedResult> {
 
   const ev = computeEventStats(inRange, tz);
 
-  // The loop pass re-walks the Claude Code root for the human-turn timestamps
-  // the report parsers throw away. Claude-only by design (see loops.ts), so
-  // skip the walk entirely when another tool was requested. Fail-open: an
-  // unreadable root just means no loop slide.
+  // The loop pass needs the human-turn timestamps UsageEvents don't carry. The
+  // cached parse collected them; without the cache, walk the Claude root.
+  // Claude-only by design (see loops.ts), so skip it when another tool was
+  // requested. Fail-open: an unreadable root just means no loop slide.
   let loops = null;
   if (!opts.tool || opts.tool === 'claude-code') {
     try {
-      loops = computeLoops(inRange, await collectClaudeUserTurns(roots.claudeCode), tz);
+      const turns = userTurns ? groupUserTurns(userTurns) : await collectClaudeUserTurns(roots.claudeCode);
+      loops = computeLoops(inRange, turns, tz);
     } catch (err) {
       process.stderr.write(`warning: could not read user turns for the loop stat (${String(err)})\n`);
     }
@@ -252,7 +283,12 @@ export async function runWrapped(opts: WrappedOptions): Promise<WrappedResult> {
   let sessionOfYear = null;
   if (!opts.noContent && inRange.length > 0) {
     try {
-      const c = await computeContentStats({ from, to, tool: opts.tool });
+      const c = await computeContentStats({
+        from,
+        to,
+        tool: opts.tool,
+        onProgress: progressLine('indexing conversations'),
+      });
       const { sessionOfYear: soy, ...rest } = c;
       // An index with zero sessions for the period must not feed the fun
       // cards — a "0 times" joke claiming to be counted from transcripts
@@ -426,14 +462,14 @@ export async function runWrapped(opts: WrappedOptions): Promise<WrappedResult> {
   }
 
   const json = JSON.stringify(data, null, 2);
-  const result: WrappedResult = { json };
+  const result: WrappedResult = { json, data };
 
   if (opts.stdout) {
     await writeStdoutFully(json + '\n');
     return result;
   }
 
-  const html = renderWrappedHtml(data);
+  const html = renderWrappedHtml(data, { full: opts.full });
   const p = opts.out ?? join(await mkdtemp(join(tmpdir(), 'sessions-wrapped-')), 'wrapped.html');
   await writeFile(p, html, 'utf8');
   result.htmlPath = p;

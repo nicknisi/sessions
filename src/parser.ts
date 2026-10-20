@@ -8,7 +8,7 @@ import {
   stripInjected,
   asJsonObject,
   asJsonString,
-  jsonObjectSchema,
+  parsedObjectSchema,
   type JsonObject,
   type JsonValue,
 } from './extract-util';
@@ -246,7 +246,9 @@ const userTurnLineSchema = z.object({
   promptSource: z.string().nullable().optional(),
   sessionId: z.string().optional(),
   timestamp: z.string().optional(),
-  message: z.union([z.string(), jsonObjectSchema]).optional(),
+  // Shallow: the line came from JSON.parse, and this runs on every user line of
+  // every report and wrapped parse.
+  message: z.union([z.string(), parsedObjectSchema]).optional(),
 });
 
 export function genuineUserTurnFromLine(input: JsonValue): GenuineUserTurn | null {

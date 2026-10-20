@@ -138,6 +138,7 @@ function makeCtx() {
     arc: () => {},
     moveTo: () => {},
     lineTo: () => {},
+    closePath: () => {},
     quadraticCurveTo: () => {},
     save: () => {},
     restore: () => {},
@@ -186,6 +187,9 @@ class StubEl {
   getAttribute(k: string): string | null {
     return this.attrs[k] ?? null;
   }
+  hasAttribute(k: string): boolean {
+    return k in this.attrs;
+  }
   setAttribute(k: string, v: string): void {
     this.attrs[k] = v;
   }
@@ -205,6 +209,10 @@ class StubEl {
 
 interface StubPage {
   painted: Painted[];
+  /** Per-slide share buttons, keyed `copy:<id>` / `save:<id>`. */
+  slideButtons: Map<string, StubEl>;
+  /** What the per-slide painter drew, newest canvas last. */
+  slidePainted: Painted[][];
   canvas: StubEl;
   byId: Map<string, StubEl>;
   seg: StubEl[];
@@ -214,6 +222,16 @@ interface StubPage {
 
 function runPage(data: WrappedData): StubPage {
   const html = renderWrappedHtml(data);
+  const shareIds = [...html.matchAll(/data-copy="([^"]+)"/g)].map((m) => m[1]!);
+  const slideButtons = new Map<string, StubEl>();
+  for (const id of shareIds) {
+    for (const kind of ['copy', 'save']) {
+      const el = new StubEl();
+      el.attrs[`data-${kind}`] = id;
+      slideButtons.set(`${kind}:${id}`, el);
+    }
+  }
+  const slidePainted: Painted[][] = [];
   const script = /<script>([\s\S]*?)<\/script>/.exec(html);
   if (!script) throw new Error('no inline script found in the wrapped page');
   const cardJson = /<script type="application\/json" id="wcard-data">([\s\S]*?)<\/script>/.exec(html);
@@ -231,11 +249,13 @@ function runPage(data: WrappedData): StubPage {
   mk('wcard-data').textContent = cardJson[1]!;
   mk('tip');
   mk('wc-flash');
-  for (const id of ['wc-png', 'wc-img', 'wc-txt', 'wc-eq']) mk(id);
+  const slideJson = /<script type="application\/json" id="slide-shares">([\s\S]*?)<\/script>/.exec(html);
+  if (slideJson) mk('slide-shares').textContent = slideJson[1]!;
+  for (const id of ['wc-png', 'wc-img', 'wc-txt', 'wc-eq', 'wc-roast']) mk(id);
 
   const slide = mk('share');
 
-  const seg = ['wide', 'story'].map((a) => {
+  const seg = ['wide', 'story', 'receipt'].map((a) => {
     const el = new StubEl();
     el.attrs['data-aspect'] = a;
     return el;
@@ -248,10 +268,29 @@ function runPage(data: WrappedData): StubPage {
     return el;
   });
 
+  const main = new StubEl();
   const doc = {
     documentElement: new StubEl(),
+    body: new StubEl(),
     getElementById: (id: string) => byId.get(id) ?? null,
-    querySelectorAll: (sel: string) => (sel === '.seg button' ? seg : sel === '.swatches .sw' ? swatches : []),
+    querySelector: (sel: string) => (sel === 'main' ? main : null),
+    querySelectorAll: (sel: string) =>
+      sel === '.seg button'
+        ? seg
+        : sel === '.swatches .sw'
+          ? swatches
+          : sel === '[data-copy],[data-save]'
+            ? [...slideButtons.values()]
+            : [],
+    createElement: (tag: string) => {
+      const el = new StubEl();
+      if (tag === 'canvas') {
+        const rec = makeCtx();
+        el.ctx = rec.ctx;
+        slidePainted.push(rec.painted);
+      }
+      return el;
+    },
     addEventListener: () => {},
     // A promise that never settles: the painter re-draws on fonts.ready, and a
     // resolved one would land after the test body and double the paint log.
@@ -280,7 +319,7 @@ function runPage(data: WrappedData): StubPage {
     script[1]!,
   );
   fn(doc, win, win.IntersectionObserver, win.requestAnimationFrame, win.setTimeout, win.clearTimeout, win.console, {});
-  return { painted, canvas, byId, seg, swatches, slide };
+  return { painted, canvas, byId, seg, swatches, slide, slideButtons, slidePainted };
 }
 
 describe('wrapped share card', () => {
@@ -428,5 +467,152 @@ describe('wrapped share card', () => {
     // this has to check for the data block itself.
     expect(html).not.toContain('id="wcard-data"');
     expect(html).not.toContain('class="card sharecard"');
+  });
+});
+
+describe('short reel', () => {
+  const fun = (id: string, score: number) => ({
+    id,
+    kicker: 'k',
+    title: 't',
+    stats: [{ big: '12', label: 'x' }],
+    score,
+  });
+  const RICH: WrappedData = {
+    ...DATA,
+    fun: [fun('friction', 0.5), fun('relationship', 0.9), fun('lies', 0.7)],
+    wordOfYear: { word: 'refactor', count: 40, sessions: 10, runnersUp: [] },
+  };
+  const ids = (html: string, attr = '') =>
+    [...html.matchAll(new RegExp(`<section class="card[^"]*" id="([^"]+)"${attr}`, 'g'))].map((m) => m[1]);
+
+  test('keeps the hook, the headline, the two best fun cards, the word, the payoff and the share', () => {
+    const html = renderWrappedHtml(RICH);
+    expect(ids(html, ' data-reel')).toEqual([
+      'cover',
+      'tokens',
+      'fun-relationship',
+      'fun-lies',
+      'word',
+      'persona',
+      'share',
+    ]);
+    // Everything else is still on the page, one click away.
+    expect(ids(html).length).toBeGreaterThan(ids(html, ' data-reel').length + 2);
+  });
+
+  test('opens on the reel by default and on everything with full', () => {
+    const html = renderWrappedHtml(RICH);
+    expect(html).toContain('<body class="reel">');
+    expect(html).toMatch(/id="fullcut">▸ The full cut — all \d+ slides/);
+    expect(renderWrappedHtml(RICH, { full: true })).toContain('<body>');
+  });
+
+  test('a deck too short to cut has no reel', () => {
+    const html = renderWrappedHtml({ ...DATA, totals: { ...DATA.totals, sessions: 0 } });
+    expect(html).toContain('<body>');
+    expect(ids(html, ' data-reel')).toEqual([]);
+    expect(html).not.toContain('id="fullcut"');
+  });
+});
+
+describe('per-slide images', () => {
+  const RICH: WrappedData = {
+    ...DATA,
+    fun: [
+      {
+        id: 'friction',
+        kicker: 'the friction reel',
+        title: 'It wasn’t always pretty.',
+        stats: [
+          { big: '649', label: 'times you cut Claude off mid-task', sub: 'you hit Escape like it owed you money.' },
+          { big: '11,609', label: 'errors weathered together' },
+        ],
+        score: 0.9,
+      },
+    ],
+    wordOfYear: { word: 'refactor', count: 40, sessions: 10, runnersUp: ['real'] },
+    extras: [{ headline: 'You paid $4k to be told you were right.', footnote: 'improvised by Claude from your stats' }],
+  };
+
+  test('the shareable slides each get copy and save buttons', () => {
+    const { slideButtons } = runPage(RICH);
+    const ids = [...new Set([...slideButtons.keys()].map((k) => k.split(':')[1]))].sort();
+    expect(ids).toEqual(['extra-0', 'fun-friction', 'tokens', 'word']);
+  });
+
+  test('save paints the slide’s words and the command, inside the poster', () => {
+    const { slideButtons, slidePainted } = runPage(RICH);
+    slideButtons.get('save:fun-friction')!.click();
+    const painted = slidePainted.at(-1)!;
+    const all = painted.map((p) => p.text).join(' | ');
+    expect(all).toContain('THE FRICTION REEL');
+    expect(all).toContain('649');
+    expect(all).toContain('times you cut Claude off mid-task');
+    expect(all).toContain('11,609');
+    expect(all).toContain(`curl -fsSL https://${SITE_HOST}/wrapped | sh`);
+    for (const p of painted) {
+      expect(p.x).toBeGreaterThanOrEqual(0);
+      expect(p.x + p.text.length * p.size * 0.5).toBeLessThanOrEqual(1080);
+      expect(p.y).toBeLessThanOrEqual(1350);
+    }
+  });
+
+  test('a roast slide keeps its provenance on the image', () => {
+    const { slideButtons, slidePainted } = runPage(RICH);
+    slideButtons.get('copy:extra-0')!.click();
+    const all = slidePainted
+      .at(-1)!
+      .map((p) => p.text)
+      .join(' ');
+    expect(all).toContain('improvised by Claude');
+  });
+});
+
+describe('receipt and roast', () => {
+  test('the receipt itemizes counted figures, totals the bill, and stays on the paper', () => {
+    const { canvas, seg, painted } = runPage(DATA);
+    const n = painted.length;
+    seg[2]!.click();
+    expect(canvas.width).toBe(1920);
+    const drawn = painted.slice(n);
+    const all = drawn.map((p) => p.text).join(' | ');
+    expect(all).toContain('SESSIONS WRAPPED');
+    expect(all).toContain('YEAR-END RECEIPT');
+    expect(all).toContain('SERVED BY: The Nocturnal Refactorer');
+    expect(all).toContain('2,903');
+    expect(all).toContain('TOTAL');
+    expect(all).toContain('$4,313');
+    expect(all).toContain(`curl -fsSL https://${SITE_HOST}/wrapped | sh`);
+    for (const p of drawn) {
+      expect(p.x).toBeGreaterThanOrEqual(36);
+      expect(p.x + p.text.length * p.size * 0.5).toBeLessThanOrEqual(960 - 36);
+      expect(p.y).toBeLessThanOrEqual(canvas.height / 2);
+    }
+  });
+
+  test('a roast line leads the card, stamped, and can be swapped back for the tagline', () => {
+    const roasted: WrappedData = {
+      ...DATA,
+      extras: [{ headline: 'You paid $4k to hear you were right.', footnote: 'improvised by Claude from your stats' }],
+    };
+    const { painted, byId } = runPage(roasted);
+    const first = painted.map((p) => p.text).join(' ');
+    expect(first).toContain('You paid $4k to hear you were right.');
+    expect(first).toContain('— improvised by Claude from your stats');
+    expect(first).not.toContain('best thinking');
+    const n = painted.length;
+    byId.get('wc-roast')!.click();
+    const after = painted
+      .slice(n)
+      .map((p) => p.text)
+      .join(' ');
+    expect(after).toContain('best thinking');
+    expect(after).not.toContain('improvised by');
+  });
+
+  test('hand-written extras are not treated as a roast', () => {
+    const { painted } = runPage({ ...DATA, extras: [{ headline: 'A note from me.' }] });
+    expect(painted.map((p) => p.text).join(' ')).not.toContain('A note from me.');
   });
 });

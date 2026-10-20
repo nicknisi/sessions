@@ -1,0 +1,110 @@
+#!/bin/sh
+# sessions wrapped — your year with AI coding agents, no install needed.
+#
+#   curl -fsSL https://sessions.engineering/wrapped | sh
+#   curl -fsSL https://sessions.engineering/wrapped | sh -s -- --year 2025
+#
+# What this script does, in order:
+#   1. Picks the prebuilt binary for your OS and CPU (macOS or Linux, arm64 or x86_64).
+#   2. Downloads it from the project's GitHub release and checks it against that
+#      release's checksums.txt. It refuses to run anything that does not match.
+#   3. Keeps it in ~/.cache/sessions/bin/<version>, so a second run skips the download.
+#   4. Runs `sessions wrapped`, which reads the transcripts your agents already left on
+#      disk, builds a local search index in ~/.cache/sessions, and opens the result in
+#      your browser. Nothing is uploaded. Unlike an installed `sessions`, this one-off
+#      run does not copy your transcripts into the archive (SESSIONS_ARCHIVE=0).
+#   5. Says how much it cached and how to delete it.
+#
+# Pin a version with SESSIONS_VERSION=v1.32.0. Source: https://github.com/nicknisi/sessions
+
+set -eu
+
+REPO=nicknisi/sessions
+
+say() { printf 'sessions: %s\n' "$*" >&2; }
+die() {
+  say "$*"
+  exit 1
+}
+
+sha256() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  else
+    die "need sha256sum or shasum to verify the download"
+  fi
+}
+
+# Everything runs from main, called on the last line: `curl | sh` feeds this script
+# through stdin, and sh must have read all of it before anything it starts can touch stdin.
+main() {
+  case "$(uname -s)" in
+    Darwin) os=darwin ;;
+    Linux) os=linux ;;
+    *) die "no prebuilt binary for $(uname -s) yet. Build from source: https://github.com/$REPO#from-source" ;;
+  esac
+  case "$(uname -m)" in
+    arm64 | aarch64) arch=arm64 ;;
+    x86_64 | amd64) arch=x86_64 ;;
+    *) die "no prebuilt binary for $(uname -m) yet. Build from source: https://github.com/$REPO#from-source" ;;
+  esac
+  # An Apple-silicon Mac running this shell under Rosetta reports x86_64; prefer native.
+  if [ "$os" = darwin ] && [ "$arch" = x86_64 ] && [ "$(sysctl -n sysctl.proc_translated 2>/dev/null || echo 0)" = 1 ]; then
+    arch=arm64
+  fi
+
+  tag=${SESSIONS_VERSION:-}
+  if [ -z "$tag" ]; then
+    # /releases/latest redirects to /releases/tag/<tag>; no API call, so no rate limit.
+    url=$(curl -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/$REPO/releases/latest") ||
+      die "could not reach GitHub to find the latest release"
+    tag=${url##*/}
+  fi
+  case "$tag" in v*) ;; *) tag="v$tag" ;; esac
+  # The tag becomes part of a path below, so only v, digits and dots get through.
+  case "$tag" in v | *[!v0-9.]*) die "not a release version: $tag" ;; esac
+
+  asset="sessions-$os-$arch.tar.gz"
+  bindir="${SESSIONS_CACHE_DIR:-$HOME/.cache/sessions}/bin"
+  bin="$bindir/$tag/sessions"
+
+  if [ ! -x "$bin" ]; then
+    mkdir -p "$bindir"
+    tmp=$(mktemp -d "$bindir/.download.XXXXXX")
+    trap 'rm -rf "$tmp"' EXIT
+    trap 'exit 130' INT TERM
+    base="https://github.com/$REPO/releases/download/$tag"
+    # Checksums first: a few bytes, and no point fetching 26 MB we would refuse to run.
+    curl -fsL -o "$tmp/checksums.txt" "$base/checksums.txt" ||
+      die "release $tag has no checksums.txt, so a download cannot be verified. Try SESSIONS_VERSION with a newer release."
+    want=$(awk -v f="$asset" '$2 == f || $2 == "*" f { print $1 }' "$tmp/checksums.txt")
+    [ -n "$want" ] || die "checksums.txt in $tag has no entry for $asset"
+    say "downloading sessions $tag for $os-$arch"
+    curl -fSL --progress-bar -o "$tmp/$asset" "$base/$asset" || die "download failed: $base/$asset"
+    got=$(sha256 "$tmp/$asset")
+    [ "$want" = "$got" ] || die "checksum mismatch for $asset (expected $want, got $got); not running it"
+    tar -xzf "$tmp/$asset" -C "$tmp" sessions
+    chmod +x "$tmp/sessions"
+    mkdir -p "$bindir/$tag"
+    mv "$tmp/sessions" "$bin"
+    rm -rf "$tmp"
+    trap - EXIT INT TERM
+    # Each binary is ~65 MB; keep only the version just installed. Only folders this
+    # script made (a version name holding a sessions binary) are ever removed.
+    for old in "$bindir"/v[0-9]*; do
+      [ "$old" != "$bindir/$tag" ] && [ -f "$old/sessions" ] && rm -rf "$old"
+    done
+  fi
+
+  status=0
+  SESSIONS_ARCHIVE=0 "$bin" wrapped "$@" || status=$?
+  cache="${SESSIONS_CACHE_DIR:-$HOME/.cache/sessions}"
+  size=$(du -sh "$cache" 2>/dev/null | awk '{print $1}')
+  say "cached ${size:-some files} in $cache so a re-run is fast. Remove it any time: rm -rf '$cache'"
+  say "search and agent memory over these sessions: brew install nicknisi/formulae/sessions"
+  return "$status"
+}
+
+main "$@"

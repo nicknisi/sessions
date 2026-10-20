@@ -16,6 +16,7 @@
 // event cache relies on that split, since it parses files one at a time.
 import { z } from 'zod';
 
+import { genuineUserTurnFromLine } from '../../parser.ts';
 import type { UsageEvent } from './types.ts';
 import { readJsonlLines } from './util.ts';
 import { walkJsonl, type WalkOptions } from './walk.ts';
@@ -79,10 +80,25 @@ export interface AgentName {
 
 /** What one transcript file yields on its own. `agentTypes` is what this file
  *  revealed about dispatch naming, which may belong to events in other files. */
+/** A human-typed prompt, for wrapped's loop stat. Collected here because the
+ *  report pass already reads every line, and a second walk just for these cost
+ *  wrapped a full re-read of the Claude tree on every run. */
+export interface ClaudeUserTurn {
+  sessionId: string;
+  /** ms since epoch. */
+  at: number;
+  /** Clamped to TURN_TEXT_CLAMP — only a winning loop's trigger is ever shown. */
+  text: string;
+}
+
+/** Enough for a one-line "last words" quote; bounds what the cache stores. */
+export const TURN_TEXT_CLAMP = 200;
+
 export interface ParsedFile {
   /** Events whose `agent.type` is still a placeholder — resolveAgentTypes fills it. */
   events: UsageEvent[];
   agentTypes: Record<string, AgentName>;
+  userTurns: ClaudeUserTurn[];
 }
 
 /** Fold one file's names into the running map. A strong name always wins; a weak
@@ -118,6 +134,7 @@ async function readAgentMeta(jsonlPath: string): Promise<string | undefined> {
 export async function parseClaudeCodeFile(path: string): Promise<ParsedFile> {
   const events: UsageEvent[] = [];
   const agentTypes: Record<string, AgentName> = {};
+  const userTurns: ClaudeUserTurn[] = [];
 
   const inSubagentDir = SUBAGENT_PATH.test(path);
   const fileAgentId = inSubagentDir ? AGENT_FILENAME.exec(path)?.[1] : undefined;
@@ -134,6 +151,10 @@ export async function parseClaudeCodeFile(path: string): Promise<ParsedFile> {
       const r = userLine.data.toolUseResult;
       if (r?.agentId && r.agentType && !agentTypes[r.agentId])
         agentTypes[r.agentId] = { type: r.agentType, strong: false };
+      const turn = genuineUserTurnFromLine(line);
+      const at = turn ? Date.parse(turn.timestamp) : NaN;
+      if (turn && !Number.isNaN(at))
+        userTurns.push({ sessionId: turn.sessionId, at, text: turn.text.slice(0, TURN_TEXT_CLAMP) });
       continue;
     }
     const assistantLine = claudeAssistantLineSchema.safeParse(line);
@@ -174,7 +195,7 @@ export async function parseClaudeCodeFile(path: string): Promise<ParsedFile> {
     events.push(event);
   }
 
-  return { events, agentTypes };
+  return { events, agentTypes, userTurns };
 }
 
 /** Name every dispatch, now that every file's contribution to the map is known.

@@ -70,3 +70,24 @@ describe('homebrew formula update', () => {
     expect(workflow).toContain('sessions-linux-arm64.tar.gz');
   });
 });
+
+// Guards the curl one-liner (site/public/wrapped). It builds the tarball name from
+// uname, so its os/arch words must produce exactly the names the matrix publishes,
+// and it refuses to run without the release's checksums.txt.
+describe('curl one-liner', () => {
+  const script = readFileSync(join(import.meta.dir, '..', 'site', 'public', 'wrapped'), 'utf8');
+
+  test('every os/arch the script can pick is a published artifact', () => {
+    expect(script).toContain('asset="sessions-$os-$arch.tar.gz"');
+    const oses = [...script.matchAll(/\bos=(\w+)/g)].map((m) => m[1]);
+    const arches = [...script.matchAll(/\barch=(\w+)/g)].map((m) => m[1]);
+    const names = new Set(oses.flatMap((os) => arches.map((arch) => `sessions-${os}-${arch}`)));
+    expect([...names].sort()).toEqual(EXPECTED.map(([, a]) => a).sort());
+  });
+
+  test('the release attaches checksums.txt for every tarball', () => {
+    expect(workflow).toContain('sha256sum *.tar.gz > checksums.txt');
+    expect(workflow).toMatch(/files: \|\n\s+\*\.tar\.gz\n\s+checksums\.txt/);
+    expect(script).toContain('$base/checksums.txt');
+  });
+});

@@ -8,7 +8,7 @@
 import type { WrappedData, FunCard, WrappedExtra } from './types.ts';
 import { prettyModel } from './model-name.ts';
 import { equivalenceChoices, pickEquivalence } from '../equivalence.ts';
-import { SITE_HOST, SITE_URL } from '../site.ts';
+import { SITE_HOST, SITE_URL, WRAPPED_CMD } from '../site.ts';
 
 // Re-exported so existing importers (and tests) keep resolving prettyModel here.
 export { prettyModel } from './model-name.ts';
@@ -117,10 +117,26 @@ export function heroClass(text: string, min: 'num' | 'word' = 'num'): string {
   return 'big punchline';
 }
 
+/** What a slide's own share image shows — the slide's words, poster-sized.
+ *  Painted in the browser, like the share card. */
+interface SlideShare {
+  kicker: string;
+  title?: string;
+  hero: string;
+  lede?: string;
+  /** The slide's joke line under the lede, when it has one. */
+  quip?: string;
+  /** Supporting [figure, label] pairs. */
+  rows: [string, string][];
+  /** Provenance that must travel with the image (a roast's "improvised by"). */
+  note?: string;
+}
+
 interface Card {
   id: string;
   cls?: string;
   body: string;
+  share?: SlideShare;
 }
 
 function kicker(text: string): string {
@@ -214,6 +230,14 @@ function funCard(card: FunCard): Card {
     .join('');
   return {
     id: `fun-${card.id}`,
+    share: {
+      kicker: card.kicker,
+      title: card.title,
+      hero: lead!.big,
+      lede: lead!.label,
+      quip: lead!.sub,
+      rows: rest.map((s): [string, string] => [s.big, s.label]),
+    },
     body: `${echo(lead!.big.length <= 8 ? lead!.big : '!?')}<div class="panel">${kicker(card.kicker)}<h2>${esc(card.title)}</h2><div class="${heroClass(lead!.big)}"><span class="n">${esc(lead!.big)}</span></div><p class="lede">${esc(lead!.label)}${lead!.sub ? ` <em>· ${esc(lead!.sub)}</em>` : ''}</p>${restRows}${card.footnote ? foot(card.footnote) : ''}</div>`,
   };
 }
@@ -221,6 +245,7 @@ function funCard(card: FunCard): Card {
 function extraCard(x: WrappedExtra, i: number): Card {
   return {
     id: `extra-${i}`,
+    share: { kicker: x.title ?? 'guest appearance', hero: x.headline, lede: x.subline, rows: [], note: x.footnote },
     body: `<div class="panel">${kicker(x.title ?? 'guest appearance')}<div class="${heroClass(x.headline, 'word')}"><span class="n">${esc(x.headline)}</span></div>${x.subline ? `<p class="lede">${esc(x.subline)}</p>` : ''}${x.footnote ? foot(x.footnote) : ''}</div>`,
   };
 }
@@ -298,6 +323,18 @@ interface ShareCard {
   /** Where the deck's accent rotation put this slide. Only the picker's opening
    *  position — the rotation is arbitrary, so it must not be the final word. */
   accentStart: number;
+  /** A --roast line that can stand in for the lede, with its provenance stamp,
+   *  which is painted under it whenever it is used. */
+  roast: { line: string; stamp: string } | null;
+  /** The receipt layout: counted figures only, itemized. */
+  receipt: {
+    period: string;
+    cashier: string | null;
+    /** [quantity, item]. */
+    items: [string, string][];
+    total: [string, string];
+    totalNote: string;
+  };
 }
 
 function shareCardData(d: WrappedData, accentStart: number): ShareCard {
@@ -337,10 +374,33 @@ function shareCardData(d: WrappedData, accentStart: number): ShareCard {
   if (d.projects[0]) summary.push(`Most of it went to ${d.projects[0].name}.`);
   // Last line of the copied text, so it carries the domain — a pasted summary
   // is otherwise unattributable.
-  summary.push(`Generated locally with sessions wrapped · ${SITE_HOST}`);
+  summary.push(`Generated locally with sessions wrapped. Make yours: ${WRAPPED_CMD}`);
+
+  // Itemized the way a till would: the counted figures, the funniest counts
+  // from the deck, and the list-price bill as the total.
+  const items: [string, string][] = [
+    [fmtInt(t.sessions), plural(t.sessions, 'session')],
+    [fmtInt(t.activeDays), `active ${plural(t.activeDays, 'day')}`],
+  ];
+  if (t.tokens > 0) items.push([fmtTokens(t.tokens), 'tokens']);
+  if (t.longestStreak) items.push([fmtInt(t.longestStreak.days), 'day streak, longest']);
+  if (d.projects[0]) items.push([fmtInt(d.projects[0].sessions), `sessions on ${d.projects[0].name}`]);
+  for (const card of [...d.fun].sort((a, b) => b.score - a.score)) {
+    for (const st of card.stats) if (items.length < 12) items.push([st.big, st.label]);
+  }
+  if (d.wordOfYear) items.push([`${fmtInt(d.wordOfYear.count)}×`, `“${d.wordOfYear.word}”, word of the year`]);
+  const roast = d.extras.find((x) => x.footnote?.startsWith('improvised by'));
 
   return {
     brand: 'SESSIONS WRAPPED',
+    roast: roast ? { line: roast.headline, stamp: `— ${roast.footnote!}` } : null,
+    receipt: {
+      period: `${shortDate(d.dataBegins && d.dataBegins > d.period.from ? d.dataBegins : d.period.from)} – ${formatDate(d.period.to)}`,
+      cashier: hasPersona ? d.persona!.name : null,
+      items,
+      total: t.costUSD > 0 ? ['TOTAL', fmtUSD(t.costUSD)] : ['TOTAL', `${fmtInt(t.messages)} replies`],
+      totalNote: t.costUSD > 0 ? 'at API list prices · estimated' : 'no metered spend this year',
+    },
     year: String(d.year),
     kicker,
     hero,
@@ -354,7 +414,7 @@ function shareCardData(d: WrappedData, accentStart: number): ShareCard {
     // than a second line. This image is the thing that actually travels.
     footer: [
       `${fmtInt(t.activeDays)} active days · ${fmtInt(d.projects.length)} ${plural(d.projects.length, 'project')}`,
-      SITE_HOST,
+      WRAPPED_CMD,
     ],
     summary,
     eqSlot,
@@ -382,7 +442,7 @@ function shareCardData(d: WrappedData, accentStart: number): ShareCard {
   };
 }
 
-function shareCardSlide(card: ShareCard): Card {
+function shareCardSlide(card: ShareCard, fullCut: number | null): Card {
   return {
     id: 'share',
     cls: 'sharecard',
@@ -393,9 +453,11 @@ function shareCardSlide(card: ShareCard): Card {
 <button type="button" id="wc-img">Copy image</button>
 <button type="button" id="wc-txt">Copy caption</button>
 ${card.equivalents.length > 1 ? `<button type="button" id="wc-eq">↻ Another comparison</button>` : ''}
+${card.roast ? `<button type="button" id="wc-roast">↻ Tagline instead of roast</button>` : ''}
 <span class="seg" role="group" aria-label="Image shape">
 <button type="button" class="on" data-aspect="wide">1200 × 630</button>
 <button type="button" data-aspect="story">1080 × 1920</button>
+<button type="button" data-aspect="receipt">receipt</button>
 </span>
 </div>
 <div class="actions">
@@ -407,11 +469,42 @@ ${card.equivalents.length > 1 ? `<button type="button" id="wc-eq">↻ Another co
       .join('')}</span>
 <span id="wc-flash" role="status" aria-live="polite"></span>
 </div>
+${fullCut ? `<div class="actions"><button type="button" id="fullcut">▸ The full cut — all ${fullCut} slides</button></div>` : ''}
 <script type="application/json" id="wcard-data">${jsonForScript(card)}</script></div>`,
   };
 }
 
-export function renderWrappedHtml(d: WrappedData): string {
+/** Fun-card ids worth a slot in the short reel, best first — the deck's
+ *  shareable moments, so the short cut leads with them. */
+const REEL_FILL = ['loop', 'bigday', 'showedup', 'magnum', 'rhythm', 'projects'];
+const REEL_MIN = 6;
+
+/** Which slides the short reel keeps: the hook, the headline number, the two
+ *  most notable fun cards, the word, any extras, the payoff, and the share.
+ *  Topped up from REEL_FILL on a thin year so it never collapses to three. */
+export function reelIds(d: WrappedData, cardIds: string[]): Set<string> {
+  const have = new Set(cardIds);
+  const keep = new Set<string>();
+  const add = (id: string) => {
+    if (have.has(id)) keep.add(id);
+  };
+  add('cover');
+  add(d.totals.tokens > 0 ? 'tokens' : 'showedup');
+  for (const c of [...d.fun].sort((a, b) => b.score - a.score).slice(0, 2)) add(`fun-${c.id}`);
+  add('word');
+  for (let i = 0; i < Math.min(2, d.extras.length); i++) add(`extra-${i}`);
+  add('persona');
+  add('share');
+  for (const id of REEL_FILL) if (keep.size < REEL_MIN + 1) add(id);
+  return keep;
+}
+
+export interface RenderOptions {
+  /** Open on the whole deck instead of the short reel. */
+  full?: boolean;
+}
+
+export function renderWrappedHtml(d: WrappedData, opts: RenderOptions = {}): string {
   const cards: Card[] = [];
   const empty = d.totals.sessions === 0;
 
@@ -427,7 +520,7 @@ export function renderWrappedHtml(d: WrappedData): string {
 <p class="brand">sessions</p>
 <h1><span>your</span> <span class="yr">${d.year}</span> <span>wrapped</span></h1>
 <p class="lede">${esc(formatDate(d.period.from))} → ${esc(formatDate(d.period.to))}${d.period.to.slice(5) !== '12-31' ? ' · so far' : ''}</p>
-${empty ? `<p class="lede">A quiet year — no sessions found. The mystery of you deepens.</p>` : `<p class="hint">scroll<span class="chev">▾</span></p>`}
+${empty ? `<p class="lede">A quiet year — no sessions found. The mystery of you deepens.</p>` : `<p class="hint">tap, scroll, or press →<span class="chev">▾</span></p>`}
 <p class="foot">generated locally from your own transcripts · nothing leaves your machine${horizon ? ` · ${esc(horizon)}` : ''}</p>
 </div>`,
   });
@@ -441,6 +534,13 @@ ${empty ? `<p class="lede">A quiet year — no sessions found. The mystery of yo
       const equiv = tokenEquivalence(d.totals.tokens, `${d.year}|tokencard`);
       cards.push({
         id: 'tokens',
+        share: {
+          kicker: 'the year in tokens',
+          title: 'You and your agents had a lot to say.',
+          hero: fmtTokens(d.totals.tokens),
+          lede: `tokens exchanged${equiv ? ` — ${equiv}` : ''}`,
+          rows: [],
+        },
         body: `${echo(fmtTokens(d.totals.tokens))}<div class="panel center">${kicker('the year in tokens')}<h2>You and your agents had a lot to say.</h2>${bigNum(d.totals.tokens, 'tok')}<p class="lede">tokens exchanged${equiv ? ` — ${esc(equiv)}` : ''}</p>${foot('input + output + cache writes · same math as sessions report')}</div>`,
       });
     }
@@ -609,6 +709,14 @@ ${heatmap(d.rhythm.heat, d.rhythm.peakHour, d.rhythm.peakWeekday)}
       const ratio = lp.medianMs >= 1000 ? L.durationMs / lp.medianMs : null;
       cards.push({
         id: 'loop',
+        share: {
+          kicker: 'the loop',
+          title: 'You hit enter. And walked away.',
+          hero: dur,
+          lede: `of unsupervised machine — ${fmtInt(L.steps)} model ${plural(L.steps, 'call')} back to back, zero human input`,
+          quip: L.prompt ? `last known human words: “${L.prompt}”` : undefined,
+          rows: [],
+        },
         body: `${echo(dur)}<div class="panel center">${kicker('the loop')}<h2>You hit enter. And walked away.</h2><div class="${heroClass(dur, 'word')}"><span class="n">${esc(dur)}</span></div><p class="lede">of unsupervised machine — <b>${fmtInt(L.steps)}</b> model ${plural(L.steps, 'call')} back to back${
           L.tokens > 0 ? `, <b>${fmtTokens(L.tokens)}</b> tokens` : ''
         }, zero human input · from <b>${esc(L.startClock)}</b>, ${esc(formatDate(L.date))}, on <b>${esc(L.project)}</b></p>${
@@ -627,6 +735,13 @@ ${heatmap(d.rhythm.heat, d.rhythm.peakHour, d.rhythm.peakWeekday)}
       const w = d.wordOfYear;
       cards.push({
         id: 'word',
+        share: {
+          kicker: 'your word of the year',
+          hero: w.word,
+          lede: `in ${fmtInt(w.count)} of your ${plural(w.count, 'message')} across ${fmtInt(w.sessions)} ${plural(w.sessions, 'session')}`,
+          quip: w.runnersUp.length > 0 ? `also in rotation: ${w.runnersUp.join(', ')}` : undefined,
+          rows: [],
+        },
         body: `${echo(w.word)}<div class="panel center">${kicker('your word of the year')}<div class="big bigword"><span class="n">${esc(w.word)}</span></div><p class="lede">in <b>${fmtInt(w.count)}</b> of your ${plural(w.count, 'message')} across <b>${fmtInt(w.sessions)}</b> ${plural(w.sessions, 'session')}</p>${
           w.runnersUp.length > 0 ? `<p class="lede"><em>also in rotation: ${esc(w.runnersUp.join(', '))}</em></p>` : ''
         }${foot('mined from your own prompts · common words excluded')}</div>`,
@@ -663,7 +778,12 @@ ${foot('a description of how you worked this year, not who you are · the next s
   // the accent its position in the rotation would have given it, so the image
   // matches the slide the reader is looking at while they save it.
   const shareCard = empty ? null : shareCardData(d, cards.length % ACCENTS.length);
-  if (shareCard) cards.push(shareCardSlide(shareCard));
+  // The credits slide is pushed below, so the full deck is one longer than now.
+  const fullLength = cards.length + (shareCard ? 1 : 0) + 1;
+  const reel = reelIds(d, [...cards.map((c) => c.id), 'share']);
+  // A reel that would cut fewer than three slides isn't worth a second mode.
+  const useReel = fullLength - reel.size >= 3;
+  if (shareCard) cards.push(shareCardSlide(shareCard, useReel ? fullLength : null));
 
   const creditRows: [string, string][] = [];
   if (d.models[0]) creditRows.push(['starring', prettyModel(d.models[0].label)]);
@@ -711,27 +831,44 @@ ${foot('a description of how you worked this year, not who you are · the next s
       )}</dl><p class="foot">sessions wrapped ${d.year} · generated ${esc(d.generatedAt.slice(0, 10))} · locally, with no telemetry<br /><a href="${SITE_URL}">${SITE_HOST}</a></p></div>`,
   });
 
+  const inReel = (id: string): string => (useReel && reel.has(id) ? ' data-reel' : '');
   const sections = cards
     .map((c, i) => {
       const accent = ACCENTS[i % ACCENTS.length]!;
-      return `<section class="card ${c.cls ?? ''}" id="${c.id}" style="--a:${accent.c}">${c.body}</section>`;
+      const share = c.share
+        ? `<div class="slideshare"><button type="button" data-copy="${c.id}">copy image</button><button type="button" data-save="${c.id}">save image</button></div>`
+        : '';
+      return `<section class="card ${c.cls ?? ''}" id="${c.id}"${inReel(c.id)} style="--a:${accent.c}">${c.body}${share}</section>`;
     })
     .join('\n');
 
-  const dots = cards
-    .map((c) => `<button type="button" data-for="${c.id}" aria-label="${esc(c.id)}"></button>`)
+  const slideShares = {
+    meta: {
+      bg: 'oklch(13% 0.01 280)',
+      ink: 'oklch(97% 0 0)',
+      ink2: 'oklch(72% 0 0)',
+      year: String(d.year),
+      cta: WRAPPED_CMD,
+      file: `sessions-wrapped-${d.year}`,
+    },
+    slides: Object.fromEntries(cards.filter((c) => c.share).map((c) => [c.id, c.share!])),
+  };
+
+  const bars = cards
+    .map((c) => `<button type="button" data-for="${c.id}"${inReel(c.id)} aria-label="${esc(c.id)}"></button>`)
     .join('');
 
   return `<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>sessions wrapped ${d.year}</title>
 <style>${CSS}</style></head>
-<body>
+<body${useReel && !opts.full ? ' class="reel"' : ''}>
 <main>
 ${sections}
 </main>
-<nav class="dots" aria-label="slides">${dots}</nav>
+<nav class="bars" aria-label="slides">${bars}</nav>
 <div class="tip" id="tip"></div>
+<script type="application/json" id="slide-shares">${jsonForScript(slideShares)}</script>
 <script>${JS}</script>
 </body></html>`;
 }
@@ -827,9 +964,18 @@ h2{font-size:clamp(1.5rem,4vw,2.2rem);font-weight:800;letter-spacing:-.01em;line
 .actions .swatches .sw:hover{transform:scale(1.16);border-color:transparent;}
 .actions .swatches .sw.on{border-color:var(--ink);transform:scale(1.16);}
 #wc-flash{font-family:var(--mono);font-size:11px;color:var(--muted);}
-.dots{position:fixed;right:14px;top:50%;transform:translateY(-50%);display:flex;flex-direction:column;gap:8px;z-index:5;}
-.dots button{width:8px;height:8px;border-radius:50%;border:0;padding:0;background:var(--track);cursor:pointer;transition:background .2s,transform .2s;}
-.dots button.on{background:var(--ink);transform:scale(1.3);}
+/* Per-slide share: quiet, bottom-centre, out of the panel's reveal choreography. */
+.slideshare{position:absolute;left:50%;bottom:20px;transform:translateX(-50%);z-index:2;display:flex;gap:8px;}
+.slideshare button{font-family:var(--mono);font-size:10.5px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;padding:7px 12px;border-radius:8px;cursor:pointer;background:color-mix(in oklch,var(--bg) 70%,transparent);color:var(--muted);border:1px solid var(--track);}
+.slideshare button:hover{color:var(--a);border-color:var(--a);}
+.slideshare button:focus-visible{outline:2px solid var(--a);outline-offset:2px;}
+/* Stories-style progress: one segment per slide, filled up to the current one. */
+.bars{position:fixed;top:0;left:0;right:0;display:flex;gap:4px;padding:6px 14px 0;z-index:5;background:linear-gradient(var(--bg),transparent);}
+.bars button{flex:1;height:14px;border:0;padding:0;background:none;cursor:pointer;}
+.bars button::before{content:'';display:block;height:3px;border-radius:2px;background:oklch(100% 0 0 / .18);transition:background .2s;}
+.bars button.past::before,.bars button.on::before{background:var(--ink);}
+.bars button:focus-visible{outline:2px solid var(--ink);outline-offset:2px;}
+body.reel .card:not([data-reel]),body.reel .bars button:not([data-reel]){display:none;}
 .tip{position:fixed;pointer-events:none;background:var(--ink);color:var(--bg);font-family:var(--mono);font-size:11px;padding:4px 7px;border-radius:4px;opacity:0;transform:translate(-50%,-130%);white-space:nowrap;z-index:10;}
 .card .panel>*,.card .echo{opacity:0;transform:translateY(18px);transition:opacity .7s ease-out,transform .7s ease-out;}
 .card .echo{transform:rotate(-6deg) translateY(24px);transition-duration:1.1s;}
@@ -843,11 +989,11 @@ h2{font-size:clamp(1.5rem,4vw,2.2rem);font-weight:800;letter-spacing:-.01em;line
 .card.live .panel>*:nth-child(n+7){transition-delay:.56s}
 .card.live .rank li,.card.live .substat,.card.live .axis,.card.live .creditlist div{opacity:0;transform:translateY(14px);animation:rise .6s ease-out forwards;animation-delay:calc(.3s + var(--i,0)*.18s);}
 @keyframes rise{to{opacity:1;transform:translateY(0)}}
-@media (max-width:640px){.dots{display:none;}.rank li{grid-template-columns:1.4em 1fr auto;}.rank .rtrack{display:none;}}
+@media (max-width:640px){.rank li{grid-template-columns:1.4em 1fr auto;}.rank .rtrack{display:none;}}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;}.card .panel>*,.card .echo,.card.live .rank li,.card.live .substat,.card.live .axis,.card.live .creditlist div{opacity:1!important;transform:none!important;}}
 `;
 
-// Count-up + card reveal + tooltip + dots. textContent only — never innerHTML.
+// Count-up + card reveal + tooltip + stories nav. textContent only — never innerHTML.
 const JS = `(function(){
 var reduce=window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 function fmt(n,kind){if(kind==='usd')return '$'+Math.round(n).toLocaleString('en-US');if(kind==='tok'){if(n>=1e9)return (n/1e9).toFixed(2)+'B';if(n>=1e6)return (n/1e6).toFixed(1)+'M';if(n>=1e3)return (n/1e3).toFixed(1)+'K';return String(Math.round(n));}return Math.round(n).toLocaleString('en-US');}
@@ -855,25 +1001,31 @@ function countUp(el){var n=Number(el.getAttribute('data-n'));var kind=el.getAttr
 var seen=new WeakSet();
 var obs=new IntersectionObserver(function(entries){entries.forEach(function(en){if(!en.isIntersecting)return;var card=en.target;card.classList.add('live');dotFor(card.id);if(!seen.has(card)){seen.add(card);card.querySelectorAll('[data-n]').forEach(countUp);}});},{threshold:0.45});
 document.querySelectorAll('.card').forEach(function(c){obs.observe(c);});
-var dots=document.querySelectorAll('.dots button');
-function dotFor(id){dots.forEach(function(b){b.classList.toggle('on',b.getAttribute('data-for')===id);});}
-dots.forEach(function(b){b.addEventListener('click',function(){var el=document.getElementById(b.getAttribute('data-for'));if(el)el.scrollIntoView({behavior:reduce?'auto':'smooth'});});});
+// Stories navigation over whichever slides are showing (the reel or the full cut).
+var bars=document.querySelectorAll('.bars button'),cur='cover';
+function deck(){return [].slice.call(document.querySelectorAll(document.body.classList.contains('reel')?'.card[data-reel]':'.card'));}
+function show(el){if(el)el.scrollIntoView({behavior:reduce?'auto':'smooth'});}
+function dotFor(id){cur=id;var ids=deck().map(function(c){return c.id;}),at=ids.indexOf(id);
+bars.forEach(function(b){var i=ids.indexOf(b.getAttribute('data-for'));b.classList.toggle('on',i===at);b.classList.toggle('past',i>=0&&i<at);});}
+function go(step){var d=deck(),i=d.map(function(c){return c.id;}).indexOf(cur);show(d[Math.max(0,Math.min(d.length-1,i+step))]);}
+bars.forEach(function(b){b.addEventListener('click',function(){show(document.getElementById(b.getAttribute('data-for')));});});
+document.addEventListener('keydown',function(e){if(e.metaKey||e.ctrlKey||e.altKey)return;
+var t=e.target&&e.target.closest?e.target.closest('button,a,input'):null;
+var k=e.key,next=k==='ArrowRight'||k==='ArrowDown'||k==='PageDown'||(k===' '&&!t),prev=k==='ArrowLeft'||k==='ArrowUp'||k==='PageUp';
+if(next||prev){e.preventDefault();go(next?1:-1);}});
+// Tap the right of a slide for the next one, the left edge for the previous —
+// except on anything that does something itself.
+document.querySelector('main').addEventListener('click',function(e){
+if(e.target.closest('button,a,canvas,.scrollx,.rank,.actions'))return;
+if(window.getSelection&&String(window.getSelection())!=='')return;
+go(e.clientX<window.innerWidth*0.3?-1:1);});
+var fc=document.getElementById('fullcut');
+if(fc)fc.addEventListener('click',function(){var hidden=document.querySelector('.card:not([data-reel])');
+document.body.classList.remove('reel');var row=fc.parentNode;row.parentNode.removeChild(row);dotFor(cur);show(hidden);});
 var tip=document.getElementById('tip');
 document.addEventListener('mousemove',function(e){var el=e.target&&e.target.closest?e.target.closest('[data-tip]'):null;if(!el){tip.style.opacity='0';return;}tip.textContent=el.getAttribute('data-tip');tip.style.opacity='1';tip.style.left=e.clientX+'px';tip.style.top=e.clientY+'px';});
 
-// --- share card ----------------------------------------------------------
-// A block list painted twice: once dry to measure the stack, once for real to
-// paint it centred. Nothing is pinned to a fixed y, because the comparison line
-// is swappable and the whole thing redraws at two aspect ratios.
-var WCD=null,wcEl=document.getElementById('wcard');
-try{var wj=document.getElementById('wcard-data');if(wj)WCD=JSON.parse(wj.textContent);}catch(e){}
-if(WCD&&wcEl){(function(){
-var eqIdx=WCD.eqStart||0,accIdx=WCD.accentStart||0,aspect='wide';
-function PAL(){return WCD.palettes[accIdx];}
-// cols: the stat grid. A 1200-wide card has room for four across, which buys
-// back the vertical space the strip needs; the narrower story format stacks 2x2
-// and has height to spare.
-var SPEC={wide:{w:1200,h:630,pad:64,g:1,cols:4,scale:1,ml:1,chrome:1},story:{w:1080,h:1920,pad:80,g:3,cols:2,scale:2.1,ml:2,chrome:1.7}};
+// Canvas text helpers, shared by the share card and the per-slide images.
 function sans(wt,sz){return wt+' '+sz+'px -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-serif';}
 function mono(wt,sz){return wt+' '+sz+'px ui-monospace,SFMono-Regular,Menlo,monospace';}
 function wrap(c,s,maxW){var w=s.split(' '),out=[],cur='';
@@ -886,6 +1038,20 @@ if(cur)out.push(cur);return out;}
 // a long persona name at banner size on a canvas with three times the room.
 function fit(c,s,maxW,size,wt,min,lines){c.font=sans(wt,size);
 while(size>min&&wrap(c,s,maxW).length>lines){size-=2;c.font=sans(wt,size);}return size;}
+
+// --- share card ----------------------------------------------------------
+// A block list painted twice: once dry to measure the stack, once for real to
+// paint it centred. Nothing is pinned to a fixed y, because the comparison line
+// is swappable and the whole thing redraws at two aspect ratios.
+var WCD=null,wcEl=document.getElementById('wcard');
+try{var wj=document.getElementById('wcard-data');if(wj)WCD=JSON.parse(wj.textContent);}catch(e){}
+if(WCD&&wcEl){(function(){
+var eqIdx=WCD.eqStart||0,accIdx=WCD.accentStart||0,aspect='wide',useRoast=!!WCD.roast;
+function PAL(){return WCD.palettes[accIdx];}
+// cols: the stat grid. A 1200-wide card has room for four across, which buys
+// back the vertical space the strip needs; the narrower story format stacks 2x2
+// and has height to spare.
+var SPEC={wide:{w:1200,h:630,pad:64,g:1,cols:4,scale:1,ml:1,chrome:1},story:{w:1080,h:1920,pad:80,g:3,cols:2,scale:2.1,ml:2,chrome:1.7}};
 
 // The cursor is the TOP of the next block, never a baseline. Advancing between
 // baselines by a fixed gap was the first version's bug: the gap knew nothing
@@ -913,7 +1079,9 @@ put(wrap(c,WCD.hero,w),hs,hs*1.08,PAL().c);
 y+=16*S*G;
 
 var ds=27*S;c.font=sans(500,ds);
-put(wrap(c,WCD.lede,w),ds,ds*1.3,WCD.ink);
+put(wrap(c,useRoast?WCD.roast.line:WCD.lede,w),ds,ds*1.3,WCD.ink);
+// A model-written line never travels without saying so.
+if(useRoast){y+=8*S*G;var rs=13*S;c.font=mono(500,rs);put(wrap(c,WCD.roast.stamp,w),rs,rs*1.4,WCD.ink2);}
 
 var eq=WCD.equivalents[eqIdx];
 if(eq){y+=14*S*G;var es=19*S;c.font=sans(500,es);
@@ -978,12 +1146,62 @@ c.restore();}
 /** The year strip is chrome, not flow: pinned above the footer so the card has
  *  a defined base at any aspect, and so a long year cannot push the payoff off
  *  the bottom edge. Returns the y it occupies. */
-function stripBox(w,C,H,P){
-if(!WCD.strip.length)return {h:0,top:H-P};
+function stripBox(w,C,H,P,F){
+if(!WCD.strip.length)return {h:0,top:H-P-F};
 var cg=2.4*C,cs=Math.min(11*C,w/WCD.strip.length-cg),h=7*(cs+cg)-cg;
-return {h:h,cs:cs,cg:cg,top:H-P-26*C-h};}
+return {h:h,cs:cs,cg:cg,top:H-P-26*C-F-h};}
+
+
+// The receipt: one long till slip, monochrome on paper, itemized from the
+// counted figures with the list-price bill as the total and the year as the
+// barcode. Height follows the items, so it is laid out dry first, then painted.
+function drawReceipt(){
+var R=WCD.receipt,W=960,M=36,P=M+56,w=W-2*P,DPR=2,c=wcEl.getContext('2d');if(!c)return;
+var PAPER='oklch(96% 0.012 90)',INK='oklch(22% 0.01 280)',FADE='oklch(48% 0.01 280)';
+function ls(v){try{c.letterSpacing=v;}catch(e){}}
+var fs=25,lh=36,gap=22;c.font=mono(700,fs);
+var qw=0;for(var i=0;i<R.items.length;i++)qw=Math.max(qw,c.measureText(R.items[i][0]).width);
+var lw=w-qw-gap;c.font=mono(500,fs);
+var rows=R.items.map(function(it){return [it[0],wrap(c,it[1],lw)];});
+function slip(dry){var y=M+50;
+function mid(t,font,size,color,sp){ls(sp||'0px');c.font=font;if(!dry){c.fillStyle=color;c.fillText(t,P+(w-c.measureText(t).width)/2,y+size*0.78);}ls('0px');y+=size*1.35;}
+function rule(){y+=10;if(!dry){c.fillStyle=FADE;for(var x=P;x<P+w;x+=14)c.fillRect(x,y,7,2);}y+=24;}
+mid('SESSIONS WRAPPED',mono(800,36),36,INK,'6px');
+mid('YEAR-END RECEIPT \u00b7 '+WCD.year,mono(600,21),21,FADE,'3px');
+mid(R.period,mono(500,21),21,FADE);
+if(R.cashier){y+=6;c.font=mono(500,21);var cl=wrap(c,'SERVED BY: '+R.cashier,w);for(var k=0;k<cl.length;k++)mid(cl[k],mono(500,21),21,INK);}
+rule();
+ls('2px');c.font=mono(700,18);if(!dry){c.fillStyle=FADE;c.fillText('QTY',P,y+14);c.fillText('ITEM',P+qw+gap,y+14);}ls('0px');y+=36;
+for(var r=0;r<rows.length;r++){var q=rows[r][0],ls2=rows[r][1];
+if(!dry){c.font=mono(700,fs);c.fillStyle=INK;c.fillText(q,P+qw-c.measureText(q).width,y+fs*0.78);
+c.font=mono(500,fs);for(var j=0;j<ls2.length;j++)c.fillText(ls2[j],P+qw+gap,y+fs*0.78+j*lh);}
+y+=(ls2.length-1)*lh+lh+6;}
+rule();
+c.font=mono(800,40);if(!dry){c.fillStyle=INK;c.fillText(R.total[0],P,y+31);c.fillText(R.total[1],P+w-c.measureText(R.total[1]).width,y+31);}y+=52;
+c.font=mono(500,19);if(!dry){c.fillStyle=FADE;c.fillText(R.totalNote,P,y+15);}y+=30;
+rule();
+// The year as a barcode: one bar per week, as wide as that week was busy.
+var weeks=WCD.strip.map(function(col){return Math.max.apply(null,col);}),units=0;
+weeks.forEach(function(L){units+=(L>0?L:0)+1;});
+if(units>0){var u=w/units,bx=P;if(!dry){c.fillStyle=INK;weeks.forEach(function(L){if(L>0){c.fillRect(bx,y,L*u-1,96);bx+=L*u;}bx+=u;});}y+=118;}
+mid('THANK YOU \u00b7 COME AGAIN IN '+(Number(WCD.year)+1),mono(700,21),21,INK,'3px');
+y+=8;ls('1px');var cs=21;c.font=mono(500,cs);while(cs>12&&c.measureText(WCD.footer[1]).width>w){cs-=1;c.font=mono(500,cs);}ls('0px');
+mid(WCD.footer[1],mono(500,cs),cs,FADE,'1px');
+return y+50;}
+var H=slip(true)+M;
+wcEl.width=W*DPR;wcEl.height=Math.ceil(H*DPR);
+c.setTransform(DPR,0,0,DPR,0,0);c.textBaseline='alphabetic';
+c.fillStyle=WCD.bg;c.fillRect(0,0,W,H);
+// Paper with torn, zigzag top and bottom edges.
+var z=9,t=18;c.fillStyle=PAPER;c.beginPath();c.moveTo(M,M+z);
+for(var x=M;x<W-M;x+=t){c.lineTo(Math.min(x+t/2,W-M),M);c.lineTo(Math.min(x+t,W-M),M+z);}
+c.lineTo(W-M,H-M-z);
+for(var x2=W-M;x2>M;x2-=t){c.lineTo(Math.max(x2-t/2,M),H-M);c.lineTo(Math.max(x2-t,M),H-M-z);}
+c.closePath();c.fill();
+slip(false);}
 
 function draw(){
+if(aspect==='receipt'){drawReceipt();return;}
 var sp=SPEC[aspect],DPR=2,W=sp.w,H=sp.h,P=sp.pad,K=W/1200,G=sp.g;
 wcEl.width=W*DPR;wcEl.height=H*DPR;
 var c=wcEl.getContext('2d');if(!c)return;
@@ -1000,7 +1218,11 @@ ls((4*C)+'px');c.font=mono(700,15*C);c.fillStyle=PAL().c;c.fillText(WCD.brand,x,
 c.font=mono(700,15*C);c.fillStyle=WCD.ink2;
 c.fillText(WCD.year,W-P-c.measureText(WCD.year).width,P+15*C);ls('0px');
 
-var sb=stripBox(w,C,H,P);
+// Footer first: side by side when the stats and the command fit on one line,
+// otherwise stacked, and the strip above moves up to make room.
+ls((2*C)+'px');c.font=mono(700,13*C);
+var f1=WCD.footer[1],side=!f1||c.measureText(WCD.footer[0]).width+c.measureText(f1).width+40*C<=w;ls('0px');
+var sb=stripBox(w,C,H,P,side?0:22*C);
 var top=P+52*C,bottom=sb.top-30*C,band=bottom-top;
 // Type is scaled to the aspect, not to the width — a 1080x1920 poster wants
 // bigger type than a 1200x630 banner, and scaling on width alone made the
@@ -1017,8 +1239,8 @@ var hx=sx+col*(sb.cs+sb.cg),hy=sb.top+r*(sb.cs+sb.cg);
 if(c.roundRect){c.beginPath();c.roundRect(hx,hy,sb.cs,sb.cs,2*C);c.fill();}else c.fillRect(hx,hy,sb.cs,sb.cs);}}}
 
 ls((2*C)+'px');c.font=mono(700,13*C);c.fillStyle=WCD.ink2;
-c.fillText(WCD.footer[0],x,H-P);
-if(WCD.footer[1])c.fillText(WCD.footer[1],W-P-c.measureText(WCD.footer[1]).width,H-P);ls('0px');}
+c.fillText(WCD.footer[0],x,side?H-P:H-P-22*C);
+if(f1)c.fillText(f1,side?W-P-c.measureText(f1).width:x,H-P);ls('0px');}
 
 var fl=document.getElementById('wc-flash'),ft=null;
 function flash(m){if(!fl)return;fl.textContent=m;clearTimeout(ft);ft=setTimeout(function(){fl.textContent='';},2400);}
@@ -1026,13 +1248,15 @@ var BLOCKED='Clipboard blocked here \\u2014 use Download PNG.';
 function caption(){var p=WCD.summary.slice();
 if(WCD.equivalents.length)p.splice(WCD.eqSlot,0,WCD.equivalents[eqIdx]);return p.join(' ');}
 function on(id,fn){var el=document.getElementById(id);if(el)el.addEventListener('click',fn);}
-on('wc-png',function(){var a=document.createElement('a');a.download=WCD.filename;
+on('wc-png',function(){var a=document.createElement('a');a.download=aspect==='receipt'?WCD.filename.replace('.png','-receipt.png'):WCD.filename;
 a.href=wcEl.toDataURL('image/png');a.click();flash('PNG saved to your downloads.');});
 on('wc-img',function(){if(!navigator.clipboard||!window.ClipboardItem){flash(BLOCKED);return;}
 wcEl.toBlob(function(b){navigator.clipboard.write([new ClipboardItem({'image/png':b})])
 .then(function(){flash('Copied \\u2014 paste it anywhere.');}).catch(function(){flash(BLOCKED);});},'image/png');});
 on('wc-txt',function(){if(!navigator.clipboard){flash(BLOCKED);return;}
 navigator.clipboard.writeText(caption()).then(function(){flash('Caption copied.');}).catch(function(){flash(BLOCKED);});});
+on('wc-roast',function(){useRoast=!useRoast;var b=document.getElementById('wc-roast');
+if(b)b.textContent=useRoast?'\u21bb Tagline instead of roast':'\u21bb Roast instead of tagline';draw();});
 on('wc-eq',function(){eqIdx=(eqIdx+1)%WCD.equivalents.length;draw();flash('Swapped the comparison.');});
 document.querySelectorAll('.seg button').forEach(function(b){b.addEventListener('click',function(){
 document.querySelectorAll('.seg button').forEach(function(o){o.classList.remove('on');});
@@ -1047,6 +1271,55 @@ if(slide)slide.style.setProperty('--a',PAL().c);
 draw();flash(PAL().name+'.');});});
 draw();
 if(document.fonts&&document.fonts.ready)document.fonts.ready.then(draw);})();}
+
+// --- per-slide images ------------------------------------------------------
+// One poster per shareable slide: the slide's own words at 1080x1350 (4:5, the
+// portrait shape every feed shows uncropped), in that slide's accent, with the
+// no-install command along the bottom.
+var SS=null;
+try{var sj=document.getElementById('slide-shares');if(sj)SS=JSON.parse(sj.textContent);}catch(e){}
+function slideCanvas(id){
+var sh=SS&&SS.slides[id];if(!sh)return null;var M=SS.meta;
+var sec=document.getElementById(id),A=(sec&&sec.style.getPropertyValue&&sec.style.getPropertyValue('--a'))||'oklch(70% 0.24 350)';
+var W=1080,H=1350,P=84,DPR=2,w=W-2*P,cv=document.createElement('canvas');
+cv.width=W*DPR;cv.height=H*DPR;var c=cv.getContext('2d');if(!c)return null;
+function ls(v){try{c.letterSpacing=v;}catch(e){}}
+c.setTransform(DPR,0,0,DPR,0,0);c.textBaseline='alphabetic';
+c.fillStyle=M.bg;c.fillRect(0,0,W,H);
+var g=c.createRadialGradient(W/2,H*1.05,0,W/2,H*1.05,W);
+g.addColorStop(0,A.replace(')',' / 0.24)'));g.addColorStop(1,A.replace(')',' / 0)'));
+c.fillStyle=g;c.fillRect(0,0,W,H);
+// The deck's signature: the hero, enormous and outlined, bleeding off a corner.
+if(sh.hero.length<=8){c.save();c.translate(W*1.02,H*0.97);c.rotate(-8*Math.PI/180);
+c.font=sans(900,H*0.36);c.strokeStyle=A.replace(')',' / 0.16)');c.lineWidth=5;
+c.strokeText(sh.hero,-c.measureText(sh.hero).width,0);c.restore();}
+ls('4px');c.font=mono(700,22);c.fillStyle=A;c.fillText('SESSIONS WRAPPED',P,P+22);
+c.fillStyle=M.ink2;c.fillText(M.year,W-P-c.measureText(M.year).width,P+22);ls('0px');
+// Blocks top to bottom: [lines, font, size, line height, colour, gap after, spacing].
+var B=[];function add(text,font,size,lh,color,gap,sp){ls(sp||'0px');c.font=font;B.push([wrap(c,text,w),font,size,lh,color,gap,sp||'0px']);ls('0px');}
+add(sh.kicker.toUpperCase(),mono(700,24),24,32,A,28,'5px');
+if(sh.title)add(sh.title,sans(800,48),48,58,M.ink,30);
+var hs=fit(c,sh.hero,w,sh.hero.length<=8?260:120,900,56,3);add(sh.hero,sans(900,hs),hs,hs*1.05,A,26);
+if(sh.lede)add(sh.lede,sans(600,38),38,48,M.ink,14);
+if(sh.quip)add(sh.quip,sans(500,30),30,40,M.ink2,14);
+for(var i=0;i<sh.rows.length;i++){add(sh.rows[i][0],sans(900,52),52,60,A,2);add(sh.rows[i][1],sans(500,28),28,36,M.ink,14);}
+if(sh.note)add(sh.note,mono(500,22),22,30,M.ink2,0);
+var total=0;B.forEach(function(b){total+=(b[0].length-1)*b[3]+b[2]*1.02+b[5];});
+var top=P+70,band=H-P-70-top,y=top+Math.max(0,(band-total)/2);
+B.forEach(function(b){c.font=b[1];c.fillStyle=b[4];ls(b[6]);
+for(var j=0;j<b[0].length;j++){var t=b[0][j];c.fillText(t,P+(w-c.measureText(t).width)/2,y+b[2]*0.78+j*b[3]);}
+ls('0px');y+=(b[0].length-1)*b[3]+b[2]*1.02+b[5];});
+ls('1px');var cs=26;c.font=mono(700,cs);while(cs>14&&c.measureText(M.cta).width>w){cs-=1;c.font=mono(700,cs);}
+c.fillStyle=M.ink2;c.fillText(M.cta,P+(w-c.measureText(M.cta).width)/2,H-P);ls('0px');
+return cv;}
+// The resting label is read once, so a second click mid-confirmation can't adopt "saved" as it.
+document.querySelectorAll('[data-copy],[data-save]').forEach(function(b){var label=b.textContent;b.addEventListener('click',function(){
+var save=b.hasAttribute('data-save'),id=b.getAttribute(save?'data-save':'data-copy'),cv=slideCanvas(id);if(!cv)return;
+function say(m){b.textContent=m;setTimeout(function(){b.textContent=label;},1800);}
+if(save){var a=document.createElement('a');a.download=SS.meta.file+'-'+id+'.png';a.href=cv.toDataURL('image/png');a.click();say('saved \\u2713');return;}
+if(!navigator.clipboard||!window.ClipboardItem){say('use save');return;}
+cv.toBlob(function(bl){navigator.clipboard.write([new ClipboardItem({'image/png':bl})])
+.then(function(){say('copied \\u2713');}).catch(function(){say('use save');});},'image/png');});});
 
 console.log('sessions wrapped \\u2014 generated locally from your own session logs. No telemetry.');
 })();`;

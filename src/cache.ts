@@ -114,6 +114,22 @@ interface RefreshResult {
   updated: number;
 }
 
+export interface RefreshOptions {
+  /** Compute missing session embeddings (default true). Only search reads them,
+   *  so a reader that never searches can skip what is, on a fresh index with
+   *  Ollama running, minutes of work. Lossless: the next refresh embeds them. */
+  embed?: boolean;
+  /** Transcripts indexed so far out of those that changed. Not called when
+   *  nothing changed. */
+  onProgress?: (done: number, total: number) => void;
+}
+
+/** The vault is on by default. SESSIONS_ARCHIVE=0 turns it off, for runs that
+ *  should leave no durable copy behind (the curl one-liner's one-off wrapped). */
+function archiveEnabled(): boolean {
+  return process.env.SESSIONS_ARCHIVE !== '0';
+}
+
 export function clearCache(): void {
   const dbPath = getDbPath();
   const files = [dbPath, dbPath + '-wal', dbPath + '-shm'];
@@ -411,6 +427,7 @@ interface RefreshCtx {
   manifest: Manifest;
   dir: string;
   warned: boolean;
+  archive: boolean;
 }
 
 // Archive one transcript into the vault, best-effort. Indexing must never be blocked
@@ -421,6 +438,7 @@ function tryArchive(
   parsed: { cwd: string; sessionId: string },
   stat: { mtime: number; size: number },
 ): void {
+  if (!ctx.archive) return;
   try {
     archiveFile(entry, parsed, stat, ctx.manifest, ctx.dir);
   } catch (e) {
@@ -614,12 +632,17 @@ function indexFile(db: Database, filePath: string, tool: Tool, ctx: RefreshCtx):
   return false;
 }
 
-async function runRefreshIndex(): Promise<RefreshResult> {
+async function runRefreshIndex(opts: RefreshOptions): Promise<RefreshResult> {
   const db = getDb();
   // The vault manifest, loaded once and saved once (saveManifest at the end):
   // archiveFile mutates this map in place during the batches, and a per-file save
   // could persist an archive whose index write later rolled back. One write follows.
-  const ctx: RefreshCtx = { manifest: loadManifest(getArchiveDir()), dir: getArchiveDir(), warned: false };
+  const ctx: RefreshCtx = {
+    manifest: loadManifest(getArchiveDir()),
+    dir: getArchiveDir(),
+    warned: false,
+    archive: archiveEnabled(),
+  };
   // De-duplicate at the boundary. It also makes the set/map work below line up
   // exactly with the total reported to callers.
   const files = [...new Map((await discoverFiles()).map((file) => [file.path, file])).values()];
@@ -693,17 +716,20 @@ async function runRefreshIndex(): Promise<RefreshResult> {
       db.exec('ROLLBACK');
       throw error;
     }
+    opts.onProgress?.(Math.min(i + BATCH, candidates.length), candidates.length);
   }
 
   // Backfill: archive every already-indexed session still missing from the manifest,
   // even though its index row is unchanged. The first refresh after upgrade preserves
   // the entire existing corpus this way. Vault-only sessions are already in the
   // manifest; a source that has since vanished has no live bytes to copy, so skip it.
-  const indexedRows = db
-    .query<{ file_path: string; cwd: string; session_id: string; tool: string; mtime: number; size: number }, []>(
-      'SELECT file_path, cwd, session_id, tool, mtime, size FROM sessions',
-    )
-    .all();
+  const indexedRows = ctx.archive
+    ? db
+        .query<{ file_path: string; cwd: string; session_id: string; tool: string; mtime: number; size: number }, []>(
+          'SELECT file_path, cwd, session_id, tool, mtime, size FROM sessions',
+        )
+        .all()
+    : [];
   for (const row of indexedRows) {
     if (ctx.manifest[row.file_path]) continue;
     // SAFETY: the tool column is written by the index from Tool values only.
@@ -718,13 +744,13 @@ async function runRefreshIndex(): Promise<RefreshResult> {
   }
 
   // One atomic manifest write for the whole refresh (see the ctx comment above).
-  saveManifest(ctx.dir, ctx.manifest);
+  if (ctx.archive) saveManifest(ctx.dir, ctx.manifest);
 
   // Optional semantic lane: embed sessions missing (or with stale) vectors. Runs
   // after all index writes commit, is entirely skipped when no embedder is
   // present, and fails open — an embed error abandons embedding for THIS refresh
   // (one warning) but never the refresh itself.
-  await embedMissingVectors(db);
+  if (opts.embed !== false) await embedMissingVectors(db);
 
   return { total: files.length, updated };
 }
@@ -832,10 +858,10 @@ async function embedMissingVectors(db: Database): Promise<void> {
  * not observe that write. Anything needing a guaranteed post-write scan must run
  * after the in-flight promise settles, not alongside it.
  */
-export async function refreshIndex(): Promise<RefreshResult> {
+export async function refreshIndex(opts: RefreshOptions = {}): Promise<RefreshResult> {
   if (_refreshPromise) return _refreshPromise;
 
-  const promise = runRefreshIndex();
+  const promise = runRefreshIndex(opts);
   _refreshPromise = promise;
   try {
     const result = await promise;
@@ -852,17 +878,17 @@ function refreshIntervalMs(): number {
   return Number.isFinite(configured) ? Math.max(0, configured) : 5_000;
 }
 
-async function ensureIndexFresh(): Promise<RefreshResult> {
+async function ensureIndexFresh(opts: RefreshOptions = {}): Promise<RefreshResult> {
   if (_refreshPromise) return _refreshPromise;
   if (_db && Date.now() - _lastRefreshAt < refreshIntervalMs()) return _lastRefreshResult;
-  return refreshIndex();
+  return refreshIndex(opts);
 }
 
 // Read-only index access for stats consumers (`sessions wrapped`). Refreshes
 // first so queries see current transcripts, then hands back the shared handle.
 // Callers must treat the connection as read-only — all writes stay in this file.
-export async function getIndexDb(): Promise<Database> {
-  await ensureIndexFresh();
+export async function getIndexDb(opts: RefreshOptions = {}): Promise<Database> {
+  await ensureIndexFresh(opts);
   return getDb();
 }
 

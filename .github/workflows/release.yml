@@ -69,10 +69,16 @@ jobs:
         with:
           merge-multiple: true
 
+      # The curl one-liner (site/public/wrapped) refuses any tarball not listed here.
+      - name: Checksums
+        run: sha256sum *.tar.gz > checksums.txt
+
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.release-please.outputs.tag_name }}
-          files: '*.tar.gz'
+          files: |
+            *.tar.gz
+            checksums.txt
 
   update-formula:
     needs: [release-please, build]

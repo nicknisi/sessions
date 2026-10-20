@@ -406,21 +406,33 @@ Cost is estimated from [LiteLLM](https://github.com/BerriAI/litellm) pricing dat
 
 ## Wrapped
 
-`sessions wrapped` turns your year of AI pairing into a Spotify-Wrapped-style scroll-through story and opens it in your browser: tokens with a human-scale equivalence, the API-rate receipt, streaks, a rhythm heatmap, top projects and models, your most significant session — and a set of fun stats mined from what you and your agents actually said to each other (the interrupt census, the two-sided apology scoreboard, how many times Claude told you "you're absolutely right", your word of the year). It ends with a coding-personality reveal built from three behavioral axes, with the evidence printed on the card, followed by a shareable image you can download or copy straight to the clipboard — at 1200 × 630 for timelines or 1080 × 1920 for stories, in whichever of six accents you like.
+`sessions wrapped` turns your year of AI pairing into a Spotify-Wrapped-style scroll-through story and opens it in your browser: tokens with a human-scale equivalence, the API-rate receipt, streaks, a rhythm heatmap, top projects and models, your most significant session — and a set of fun stats mined from what you and your agents actually said to each other (the interrupt census, the two-sided apology scoreboard, how many times Claude told you "you're absolutely right", your word of the year). It ends with a coding-personality reveal built from three behavioral axes, with the evidence printed on the card, followed by a shareable image you can download or copy straight to the clipboard — at 1200 × 630 for timelines, 1080 × 1920 for stories, or as an itemized **receipt** (counted figures as line items, the list-price bill as the total, the year as the barcode), in whichever of six accents you like. The fun slides, the word of the year, the token total, the loop, and any roast slides each have their own **copy image / save image** buttons too, which render that one slide as a 1080 × 1350 poster. Every image carries the `curl` one-liner, so anyone who sees it can run their own.
+
+No install needed — this downloads the binary for your machine, checks it against the release's `checksums.txt`, caches it in `~/.cache/sessions/bin`, and runs `sessions wrapped`. A one-off run builds the search index in `~/.cache/sessions` (so a re-run is fast) but skips the transcript archive, and tells you how to delete what it cached:
+
+```sh
+curl -fsSL https://sessions.engineering/wrapped | sh
+curl -fsSL https://sessions.engineering/wrapped | sh -s -- --year 2025   # pass options after --
+```
+
+The script is plain text at that URL, so you can read it before piping it. With `sessions` installed:
 
 ```sh
 sessions wrapped                     # this year, opens in your browser
+sessions wrapped --full              # open on every slide instead of the short reel
 sessions wrapped --year 2025         # a past calendar year
 sessions wrapped --roast             # let an agent CLI improvise roast slides
 sessions wrapped --stdout            # the underlying JSON, for piping
 sessions wrapped --extras roast.json # inject your own extra slides
 ```
 
+Before the browser opens, a screenshot-sized summary card prints in the terminal: the persona, the four headline numbers, the year as a sparkline, and your most notable fun stat. The page then opens as a **short reel** of about seven slides — the cover, your token total, your two most notable fun stats, the word of the year, the persona, and the share card — that you tap, click, scroll, or arrow through like stories. The rest of the deck is one button away on the share slide ("the full cut"), or open on it with `--full`.
+
 The fun slides are **dynamically selected**: every candidate stat is scored for how notable it is in _your_ data, and only the top ones render — a daylight coder never sees a 3 AM slide. Everything is computed locally (event logs + the search index); nothing leaves your machine. Because AI tools prune old transcripts, the page discloses when its data starts if that's later than January 1. Token and cost math match `sessions report` exactly.
 
 ### Roast mode
 
-`--roast` hands your computed stats to an agent CLI you already have installed (`claude`, then `codex`, then `pi` — override with `--roast-with <tool>`) and asks it to improvise a few edgy, bespoke roast slides, which are appended to the story. It rides your existing subscription — no API key, no setup. Only the **stats** are sent (counts, project names, the numbers already on the page), never raw transcript text, and every roast slide is stamped "improvised by \<tool\>" so a generated line can never pass for a counted one. It's opt-in and fails open: no CLI, a timeout, or unparseable output just drops the roast and the deterministic page renders as normal. Expect it to add 15–90s.
+`--roast` hands your computed stats to an agent CLI you already have installed (`claude`, then `codex`, then `pi` — override with `--roast-with <tool>`) and asks it to improvise a few edgy, bespoke roast slides, which are appended to the story. It rides your existing subscription — no API key, no setup. Only the **stats** are sent (counts, project names, the numbers already on the page), never raw transcript text, and every roast slide is stamped "improvised by \<tool\>" so a generated line can never pass for a counted one. When a roast ran, its first line also stands in for the persona tagline on the share card — stamped the same way, and one click swaps the tagline back. It's opt-in and fails open: no CLI, a timeout, or unparseable output just drops the roast and the deterministic page renders as normal. Expect it to add 15–90s.
 
 `--extras <path>` is the manual version: a JSON array of up to six slides (`[{"headline": "...", "title"?, "subline"?, "footnote"?}]`) injected into the story. `--roast` is the same seam, filled by a model instead of by hand.
 
@@ -472,7 +484,7 @@ sessions --clear-cache
 
 The search index is a disposable cache: it prunes rows when source transcripts vanish, and any schema change drops every table and rebuilds from whatever files still exist. Vendors garbage-collect transcripts on a rolling schedule (Claude Code deletes them after 30 days by default), so left to the index alone, history is lost.
 
-The **vault** is the durable copy. On every index refresh, each parseable transcript is archived to `~/.local/share/sessions/archive/` (raw bytes, one file per session, latest snapshot per file). This directory is the same durable-data convention that `sessions uninstall` already leaves alone, and it is **on by default** — the point is that archiving happens before anyone remembers to enable it. Set `SESSIONS_ARCHIVE_DIR` to relocate it.
+The **vault** is the durable copy. On every index refresh, each parseable transcript is archived to `~/.local/share/sessions/archive/` (raw bytes, one file per session, latest snapshot per file). This directory is the same durable-data convention that `sessions uninstall` already leaves alone, and it is **on by default** — the point is that archiving happens before anyone remembers to enable it. Set `SESSIONS_ARCHIVE_DIR` to relocate it, or `SESSIONS_ARCHIVE=0` to skip it for a run (the curl one-liner does this, so a one-off wrapped leaves no copy behind).
 
 The vault is also a **discovery source**: a session whose source file is gone is re-indexed from its vault copy under its original path, so search, resume commands, and message reads keep working. OpenCode is the one exception to raw-bytes archiving — its sessions are SQLite rows with no files, so a normalized JSONL export (the same shape the parser reads) is archived instead.
 
