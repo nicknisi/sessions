@@ -56,6 +56,7 @@ const ROAST_TOOLS: RoastToolByName = { claude: 'claude', codex: 'codex', pi: 'pi
 export interface WrappedResult {
   htmlPath?: string;
   json: string;
+  data: WrappedData;
 }
 
 interface ToolIdByName {
@@ -459,7 +460,7 @@ export async function runWrapped(opts: WrappedOptions): Promise<WrappedResult> {
   }
 
   const json = JSON.stringify(data, null, 2);
-  const result: WrappedResult = { json };
+  const result: WrappedResult = { json, data };
 
   if (opts.stdout) {
     await writeStdoutFully(json + '\n');

@@ -426,7 +426,7 @@ sessions wrapped --stdout            # the underlying JSON, for piping
 sessions wrapped --extras roast.json # inject your own extra slides
 ```
 
-It opens as a **short reel** of about seven slides — the cover, your token total, your two most notable fun stats, the word of the year, the persona, and the share card — that you tap, click, scroll, or arrow through like stories. The rest of the deck is one button away on the share slide ("the full cut"), or open on it with `--full`.
+Before the browser opens, a screenshot-sized summary card prints in the terminal: the persona, the four headline numbers, the year as a sparkline, and your most notable fun stat. The page then opens as a **short reel** of about seven slides — the cover, your token total, your two most notable fun stats, the word of the year, the persona, and the share card — that you tap, click, scroll, or arrow through like stories. The rest of the deck is one button away on the share slide ("the full cut"), or open on it with `--full`.
 
 The fun slides are **dynamically selected**: every candidate stat is scored for how notable it is in _your_ data, and only the top ones render — a daylight coder never sees a 3 AM slide. Everything is computed locally (event logs + the search index); nothing leaves your machine. Because AI tools prune old transcripts, the page discloses when its data starts if that's later than January 1. Token and cost math match `sessions report` exactly.
 
