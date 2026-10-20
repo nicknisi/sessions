@@ -15,7 +15,7 @@
 // must never be the reason a report cannot be produced.
 import { Database } from 'bun:sqlite';
 import { mkdirSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, normalize } from 'node:path';
 import { stat } from 'node:fs/promises';
 import { getCacheDir } from '../cache.ts';
 import type { UsageEvent } from './parsers/types.ts';
@@ -119,6 +119,8 @@ export interface CachePlan {
 }
 
 /** Split the current files under `root` into "already parsed" and "needs parsing".
+ *  `root` is normalized the way join() normalizes the walked paths, so an env
+ *  override spelled `/a//b` or `./x` still matches its rows.
  *  Reads only that root's rows: with many roots (one per extra Pi folder) a
  *  whole-table read per root decoded every cached blob once per root. */
 export function planRefresh(db: Database, files: FileStat[], root: string): CachePlan {
@@ -129,7 +131,7 @@ export function planRefresh(db: Database, files: FileStat[], root: string): Cach
       .query(
         'SELECT path, mtime_ms, size, events, agent_types, user_turns FROM files WHERE path >= ?1 AND path < ?1 || char(1114111)',
       )
-      .all(root) as Row[];
+      .all(normalize(root)) as Row[];
     for (const r of rows) known.set(r.path, r);
   } catch {
     // Unreadable table: treat everything as stale.

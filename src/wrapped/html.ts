@@ -1312,9 +1312,10 @@ ls('0px');y+=(b[0].length-1)*b[3]+b[2]*1.02+b[5];});
 ls('1px');var cs=26;c.font=mono(700,cs);while(cs>14&&c.measureText(M.cta).width>w){cs-=1;c.font=mono(700,cs);}
 c.fillStyle=M.ink2;c.fillText(M.cta,P+(w-c.measureText(M.cta).width)/2,H-P);ls('0px');
 return cv;}
-document.querySelectorAll('[data-copy],[data-save]').forEach(function(b){b.addEventListener('click',function(){
+// The resting label is read once, so a second click mid-confirmation can't adopt "saved" as it.
+document.querySelectorAll('[data-copy],[data-save]').forEach(function(b){var label=b.textContent;b.addEventListener('click',function(){
 var save=b.hasAttribute('data-save'),id=b.getAttribute(save?'data-save':'data-copy'),cv=slideCanvas(id);if(!cv)return;
-var label=b.textContent;function say(m){b.textContent=m;setTimeout(function(){b.textContent=label;},1800);}
+function say(m){b.textContent=m;setTimeout(function(){b.textContent=label;},1800);}
 if(save){var a=document.createElement('a');a.download=SS.meta.file+'-'+id+'.png';a.href=cv.toDataURL('image/png');a.click();say('saved \\u2713');return;}
 if(!navigator.clipboard||!window.ClipboardItem){say('use save');return;}
 cv.toBlob(function(bl){navigator.clipboard.write([new ClipboardItem({'image/png':bl})])

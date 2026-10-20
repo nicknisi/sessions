@@ -83,7 +83,7 @@ describe('terminal card', () => {
     expect(out).toContain('649 times you cut Claude off mid-task');
     expect(out).not.toContain('should work');
     expect(out).toContain('word of the year: refactor');
-    expect(out).toContain('curl -fsSL sessions.engineering/wrapped | sh');
+    expect(out).toContain('curl -fsSL https://sessions.engineering/wrapped | sh');
   });
 
   test('the year strip fits the card and leaves silent weeks blank', () => {

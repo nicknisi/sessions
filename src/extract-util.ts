@@ -20,7 +20,7 @@ const stringSchema = z.string();
 const numberSchema = z.number();
 /** A JSON object whose values are already JSON — what JSON.parse guarantees —
  *  so only the top level needs checking. */
-const parsedObjectSchema = z.record(z.string(), z.custom<JsonValue>());
+export const parsedObjectSchema = z.record(z.string(), z.custom<JsonValue>());
 
 /** Narrow to a JSON object: primitives and arrays fall out. */
 export function asJsonObject(v: JsonValue | undefined): JsonObject | undefined {

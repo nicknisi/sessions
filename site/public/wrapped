@@ -91,9 +91,10 @@ main() {
     mv "$tmp/sessions" "$bin"
     rm -rf "$tmp"
     trap - EXIT INT TERM
-    # Each binary is ~65 MB; keep only the version just installed.
-    for old in "$bindir"/v*; do
-      [ "$old" = "$bindir/$tag" ] || rm -rf "$old"
+    # Each binary is ~65 MB; keep only the version just installed. Only folders this
+    # script made (a version name holding a sessions binary) are ever removed.
+    for old in "$bindir"/v[0-9]*; do
+      [ "$old" != "$bindir/$tag" ] && [ -f "$old/sessions" ] && rm -rf "$old"
     done
   fi
 
@@ -101,7 +102,7 @@ main() {
   SESSIONS_ARCHIVE=0 "$bin" wrapped "$@" || status=$?
   cache="${SESSIONS_CACHE_DIR:-$HOME/.cache/sessions}"
   size=$(du -sh "$cache" 2>/dev/null | awk '{print $1}')
-  say "cached ${size:-some files} in $cache so a re-run is fast. Remove it any time: rm -rf $cache"
+  say "cached ${size:-some files} in $cache so a re-run is fast. Remove it any time: rm -rf '$cache'"
   say "search and agent memory over these sessions: brew install nicknisi/formulae/sessions"
   return "$status"
 }

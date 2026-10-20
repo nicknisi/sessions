@@ -550,7 +550,7 @@ describe('per-slide images', () => {
     expect(all).toContain('649');
     expect(all).toContain('times you cut Claude off mid-task');
     expect(all).toContain('11,609');
-    expect(all).toContain(`curl -fsSL ${SITE_HOST}/wrapped | sh`);
+    expect(all).toContain(`curl -fsSL https://${SITE_HOST}/wrapped | sh`);
     for (const p of painted) {
       expect(p.x).toBeGreaterThanOrEqual(0);
       expect(p.x + p.text.length * p.size * 0.5).toBeLessThanOrEqual(1080);
@@ -583,7 +583,7 @@ describe('receipt and roast', () => {
     expect(all).toContain('2,903');
     expect(all).toContain('TOTAL');
     expect(all).toContain('$4,313');
-    expect(all).toContain(`curl -fsSL ${SITE_HOST}/wrapped | sh`);
+    expect(all).toContain(`curl -fsSL https://${SITE_HOST}/wrapped | sh`);
     for (const p of drawn) {
       expect(p.x).toBeGreaterThanOrEqual(36);
       expect(p.x + p.text.length * p.size * 0.5).toBeLessThanOrEqual(960 - 36);
