@@ -323,6 +323,18 @@ interface ShareCard {
   /** Where the deck's accent rotation put this slide. Only the picker's opening
    *  position — the rotation is arbitrary, so it must not be the final word. */
   accentStart: number;
+  /** A --roast line that can stand in for the lede, with its provenance stamp,
+   *  which is painted under it whenever it is used. */
+  roast: { line: string; stamp: string } | null;
+  /** The receipt layout: counted figures only, itemized. */
+  receipt: {
+    period: string;
+    cashier: string | null;
+    /** [quantity, item]. */
+    items: [string, string][];
+    total: [string, string];
+    totalNote: string;
+  };
 }
 
 function shareCardData(d: WrappedData, accentStart: number): ShareCard {
@@ -364,8 +376,31 @@ function shareCardData(d: WrappedData, accentStart: number): ShareCard {
   // is otherwise unattributable.
   summary.push(`Generated locally with sessions wrapped. Make yours: ${WRAPPED_CMD}`);
 
+  // Itemized the way a till would: the counted figures, the funniest counts
+  // from the deck, and the list-price bill as the total.
+  const items: [string, string][] = [
+    [fmtInt(t.sessions), plural(t.sessions, 'session')],
+    [fmtInt(t.activeDays), `active ${plural(t.activeDays, 'day')}`],
+  ];
+  if (t.tokens > 0) items.push([fmtTokens(t.tokens), 'tokens']);
+  if (t.longestStreak) items.push([fmtInt(t.longestStreak.days), 'day streak, longest']);
+  if (d.projects[0]) items.push([fmtInt(d.projects[0].sessions), `sessions on ${d.projects[0].name}`]);
+  for (const card of [...d.fun].sort((a, b) => b.score - a.score)) {
+    for (const st of card.stats) if (items.length < 12) items.push([st.big, st.label]);
+  }
+  if (d.wordOfYear) items.push([`${fmtInt(d.wordOfYear.count)}×`, `“${d.wordOfYear.word}”, word of the year`]);
+  const roast = d.extras.find((x) => x.footnote?.startsWith('improvised by'));
+
   return {
     brand: 'SESSIONS WRAPPED',
+    roast: roast ? { line: roast.headline, stamp: `— ${roast.footnote!}` } : null,
+    receipt: {
+      period: `${shortDate(d.dataBegins && d.dataBegins > d.period.from ? d.dataBegins : d.period.from)} – ${formatDate(d.period.to)}`,
+      cashier: hasPersona ? d.persona!.name : null,
+      items,
+      total: t.costUSD > 0 ? ['TOTAL', fmtUSD(t.costUSD)] : ['TOTAL', `${fmtInt(t.messages)} replies`],
+      totalNote: t.costUSD > 0 ? 'at API list prices · estimated' : 'no metered spend this year',
+    },
     year: String(d.year),
     kicker,
     hero,
@@ -418,9 +453,11 @@ function shareCardSlide(card: ShareCard, fullCut: number | null): Card {
 <button type="button" id="wc-img">Copy image</button>
 <button type="button" id="wc-txt">Copy caption</button>
 ${card.equivalents.length > 1 ? `<button type="button" id="wc-eq">↻ Another comparison</button>` : ''}
+${card.roast ? `<button type="button" id="wc-roast">↻ Tagline instead of roast</button>` : ''}
 <span class="seg" role="group" aria-label="Image shape">
 <button type="button" class="on" data-aspect="wide">1200 × 630</button>
 <button type="button" data-aspect="story">1080 × 1920</button>
+<button type="button" data-aspect="receipt">receipt</button>
 </span>
 </div>
 <div class="actions">
@@ -1009,7 +1046,7 @@ while(size>min&&wrap(c,s,maxW).length>lines){size-=2;c.font=sans(wt,size);}retur
 var WCD=null,wcEl=document.getElementById('wcard');
 try{var wj=document.getElementById('wcard-data');if(wj)WCD=JSON.parse(wj.textContent);}catch(e){}
 if(WCD&&wcEl){(function(){
-var eqIdx=WCD.eqStart||0,accIdx=WCD.accentStart||0,aspect='wide';
+var eqIdx=WCD.eqStart||0,accIdx=WCD.accentStart||0,aspect='wide',useRoast=!!WCD.roast;
 function PAL(){return WCD.palettes[accIdx];}
 // cols: the stat grid. A 1200-wide card has room for four across, which buys
 // back the vertical space the strip needs; the narrower story format stacks 2x2
@@ -1042,7 +1079,9 @@ put(wrap(c,WCD.hero,w),hs,hs*1.08,PAL().c);
 y+=16*S*G;
 
 var ds=27*S;c.font=sans(500,ds);
-put(wrap(c,WCD.lede,w),ds,ds*1.3,WCD.ink);
+put(wrap(c,useRoast?WCD.roast.line:WCD.lede,w),ds,ds*1.3,WCD.ink);
+// A model-written line never travels without saying so.
+if(useRoast){y+=8*S*G;var rs=13*S;c.font=mono(500,rs);put(wrap(c,WCD.roast.stamp,w),rs,rs*1.4,WCD.ink2);}
 
 var eq=WCD.equivalents[eqIdx];
 if(eq){y+=14*S*G;var es=19*S;c.font=sans(500,es);
@@ -1112,7 +1151,57 @@ if(!WCD.strip.length)return {h:0,top:H-P-F};
 var cg=2.4*C,cs=Math.min(11*C,w/WCD.strip.length-cg),h=7*(cs+cg)-cg;
 return {h:h,cs:cs,cg:cg,top:H-P-26*C-F-h};}
 
+
+// The receipt: one long till slip, monochrome on paper, itemized from the
+// counted figures with the list-price bill as the total and the year as the
+// barcode. Height follows the items, so it is laid out dry first, then painted.
+function drawReceipt(){
+var R=WCD.receipt,W=960,M=36,P=M+56,w=W-2*P,DPR=2,c=wcEl.getContext('2d');if(!c)return;
+var PAPER='oklch(96% 0.012 90)',INK='oklch(22% 0.01 280)',FADE='oklch(48% 0.01 280)';
+function ls(v){try{c.letterSpacing=v;}catch(e){}}
+var fs=25,lh=36,gap=22;c.font=mono(700,fs);
+var qw=0;for(var i=0;i<R.items.length;i++)qw=Math.max(qw,c.measureText(R.items[i][0]).width);
+var lw=w-qw-gap;c.font=mono(500,fs);
+var rows=R.items.map(function(it){return [it[0],wrap(c,it[1],lw)];});
+function slip(dry){var y=M+50;
+function mid(t,font,size,color,sp){ls(sp||'0px');c.font=font;if(!dry){c.fillStyle=color;c.fillText(t,P+(w-c.measureText(t).width)/2,y+size*0.78);}ls('0px');y+=size*1.35;}
+function rule(){y+=10;if(!dry){c.fillStyle=FADE;for(var x=P;x<P+w;x+=14)c.fillRect(x,y,7,2);}y+=24;}
+mid('SESSIONS WRAPPED',mono(800,36),36,INK,'6px');
+mid('YEAR-END RECEIPT \u00b7 '+WCD.year,mono(600,21),21,FADE,'3px');
+mid(R.period,mono(500,21),21,FADE);
+if(R.cashier){y+=6;c.font=mono(500,21);var cl=wrap(c,'SERVED BY: '+R.cashier,w);for(var k=0;k<cl.length;k++)mid(cl[k],mono(500,21),21,INK);}
+rule();
+ls('2px');c.font=mono(700,18);if(!dry){c.fillStyle=FADE;c.fillText('QTY',P,y+14);c.fillText('ITEM',P+qw+gap,y+14);}ls('0px');y+=36;
+for(var r=0;r<rows.length;r++){var q=rows[r][0],ls2=rows[r][1];
+if(!dry){c.font=mono(700,fs);c.fillStyle=INK;c.fillText(q,P+qw-c.measureText(q).width,y+fs*0.78);
+c.font=mono(500,fs);for(var j=0;j<ls2.length;j++)c.fillText(ls2[j],P+qw+gap,y+fs*0.78+j*lh);}
+y+=(ls2.length-1)*lh+lh+6;}
+rule();
+c.font=mono(800,40);if(!dry){c.fillStyle=INK;c.fillText(R.total[0],P,y+31);c.fillText(R.total[1],P+w-c.measureText(R.total[1]).width,y+31);}y+=52;
+c.font=mono(500,19);if(!dry){c.fillStyle=FADE;c.fillText(R.totalNote,P,y+15);}y+=30;
+rule();
+// The year as a barcode: one bar per week, as wide as that week was busy.
+var weeks=WCD.strip.map(function(col){return Math.max.apply(null,col);}),units=0;
+weeks.forEach(function(L){units+=(L>0?L:0)+1;});
+if(units>0){var u=w/units,bx=P;if(!dry){c.fillStyle=INK;weeks.forEach(function(L){if(L>0){c.fillRect(bx,y,L*u-1,96);bx+=L*u;}bx+=u;});}y+=118;}
+mid('THANK YOU \u00b7 COME AGAIN IN '+(Number(WCD.year)+1),mono(700,21),21,INK,'3px');
+y+=8;ls('1px');var cs=21;c.font=mono(500,cs);while(cs>12&&c.measureText(WCD.footer[1]).width>w){cs-=1;c.font=mono(500,cs);}ls('0px');
+mid(WCD.footer[1],mono(500,cs),cs,FADE,'1px');
+return y+50;}
+var H=slip(true)+M;
+wcEl.width=W*DPR;wcEl.height=Math.ceil(H*DPR);
+c.setTransform(DPR,0,0,DPR,0,0);c.textBaseline='alphabetic';
+c.fillStyle=WCD.bg;c.fillRect(0,0,W,H);
+// Paper with torn, zigzag top and bottom edges.
+var z=9,t=18;c.fillStyle=PAPER;c.beginPath();c.moveTo(M,M+z);
+for(var x=M;x<W-M;x+=t){c.lineTo(Math.min(x+t/2,W-M),M);c.lineTo(Math.min(x+t,W-M),M+z);}
+c.lineTo(W-M,H-M-z);
+for(var x2=W-M;x2>M;x2-=t){c.lineTo(Math.max(x2-t/2,M),H-M);c.lineTo(Math.max(x2-t,M),H-M-z);}
+c.closePath();c.fill();
+slip(false);}
+
 function draw(){
+if(aspect==='receipt'){drawReceipt();return;}
 var sp=SPEC[aspect],DPR=2,W=sp.w,H=sp.h,P=sp.pad,K=W/1200,G=sp.g;
 wcEl.width=W*DPR;wcEl.height=H*DPR;
 var c=wcEl.getContext('2d');if(!c)return;
@@ -1159,13 +1248,15 @@ var BLOCKED='Clipboard blocked here \\u2014 use Download PNG.';
 function caption(){var p=WCD.summary.slice();
 if(WCD.equivalents.length)p.splice(WCD.eqSlot,0,WCD.equivalents[eqIdx]);return p.join(' ');}
 function on(id,fn){var el=document.getElementById(id);if(el)el.addEventListener('click',fn);}
-on('wc-png',function(){var a=document.createElement('a');a.download=WCD.filename;
+on('wc-png',function(){var a=document.createElement('a');a.download=aspect==='receipt'?WCD.filename.replace('.png','-receipt.png'):WCD.filename;
 a.href=wcEl.toDataURL('image/png');a.click();flash('PNG saved to your downloads.');});
 on('wc-img',function(){if(!navigator.clipboard||!window.ClipboardItem){flash(BLOCKED);return;}
 wcEl.toBlob(function(b){navigator.clipboard.write([new ClipboardItem({'image/png':b})])
 .then(function(){flash('Copied \\u2014 paste it anywhere.');}).catch(function(){flash(BLOCKED);});},'image/png');});
 on('wc-txt',function(){if(!navigator.clipboard){flash(BLOCKED);return;}
 navigator.clipboard.writeText(caption()).then(function(){flash('Caption copied.');}).catch(function(){flash(BLOCKED);});});
+on('wc-roast',function(){useRoast=!useRoast;var b=document.getElementById('wc-roast');
+if(b)b.textContent=useRoast?'\u21bb Tagline instead of roast':'\u21bb Roast instead of tagline';draw();});
 on('wc-eq',function(){eqIdx=(eqIdx+1)%WCD.equivalents.length;draw();flash('Swapped the comparison.');});
 document.querySelectorAll('.seg button').forEach(function(b){b.addEventListener('click',function(){
 document.querySelectorAll('.seg button').forEach(function(o){o.classList.remove('on');});

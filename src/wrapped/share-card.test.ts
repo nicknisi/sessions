@@ -138,6 +138,7 @@ function makeCtx() {
     arc: () => {},
     moveTo: () => {},
     lineTo: () => {},
+    closePath: () => {},
     quadraticCurveTo: () => {},
     save: () => {},
     restore: () => {},
@@ -250,11 +251,11 @@ function runPage(data: WrappedData): StubPage {
   mk('wc-flash');
   const slideJson = /<script type="application\/json" id="slide-shares">([\s\S]*?)<\/script>/.exec(html);
   if (slideJson) mk('slide-shares').textContent = slideJson[1]!;
-  for (const id of ['wc-png', 'wc-img', 'wc-txt', 'wc-eq']) mk(id);
+  for (const id of ['wc-png', 'wc-img', 'wc-txt', 'wc-eq', 'wc-roast']) mk(id);
 
   const slide = mk('share');
 
-  const seg = ['wide', 'story'].map((a) => {
+  const seg = ['wide', 'story', 'receipt'].map((a) => {
     const el = new StubEl();
     el.attrs['data-aspect'] = a;
     return el;
@@ -565,5 +566,53 @@ describe('per-slide images', () => {
       .map((p) => p.text)
       .join(' ');
     expect(all).toContain('improvised by Claude');
+  });
+});
+
+describe('receipt and roast', () => {
+  test('the receipt itemizes counted figures, totals the bill, and stays on the paper', () => {
+    const { canvas, seg, painted } = runPage(DATA);
+    const n = painted.length;
+    seg[2]!.click();
+    expect(canvas.width).toBe(1920);
+    const drawn = painted.slice(n);
+    const all = drawn.map((p) => p.text).join(' | ');
+    expect(all).toContain('SESSIONS WRAPPED');
+    expect(all).toContain('YEAR-END RECEIPT');
+    expect(all).toContain('SERVED BY: The Nocturnal Refactorer');
+    expect(all).toContain('2,903');
+    expect(all).toContain('TOTAL');
+    expect(all).toContain('$4,313');
+    expect(all).toContain(`curl -fsSL ${SITE_HOST}/wrapped | sh`);
+    for (const p of drawn) {
+      expect(p.x).toBeGreaterThanOrEqual(36);
+      expect(p.x + p.text.length * p.size * 0.5).toBeLessThanOrEqual(960 - 36);
+      expect(p.y).toBeLessThanOrEqual(canvas.height / 2);
+    }
+  });
+
+  test('a roast line leads the card, stamped, and can be swapped back for the tagline', () => {
+    const roasted: WrappedData = {
+      ...DATA,
+      extras: [{ headline: 'You paid $4k to hear you were right.', footnote: 'improvised by Claude from your stats' }],
+    };
+    const { painted, byId } = runPage(roasted);
+    const first = painted.map((p) => p.text).join(' ');
+    expect(first).toContain('You paid $4k to hear you were right.');
+    expect(first).toContain('— improvised by Claude from your stats');
+    expect(first).not.toContain('best thinking');
+    const n = painted.length;
+    byId.get('wc-roast')!.click();
+    const after = painted
+      .slice(n)
+      .map((p) => p.text)
+      .join(' ');
+    expect(after).toContain('best thinking');
+    expect(after).not.toContain('improvised by');
+  });
+
+  test('hand-written extras are not treated as a roast', () => {
+    const { painted } = runPage({ ...DATA, extras: [{ headline: 'A note from me.' }] });
+    expect(painted.map((p) => p.text).join(' ')).not.toContain('A note from me.');
   });
 });
