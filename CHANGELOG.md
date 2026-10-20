@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.32.0](https://github.com/nicknisi/sessions/compare/v1.31.0...v1.32.0) (2026-10-20)
+
+
+### Features
+
+* **wrapped:** shareable short reel, per-slide images, and a no-install curl one-liner ([#104](https://github.com/nicknisi/sessions/issues/104)) ([8b13b30](https://github.com/nicknisi/sessions/commit/8b13b3066166e79c2051a0c3dbc3901f7339c16f))
+
 ## [1.31.0](https://github.com/nicknisi/sessions/compare/v1.30.0...v1.31.0) (2026-10-09)
 
 
