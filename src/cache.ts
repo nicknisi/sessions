@@ -1136,7 +1136,8 @@ export async function searchSessions(query: string, opts: SearchOptions = {}): P
         // the empty lexical result) AND the noise filter (a fused query never
         // drags in unrelated near-zero-similarity sessions).
         // # ponytail: fixed default threshold; SESSIONS_EMBED_THRESHOLD overrides it.
-        const semanticHits = sims.filter((s) => s.sim >= abstentionThreshold());
+        const floor = abstentionThreshold();
+        const semanticHits = sims.filter((s) => s.sim >= floor);
         if (semanticHits.length > 0) {
           // Pull metadata (with the SAME filters) for purely-semantic candidates
           // so a paraphrase hit that BM25 never surfaced can enter the results.

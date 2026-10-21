@@ -16,16 +16,16 @@ export interface VectorRow {
 
 // # ponytail: fixed constants; tune only against a logged real miss, per EVAL.md.
 export const RRF_K = 60;
-/** Cosine floor below which a nearest-vector match is ignored. 0.45 suits a model
- *  with a wide cosine spread (the OpenAI text-embedding-3 family); see
- *  abstentionThreshold() for why that default is model-specific. */
+/** Default cosine floor below which a nearest-vector match is ignored. Cosine
+ *  distributions are model-specific, so this is only a default; see
+ *  abstentionThreshold(). */
 export const ABSTENTION_THRESHOLD = 0.45;
 
 /** The abstention floor actually in force: SESSIONS_EMBED_THRESHOLD when it parses
- *  to a number strictly inside (0, 1), else the default above. Cosine distributions
- *  are model-specific — the e5 family compresses unrelated pairs into roughly
- *  0.75–0.95, where 0.45 filters nothing, while text-embedding-3 can sit lower — so
- *  the floor is a per-corpus knob rather than one constant for every model. */
+ *  to a number strictly inside (0, 1), else the default above. Measured with
+ *  multilingual-e5-small, unrelated pairs already sit at roughly 0.75-0.85, where
+ *  0.45 filters nothing, so the floor is a per-model knob rather than one constant
+ *  for every embedder. */
 export function abstentionThreshold(env: NodeJS.ProcessEnv = process.env): number {
   const raw = env.SESSIONS_EMBED_THRESHOLD;
   if (raw === undefined || raw.trim() === '') return ABSTENTION_THRESHOLD;
