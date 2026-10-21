@@ -30,6 +30,7 @@ import {
 import { buildPiTree } from './pi-tree';
 import { extractFiles, extractFilesRead } from './extract-files';
 import { jsonStrings } from './extract-util';
+import { cjkIndexText, cjkQuery, cjkSnippet } from './cjk';
 import { extractCommands } from './extract-commands';
 import { extractErrors } from './extract-errors';
 import { extractThinking } from './extract-thinking';
@@ -103,7 +104,11 @@ function getCodexDir(): string {
 // v13: adds sessions.repo — the main checkout when a session ran in a linked git
 // worktree, recorded at index time so repo scoping still finds the session after the
 // worktree is removed.
-const SCHEMA_VERSION = 13;
+// v14: adds session_cjk_fts and message_cjk_fts — sparse side indexes of two-character
+// sequences for Han/Kana/Hangul text (src/cjk.ts), which `porter unicode61` cannot
+// split. Existing transcripts need a re-parse to populate them, which the drop+rebuild
+// below provides.
+const SCHEMA_VERSION = 14;
 let _db: Database | null = null;
 let _refreshPromise: Promise<RefreshResult> | null = null;
 let _lastRefreshAt = 0;
@@ -177,6 +182,8 @@ function openDb(): Database {
     db.run('DROP TABLE IF EXISTS message_fts');
     db.run('DROP TABLE IF EXISTS ignored_files');
     db.run('DROP TABLE IF EXISTS session_vectors');
+    db.run('DROP TABLE IF EXISTS session_cjk_fts');
+    db.run('DROP TABLE IF EXISTS message_cjk_fts');
     db.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   }
 
@@ -247,6 +254,31 @@ function openDb(): Database {
       msg_index UNINDEXED,
       role UNINDEXED,
       text,
+      tokenize = 'porter unicode61'
+    )
+  `);
+  // The CJK lane (v14). `porter unicode61` keeps an unspaced run of Han/Kana/Hangul as
+  // ONE token, so 검색 cannot find 검색을. These tables hold the same text re-expressed
+  // as overlapping character pairs (src/cjk.ts) and have rows only for text that
+  // contains CJK, so a corpus without it pays nothing and matches exactly as before.
+  // session_cjk_fts mirrors session_fts column for column so bm25 reuses its weights.
+  // message_cjk_fts keeps no second copy of the message: a row shares its rowid with
+  // the message_fts row it describes, and a hit reads the original text through it.
+  db.run(`
+    CREATE VIRTUAL TABLE IF NOT EXISTS session_cjk_fts USING fts5(
+      file_path UNINDEXED,
+      headline,
+      commands,
+      paths,
+      context_text,
+      thinking,
+      tokenize = 'porter unicode61'
+    )
+  `);
+  db.run(`
+    CREATE VIRTUAL TABLE IF NOT EXISTS message_cjk_fts USING fts5(
+      file_path UNINDEXED,
+      cjk,
       tokenize = 'porter unicode61'
     )
   `);
@@ -469,6 +501,8 @@ function ignoreSession(
     db.run('DELETE FROM sessions WHERE file_path = ?', [filePath]);
     db.run('DELETE FROM session_fts WHERE file_path = ?', [filePath]);
     db.run('DELETE FROM message_fts WHERE file_path = ?', [filePath]);
+    db.run('DELETE FROM session_cjk_fts WHERE file_path = ?', [filePath]);
+    db.run('DELETE FROM message_cjk_fts WHERE file_path = ?', [filePath]);
     db.run('DELETE FROM session_vectors WHERE file_path = ?', [filePath]);
   }
   db.run('INSERT OR REPLACE INTO ignored_files (file_path, mtime, size) VALUES (?, ?, ?)', [
@@ -527,6 +561,8 @@ function writeSessionRow(
   if (hasExisting) {
     db.run('DELETE FROM session_fts WHERE file_path = ?', [filePath]);
     db.run('DELETE FROM message_fts WHERE file_path = ?', [filePath]);
+    db.run('DELETE FROM session_cjk_fts WHERE file_path = ?', [filePath]);
+    db.run('DELETE FROM message_cjk_fts WHERE file_path = ?', [filePath]);
   }
   db.run('DELETE FROM ignored_files WHERE file_path = ?', [filePath]);
   db.run(
@@ -564,6 +600,13 @@ function writeSessionRow(
     'INSERT INTO session_fts (file_path, headline, commands, paths, context_text, thinking) VALUES (?, ?, ?, ?, ?, ?)',
     [filePath, headline, commandsText, pathsText, contextText, thinking],
   );
+  const sessionCjk = [headline, commandsText, pathsText, contextText, thinking].map(cjkIndexText);
+  if (sessionCjk.some((text) => text !== '')) {
+    db.run(
+      'INSERT INTO session_cjk_fts (file_path, headline, commands, paths, context_text, thinking) VALUES (?, ?, ?, ?, ?, ?)',
+      [filePath, ...sessionCjk],
+    );
+  }
   // Message rows: assistant turns always; user turns only when genuine — injected
   // skill bodies and tool results match everything and are exactly the noise the
   // trust fixes eliminated elsewhere. Their indices are still consumed by the
@@ -571,14 +614,22 @@ function writeSessionRow(
   // caches the prepared statement, which matters at ~74 rows/session; the calls run
   // inside refreshIndex's per-batch transaction, never autocommit.
   const insertMessage = db.query('INSERT INTO message_fts (file_path, msg_index, role, text) VALUES (?, ?, ?, ?)');
+  const insertMessageCjk = db.query('INSERT INTO message_cjk_fts (rowid, file_path, cjk) VALUES (?, ?, ?)');
+  // A CJK-bearing message also gets a message_cjk_fts row under the SAME rowid; every
+  // path that deletes message_fts rows by file_path deletes the cjk rows with them.
+  const insertWithCjk = (index: number, role: string, text: string): void => {
+    const { lastInsertRowid } = insertMessage.run(filePath, index, role, text);
+    const cjk = cjkIndexText(text);
+    if (cjk !== '') insertMessageCjk.run(lastInsertRowid, filePath, cjk);
+  };
   for (const m of messages) {
     if (m.role === 'user' && !m.genuine) continue;
-    insertMessage.run(filePath, m.index, m.role, m.text);
+    insertWithCjk(m.index, m.role, m.text);
   }
   // Subagent transcripts have no place in the parent's message numbering, so their
   // user text rides in a single sentinel row (msg_index -1): it keeps the session
   // findable by subagent-only terms but is excluded from messageHits.
-  if (subagentContent) insertMessage.run(filePath, -1, 'user', subagentContent);
+  if (subagentContent) insertWithCjk(-1, 'user', subagentContent);
   return { cwd: metadata.cwd };
 }
 
@@ -672,6 +723,8 @@ async function runRefreshIndex(opts: RefreshOptions): Promise<RefreshResult> {
         db.run('DELETE FROM sessions WHERE file_path = ?', [path]);
         db.run('DELETE FROM session_fts WHERE file_path = ?', [path]);
         db.run('DELETE FROM message_fts WHERE file_path = ?', [path]);
+        db.run('DELETE FROM session_cjk_fts WHERE file_path = ?', [path]);
+        db.run('DELETE FROM message_cjk_fts WHERE file_path = ?', [path]);
         db.run('DELETE FROM session_vectors WHERE file_path = ?', [path]);
         db.run('DELETE FROM ignored_files WHERE file_path = ?', [path]);
       }
@@ -922,6 +975,8 @@ function rowLimit(value: number | undefined, fallback: number): number {
 export const SESSION_FTS_COLUMN_WEIGHTS = [0.0, 10.0, 6.0, 5.0, 2.0, 0.5] as const;
 // message_fts: file_path, msg_index, role, text — only the text column ranks.
 export const MESSAGE_FTS_COLUMN_WEIGHTS = [0.0, 0.0, 0.0, 1.0] as const;
+// message_cjk_fts: file_path, cjk — only the cjk column ranks.
+export const MESSAGE_CJK_FTS_COLUMN_WEIGHTS = [0.0, 1.0] as const;
 // bm25 can't weight by row, so user-turn ranks are boosted in JS instead (bm25
 // is more-negative-is-better; multiplying a negative rank improves it).
 export const USER_HIT_BOOST = 1.5;
@@ -973,12 +1028,14 @@ export async function searchSessions(query: string, opts: SearchOptions = {}): P
   // nothing unless every word was present. This matters most for the LLM/MCP caller,
   // which issues long natural-language queries. Quoting each term keeps FTS5 operators
   // in user input literal. An all-whitespace/quotes query yields no terms → recent list.
-  const ftsTerms = query
+  const queryTerms = query
     .replace(/['"]/g, '')
     .split(/\s+/)
-    .filter((w) => w.length > 0)
-    .map((w) => `"${w}"`);
+    .filter((w) => w.length > 0);
+  const ftsTerms = queryTerms.map((w) => `"${w}"`);
   const ftsQuery = ftsTerms.join(' OR ');
+  // The same terms for the CJK lane (src/cjk.ts); '' only when there are none.
+  const cjkMatch = cjkQuery(queryTerms);
 
   // Both branches filter the sessions table directly with the same conditions.
   const conditions: string[] = [];
@@ -1039,6 +1096,51 @@ export async function searchSessions(query: string, opts: SearchOptions = {}): P
       FROM message_fts WHERE message_fts MATCH ?
     `)
       .all(ftsQuery);
+
+    // CJK lane: sessions and messages the primary index cannot see — an unspaced
+    // Han/Kana/Hangul run is a single token there — merged into the same hit lists
+    // before ranking. A hit both lanes found keeps its better rank and the primary
+    // lane's snippet. Both tables are empty for text without CJK, so this adds nothing
+    // to such a corpus. Known limit: each index keeps its own IDF statistics, so the
+    // two lanes' bm25 values are not calibrated against each other. Within a lane the
+    // order is exact; across lanes it is approximate, and only CJK queries are affected.
+    if (cjkMatch) {
+      const sessionHitFor = new Map(sessionHits.map((s) => [s.file_path, s]));
+      const cjkSessionRows = db
+        .query<{ file_path: string; srank: number }, [string]>(`
+        SELECT file_path, bm25(session_cjk_fts, ${SESSION_FTS_COLUMN_WEIGHTS.join(', ')}) AS srank
+        FROM session_cjk_fts WHERE session_cjk_fts MATCH ?
+      `)
+        .all(cjkMatch);
+      for (const c of cjkSessionRows) {
+        const seen = sessionHitFor.get(c.file_path);
+        if (seen) seen.srank = Math.min(seen.srank, c.srank);
+        else sessionHits.push({ file_path: c.file_path, srank: c.srank, ssnippet: null });
+      }
+
+      const messageHitFor = new Map(messageRows.map((m) => [`${m.file_path}\u0000${m.msg_index}`, m]));
+      const cjkMessageRows = db
+        .query<{ file_path: string; msg_index: number; role: string; mrank: number; text: string }, [string]>(`
+        SELECT m.file_path AS file_path, m.msg_index AS msg_index, m.role AS role,
+               bm25(message_cjk_fts, ${MESSAGE_CJK_FTS_COLUMN_WEIGHTS.join(', ')}) AS mrank, m.text AS text
+        FROM message_cjk_fts JOIN message_fts m ON m.rowid = message_cjk_fts.rowid
+        WHERE message_cjk_fts MATCH ?
+      `)
+        .all(cjkMatch);
+      for (const c of cjkMessageRows) {
+        const seen = messageHitFor.get(`${c.file_path}\u0000${c.msg_index}`);
+        if (seen) seen.mrank = Math.min(seen.mrank, c.mrank);
+        else {
+          messageRows.push({
+            file_path: c.file_path,
+            msg_index: c.msg_index,
+            role: c.role,
+            mrank: c.mrank,
+            msnippet: cjkSnippet(c.text, queryTerms),
+          });
+        }
+      }
+    }
 
     // Role weighting replaces the old user_content 3.0 / assistant_content 2.0
     // column weights (see USER_HIT_BOOST above).
