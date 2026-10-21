@@ -34,12 +34,14 @@ floor and the subject of this eval: sessions re-finds work by concrete cues
 gates hold that floor.
 
 Embeddings are not evaluated here. The optional semantic lane (`src/semantic/`,
-Ollama-detected, localhost-only) fuses with lexical ranking to catch paraphrase
+local by default: Ollama-detected, or a remote endpoint the user opts into)
+fuses with lexical ranking to catch paraphrase
 ("flaky tests" finding "intermittent CI failures") — additively, never replacing
-lexical. It has its own suite (`src/semantic/semantic.test.ts`) run against a fake
-deterministic embedder, so `bun run eval` stays embedder-free and green on any
-machine: it executes `searchSessions` with no embedder present, so the fusion lane
-never engages and the numbers below measure lexical alone.
+lexical. It has its own suites (`src/semantic/semantic.test.ts`, `remote.test.ts`)
+run against fake deterministic embedders and loopback servers, so `bun run eval`
+stays embedder-free and green on any machine: it executes `searchSessions` with no
+embedder present, so the fusion lane never engages and the numbers below measure
+lexical alone.
 
 1. **The fixture is frozen.** Do not edit an expectation to match whatever the
    ranker currently does. If a golden fails, either the code regressed or the
