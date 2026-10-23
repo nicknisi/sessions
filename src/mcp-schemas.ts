@@ -384,17 +384,25 @@ export const WhyDidThisChangeOutput = z.object({
 
 // ——— get_handoff_brief ———
 
-const commitRef = z.object({ sha: z.string(), subject: z.string(), authoredAt: z.string() });
+const commitRef = z.object({ sha: z.string(), subject: z.string(), authoredAt: z.string(), committedAt: z.string() });
 
 export const HandoffDriftOutput = z.object({
   commitsSince: z.number(),
   capped: z.boolean(),
   edited: z.array(
-    z.object({ path: z.string(), commitsSince: z.array(commitRef), dirty: z.boolean(), deleted: z.boolean() }),
+    z.object({
+      path: z.string(),
+      commitsSince: z.array(commitRef),
+      commitsSinceTotal: z.number(),
+      dirty: z.boolean(),
+      deleted: z.boolean(),
+    }),
   ),
   editedTotal: z.number(),
   readChanged: z.array(z.string()),
+  readChangedTotal: z.number(),
   landed: z.array(commitRef),
+  landedTotal: z.number(),
 });
 
 export const GetHandoffBriefOutput = z.object({

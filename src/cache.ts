@@ -1425,6 +1425,37 @@ export async function sessionByFile(filePath: string): Promise<HandoffSessionRow
     .get(filePath);
 }
 
+/** One session as `sessions continue` weighs it when no target is given. */
+export interface ContinueCandidateRow {
+  file_path: string;
+  session_id: string;
+  first_prompt: string;
+  message_count: number;
+  files_count: number;
+  closing_user: string;
+  closing_assistant: string;
+  created_at: string;
+}
+
+/**
+ * Every session in a repo (or, outside git, under `cwd`), most recently active first: last
+ * timestamp, then first, then day. Unbounded on purpose, so the caller can skip ineligible
+ * rows without a page cap hiding an older session worth continuing. Narrow rows keep it cheap.
+ */
+export async function sessionsByLastActivity(repo: RepoInfo | null, cwd: string): Promise<ContinueCandidateRow[]> {
+  const db = getDb();
+  await ensureIndexFresh();
+  const scope = repo ? repoScopeClause(repoRoots(repo)) : underRoot(cwd);
+  return db
+    .query<ContinueCandidateRow, any[]>(
+      `SELECT file_path, session_id, first_prompt, message_count, json_array_length(files_touched) AS files_count,
+              closing_user, closing_assistant, created_at
+       FROM sessions WHERE ${scope.clause}
+       ORDER BY COALESCE(NULLIF(ended_at, ''), NULLIF(started_at, ''), date) DESC`,
+    )
+    .all(...scope.params);
+}
+
 /** Sessions recorded in exactly `cwd` on or after `sinceDay` (YYYY-MM-DD) — the pool
  *  identifyOwnSession picks the caller's live session from. */
 export async function ownSessionCandidates(cwd: string, sinceDay: string): Promise<OwnCandidate[]> {

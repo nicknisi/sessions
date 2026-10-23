@@ -3,57 +3,66 @@
 // agent a bounded brief instead: the session's arc, whether its work landed, what changed
 // in the files it touched since, and the repo's standing memory.
 import { existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 import { C, disableColors } from './colors';
 import { buildSessionDigest, clip, type SessionDigest } from './digest';
 import { readSessionLines } from './session-io';
 import {
   primerMemory,
   resolveSessionFile,
-  searchSessions,
   sessionByFile,
+  sessionsByLastActivity,
+  type ContinueCandidateRow,
   type HandoffSessionRow,
   type PrimerMemoryTier,
 } from './cache';
 import { dirtyPaths, logSince, resolveRepo, type CommitInfo, type RepoInfo } from './repo';
 import { parseFilesTouched, SLACK_AFTER_MS, toRepoRelative } from './why/correlate';
 import { isTrivia } from './significance';
-import type { SessionResult, Tool } from './types';
+import type { Tool } from './types';
 
-/** Caps that keep the brief bounded (~3k tokens with a full digest). */
+/** Caps that keep the brief bounded (~3k tokens with a full digest). Every capped list
+ *  carries its true total, so the brief can say how much it left out. */
 export const MAX_EDITED = 15;
 export const MAX_READ_CHANGED = 10;
-/** History walked for drift; past this the brief says "N+". */
+export const MAX_COMMITS_PER_FILE = 3;
+export const MAX_LANDED = 5;
+/** History walked for drift; past this the brief says "N+" and hedges its file-level claims. */
 export const DRIFT_LOG_LIMIT = 500;
 
 export interface CommitRef {
   sha: string;
   subject: string;
   authoredAt: string;
+  committedAt: string;
 }
 
 export interface FileDrift {
   /** Repo-relative. */
   path: string;
-  /** Commits that touched it after the session's work window, newest first. */
+  /** Commits that touched it after the session, newest first, capped at MAX_COMMITS_PER_FILE. */
   commitsSince: CommitRef[];
+  commitsSinceTotal: number;
   /** Uncommitted changes in the checkout right now. */
   dirty: boolean;
   deleted: boolean;
 }
 
 export interface Drift {
-  /** Commits on HEAD authored after the session's work window. */
+  /** Commits on HEAD committed after the session ended, not counting its own landed work. */
   commitsSince: number;
-  /** True when the walk hit DRIFT_LOG_LIMIT, so commitsSince is a floor. */
+  /** True when the walk hit DRIFT_LOG_LIMIT: counts are floors, and "unchanged" is unproven. */
   capped: boolean;
   /** Files the session edited, moved ones first, capped at MAX_EDITED. */
   edited: FileDrift[];
   editedTotal: number;
   /** Files it only read that have moved since, capped at MAX_READ_CHANGED. */
   readChanged: string[];
-  /** Commits touching its files authored during the session or within SLACK_AFTER_MS of it. */
+  readChangedTotal: number;
+  /** Commits touching its edited files authored during the session or within SLACK_AFTER_MS
+   *  of it, capped at MAX_LANDED. */
   landed: CommitRef[];
+  landedTotal: number;
 }
 
 export interface HandoffBrief {
@@ -83,43 +92,59 @@ function sessionWindow(row: HandoffSessionRow) {
   return { start, end };
 }
 
-const ref = (c: CommitInfo): CommitRef => ({ sha: c.sha.slice(0, 7), subject: c.subject, authoredAt: c.authoredAt });
+const ref = (c: CommitInfo): CommitRef => ({
+  sha: c.sha.slice(0, 7),
+  subject: c.subject,
+  authoredAt: c.authoredAt,
+  committedAt: c.committedAt,
+});
 
 /** Read-only on git: one log walk, one diff, one ls-files. */
 export function computeDrift(repo: RepoInfo, row: HandoffSessionRow): Drift {
   const { start, end } = sessionWindow(row);
-  // A day of margin before the start: the walk is bounded by committer time, authorship by author time.
+  // A day of margin: the walk is bounded by committer time, landing is judged by author time.
   const commits = logSince(repo, new Date(start - 86_400_000).toISOString(), DRIFT_LOG_LIMIT);
-  const authored = (c: CommitInfo): number => Date.parse(c.authoredAt);
-  const workEnd = end + SLACK_AFTER_MS;
-  const after = commits.filter((c) => authored(c) > workEnd);
 
-  // The session's worktree first; its recorded cwd covers a worktree that has since been deleted.
+  // Tool paths can be relative to the session's cwd, which need not be the repo root.
+  // The session's worktree is tried first; its recorded cwd covers a worktree since deleted.
   const roots = [...new Set([repo.currentWorktree, row.cwd])];
   const rel = (paths: string[]): string[] =>
-    [...new Set(paths.map((p) => toRepoRelative(p, roots)))].filter((p) => p && !p.startsWith('/'));
+    [...new Set(paths.map((p) => toRepoRelative(isAbsolute(p) ? p : resolve(row.cwd, p), roots)))].filter(
+      (p) => p && !p.startsWith('/'),
+    );
   const editedPaths = rel(parseFilesTouched(row.files_touched));
   const edited = new Set(editedPaths);
 
+  // Its own work: written during the session (author time survives rebases), in its files.
   const landed = commits.filter((c) => {
-    const t = authored(c);
-    return t >= start && t <= workEnd && c.files.some((f) => edited.has(f));
+    const t = Date.parse(c.authoredAt);
+    return t >= start && t <= end + SLACK_AFTER_MS && c.files.some((f) => edited.has(f));
   });
+  const own = new Set(landed);
+  // Everything else that entered the history after it ended, by committer time, so a later
+  // cherry-pick or rebase of older work counts as a change too.
+  const after = commits.filter((c) => Date.parse(c.committedAt) > end && !own.has(c));
 
   const dirty = dirtyPaths(repo);
-  const touchedAfter = (p: string): CommitInfo[] => after.filter((c) => c.files.includes(p));
+  const touching = (p: string): CommitInfo[] => after.filter((c) => c.files.includes(p));
 
-  const files: FileDrift[] = editedPaths.map((path) => ({
-    path,
-    commitsSince: touchedAfter(path).map(ref),
-    dirty: dirty.has(path),
-    deleted: !existsSync(join(repo.currentWorktree, path)),
-  }));
-  const moved = (f: FileDrift): boolean => f.commitsSince.length > 0 || f.dirty || f.deleted;
+  const files: FileDrift[] = editedPaths.map((path) => {
+    const since = touching(path);
+    return {
+      path,
+      commitsSince: since.slice(0, MAX_COMMITS_PER_FILE).map(ref),
+      commitsSinceTotal: since.length,
+      dirty: dirty.has(path),
+      deleted: !existsSync(join(repo.currentWorktree, path)),
+    };
+  });
+  const moved = (f: FileDrift): boolean => f.commitsSinceTotal > 0 || f.dirty || f.deleted;
   files.sort((a, b) => Number(moved(b)) - Number(moved(a)));
 
+  // Read files never landed anything, so any later commit counts, including one in the slack window.
   const readChanged = rel(parseFilesTouched(row.files_read)).filter(
-    (p) => !edited.has(p) && (dirty.has(p) || touchedAfter(p).length > 0),
+    (p) =>
+      !edited.has(p) && (dirty.has(p) || commits.some((c) => Date.parse(c.committedAt) > end && c.files.includes(p))),
   );
 
   return {
@@ -128,7 +153,9 @@ export function computeDrift(repo: RepoInfo, row: HandoffSessionRow): Drift {
     edited: files.slice(0, MAX_EDITED),
     editedTotal: files.length,
     readChanged: readChanged.slice(0, MAX_READ_CHANGED),
-    landed: landed.map(ref),
+    readChangedTotal: readChanged.length,
+    landed: landed.slice(0, MAX_LANDED).map(ref),
+    landedTotal: landed.length,
   };
 }
 
@@ -142,7 +169,11 @@ function ago(iso: string, now: number): string {
 }
 
 const commitLine = (c: CommitRef, now: number): string =>
-  `${c.sha} "${clip(c.subject, 80)}" (${ago(c.authoredAt, now)})`;
+  `${c.sha} "${clip(c.subject, 80)}" (${ago(c.committedAt, now)})`;
+
+/** Commit lines, then how many more there were. */
+const commitList = (shown: CommitRef[], total: number, now: number): string =>
+  shown.map((c) => commitLine(c, now)).join(', ') + (total > shown.length ? ` and ${total - shown.length} more` : '');
 
 export interface BriefInput {
   row: HandoffSessionRow;
@@ -189,11 +220,13 @@ export function renderBrief({ row, digest, drift, memory, now }: BriefInput): st
   } else {
     const n = `${drift.commitsSince}${drift.capped ? '+' : ''}`;
     out.push(`${n} commit${drift.commitsSince === 1 ? '' : 's'} on this branch since the session ended.`, '');
+    // A capped walk never saw the oldest post-session history, so absence there proves nothing.
+    const unchecked = drift.capped ? ` in the last ${DRIFT_LOG_LIMIT} commits (older history not checked)` : '';
     if (drift.landed.length) {
-      out.push(`Its work landed in: ${drift.landed.map((c) => commitLine(c, now)).join('; ')}.`, '');
+      out.push(`Its work landed in: ${commitList(drift.landed, drift.landedTotal, now)}.`, '');
     } else if (drift.editedTotal > 0) {
       out.push(
-        'No commit touching its files was authored during the session or soon after: its edits may be uncommitted, abandoned, or landed under another history.',
+        `No commit touching its files was authored during the session or soon after${unchecked}: its edits may be uncommitted, abandoned, or landed under another history.`,
         '',
       );
     }
@@ -202,16 +235,20 @@ export function renderBrief({ row, digest, drift, memory, now }: BriefInput): st
       for (const f of drift.edited) {
         const notes: string[] = [];
         if (f.deleted) notes.push('deleted');
-        if (f.commitsSince.length) notes.push(`changed by ${f.commitsSince.map((c) => commitLine(c, now)).join(', ')}`);
+        if (f.commitsSinceTotal) notes.push(`changed by ${commitList(f.commitsSince, f.commitsSinceTotal, now)}`);
         if (f.dirty) notes.push('uncommitted changes now');
-        out.push(`- \`${f.path}\`: ${notes.length ? notes.join('; ') : 'unchanged since'}`);
+        out.push(
+          `- \`${f.path}\`: ${notes.length ? notes.join('; ') : drift.capped ? `no change${unchecked}` : 'unchanged since'}`,
+        );
       }
       const more = drift.editedTotal - drift.edited.length;
       if (more > 0) out.push(`- …and ${more} more`);
       out.push('');
     }
     if (drift.readChanged.length) {
-      out.push(`Files it read that have changed since: ${drift.readChanged.map((p) => `\`${p}\``).join(', ')}.`, '');
+      const more = drift.readChangedTotal - drift.readChanged.length;
+      const list = drift.readChanged.map((p) => `\`${p}\``).join(', ') + (more > 0 ? ` and ${more} more` : '');
+      out.push(`Files it read that have changed since: ${list}.`, '');
     }
     out.push('File contents quoted in that session may be stale. Re-read a file before editing it.', '');
   }
@@ -233,9 +270,11 @@ export function renderBrief({ row, digest, drift, memory, now }: BriefInput): st
 
 /** Build the brief for one transcript path; null when it isn't indexed or readable. */
 export async function buildHandoff(filePath: string, fallbackDir = process.cwd()): Promise<HandoffBrief | null> {
+  // The index lookup gates the read: only a transcript the index already knows is ever opened.
   const row = await sessionByFile(filePath);
-  const lines = readSessionLines(filePath);
-  if (!row || lines.length === 0) return null;
+  if (!row) return null;
+  const lines = readSessionLines(row.file_path);
+  if (lines.length === 0) return null;
 
   const launchDir = existsSync(row.cwd) ? row.cwd : fallbackDir;
   const repo = resolveRepo(launchDir);
@@ -326,27 +365,36 @@ export function parseContinueArgs(argv: string[]): ContinueArgs {
   return args;
 }
 
-/** A path or session id, else the newest session in the current repo that isn't the caller's own. */
-async function resolveTarget(target: string): Promise<string | null> {
+/** An indexed transcript path (as given, or resolved from a relative one), a session id, or
+ *  else the most recently active session in the current repo that is worth continuing. */
+export async function resolveTarget(target: string): Promise<string | null> {
   if (target) {
-    if (readSessionLines(target).length > 0) return target;
+    // Exact key first: OpenCode's synthetic paths exist only in the index, never on disk. Then
+    // against the shell's logical cwd ($PWD), which keeps symlinked dirs like a dotfiles-managed
+    // ~/.pi as the index recorded them, and last against the physical cwd.
+    const logical = resolve(process.env.PWD ?? process.cwd(), target);
+    for (const path of new Set([target, logical, resolve(target)])) {
+      const row = await sessionByFile(path);
+      if (row) return row.file_path;
+    }
     return resolveSessionFile(target);
   }
-  const repo = resolveRepo(process.cwd());
-  const recent = await searchSessions('', { project: repo?.container ?? process.cwd(), limit: 20 });
   // Run from inside an agent, the newest session is that agent's own.
-  const own = (s: SessionResult): boolean =>
-    s.filePath === process.env.PI_SESSION_FILE || s.sessionId === process.env.CLAUDE_CODE_SESSION_ID;
+  const own = (r: ContinueCandidateRow): boolean =>
+    r.file_path === process.env.PI_SESSION_FILE || r.session_id === process.env.CLAUDE_CODE_SESSION_ID;
   // No prompt means no genuine user turn, so nothing to continue.
-  const trivia = (s: SessionResult): boolean =>
-    !s.displayText ||
-    isTrivia({
-      messageCount: s.messageCount,
-      filesTouchedCount: s.files.length,
-      closingText: '',
-      createdAt: s.createdAt,
+  const worthIt = (r: ContinueCandidateRow): boolean =>
+    r.first_prompt !== '' &&
+    !isTrivia({
+      messageCount: r.message_count,
+      filesTouchedCount: r.files_count,
+      closingText: `${r.closing_user} ${r.closing_assistant}`,
+      createdAt: r.created_at,
     });
-  return recent.find((s) => !own(s) && !trivia(s))?.filePath ?? null;
+  for (const r of await sessionsByLastActivity(resolveRepo(process.cwd()), process.cwd())) {
+    if (!own(r) && worthIt(r)) return r.file_path;
+  }
+  return null;
 }
 
 export async function runContinue(args: ContinueArgs): Promise<void> {

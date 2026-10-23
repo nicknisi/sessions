@@ -133,8 +133,10 @@ export function branchLabel(cwd: string, branches: Map<string, string>): string 
 export interface CommitInfo {
   sha: string;
   subject: string;
-  /** ISO author time (%aI). */
+  /** ISO author time (%aI): when the change was written. */
   authoredAt: string;
+  /** ISO committer time (%cI): when it entered this history, later than authoredAt after a rebase or cherry-pick. */
+  committedAt: string;
   /** Repo-relative paths from --name-only. */
   files: string[];
   /** Co-Authored-By and other trailers, verbatim — annotation only, never a confidence tier. */
@@ -148,7 +150,7 @@ export interface CommitInfo {
 // unambiguous without escaping.
 const RS = '\x1e';
 const US = '\x1f';
-const COMMIT_FORMAT = `${RS}%H${US}%aI${US}%s${US}%P${US}%(trailers:only,unfold,separator=${US})`;
+const COMMIT_FORMAT = `${RS}%H${US}%aI${US}%cI${US}%s${US}%P${US}%(trailers:only,unfold,separator=${US})`;
 
 /** Parse the RS/US-delimited `--name-only` output of log/show into commits. */
 function parseCommits(out: string): CommitInfo[] {
@@ -162,14 +164,15 @@ function parseCommits(out: string): CommitInfo[] {
     const sha = fields[0] ?? '';
     if (!sha) continue;
     const authoredAt = fields[1] ?? '';
-    const subject = fields[2] ?? '';
-    const merge = (fields[3] ?? '').trim().includes(' ');
-    const trailers = fields.slice(4).filter((t) => t.trim());
+    const committedAt = fields[2] ?? '';
+    const subject = fields[3] ?? '';
+    const merge = (fields[4] ?? '').trim().includes(' ');
+    const trailers = fields.slice(5).filter((t) => t.trim());
     const files = rest
       .split('\n')
       .map((l) => l.trim())
       .filter((l) => l.length > 0);
-    commits.push({ sha, subject, authoredAt, files, trailers, merge });
+    commits.push({ sha, subject, authoredAt, committedAt, files, trailers, merge });
   }
   return commits;
 }
@@ -211,9 +214,7 @@ export function isCommitRef(repo: RepoInfo, ref: string): boolean {
   return res.ok && res.out.trim() === 'commit';
 }
 
-/** Commits reachable from HEAD committed since `sinceIso`, newest first, capped at `limit`.
- *  Committer time bounds the walk (a rebase keeps author time), so callers filter on
- *  authoredAt when that is what they mean. */
+/** Commits reachable from HEAD committed since `sinceIso`, newest first, capped at `limit`. */
 export function logSince(repo: RepoInfo, sinceIso: string, limit: number): CommitInfo[] {
   const res = git(repo.currentWorktree, [
     'log',
