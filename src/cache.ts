@@ -44,6 +44,7 @@ import { archiveFile, listArchived, loadManifest, saveManifest, type Manifest } 
 import { MAX_FILES as MAX_PRIMER_FILES } from './search-format';
 import { type RepoInfo, globPrefix, branchLabel, cwdUnder, mainCheckoutOf } from './repo';
 import { isTrivia, blendedScore, type ScorableSession } from './significance';
+import type { OwnCandidate, SessionKey } from './own-session';
 import { detectEmbedder, embedQuery } from './semantic/embed';
 import { topKSimilar, fuseRRF, abstentionThreshold, type VectorRow } from './semantic/fuse';
 
@@ -989,6 +990,8 @@ export interface SearchOptions {
    *  Empty array = absent. With no query, filtered results order newest-first (created_at). */
   files?: string[];
   limit?: number;
+  /** One session to leave out: the MCP caller's own live session (src/own-session.ts). */
+  exclude?: SessionKey | null;
 }
 
 export async function searchSessions(query: string, opts: SearchOptions = {}): Promise<SessionResult[]> {
@@ -1052,6 +1055,10 @@ export async function searchSessions(query: string, opts: SearchOptions = {}): P
     condParams.push(...scope.params);
   }
   if (opts.errored) conditions.push('errored = 1');
+  if (opts.exclude) {
+    conditions.push('NOT (tool = ? AND session_id = ?)');
+    condParams.push(opts.exclude.tool, opts.exclude.sessionId);
+  }
   // Files filter: substring match over the JSON-array text columns — callers pass a
   // path suffix or full path. Deliberately imprecise (a short fragment can match an
   // unrelated longer path); precision comes from passing longer suffixes. LIKE
@@ -1338,6 +1345,8 @@ export interface GrepOptions {
   limit?: number;
   /** Snippet radius in chars around the match (default 60). */
   contextChars?: number;
+  /** One session to leave out: the MCP caller's own live session (src/own-session.ts). */
+  exclude?: SessionKey | null;
 }
 
 export interface GrepHit {
@@ -1418,6 +1427,10 @@ export async function grepSessions(pattern: string, opts: GrepOptions = {}): Pro
     conditions.push('s.date <= ?');
     params.push(opts.before);
   }
+  if (opts.exclude) {
+    conditions.push('NOT (s.tool = ? AND s.session_id = ?)');
+    params.push(opts.exclude.tool, opts.exclude.sessionId);
+  }
   // Literal mode: a LIKE filter cuts rows before the JS regex confirms each match — a huge
   // win for rare terms. But SQLite LIKE folds case for ASCII only, while the JS `/i` regex
   // folds Unicode too, so for a case-insensitive pattern containing a non-ASCII letter the
@@ -1487,6 +1500,77 @@ export async function grepSessions(pattern: string, opts: GrepOptions = {}): Pro
   };
 }
 
+/** One indexed session projected to what a handoff brief (src/continue.ts) needs. */
+export interface HandoffSessionRow {
+  file_path: string;
+  cwd: string;
+  tool: string;
+  session_id: string;
+  date: string;
+  started_at: string;
+  ended_at: string;
+  first_prompt: string;
+  custom_title: string;
+  files_touched: string;
+  files_read: string;
+}
+
+/** The indexed row for one transcript path, or null when it isn't indexed. */
+export async function sessionByFile(filePath: string): Promise<HandoffSessionRow | null> {
+  const db = getDb();
+  await ensureIndexFresh();
+  return db
+    .query<HandoffSessionRow, [string]>(
+      `SELECT file_path, cwd, tool, session_id, date, started_at, ended_at, first_prompt, custom_title,
+              files_touched, files_read
+       FROM sessions WHERE file_path = ?`,
+    )
+    .get(filePath);
+}
+
+/** One session as `sessions continue` weighs it when no target is given. */
+export interface ContinueCandidateRow {
+  file_path: string;
+  session_id: string;
+  first_prompt: string;
+  message_count: number;
+  files_count: number;
+  closing_user: string;
+  closing_assistant: string;
+  created_at: string;
+}
+
+/**
+ * Every session in a repo (or, outside git, under `cwd`), most recently active first: last
+ * timestamp, then first, then day. Unbounded on purpose, so the caller can skip ineligible
+ * rows without a page cap hiding an older session worth continuing. Narrow rows keep it cheap.
+ */
+export async function sessionsByLastActivity(repo: RepoInfo | null, cwd: string): Promise<ContinueCandidateRow[]> {
+  const db = getDb();
+  await ensureIndexFresh();
+  const scope = repo ? repoScopeClause(repoRoots(repo)) : underRoot(cwd);
+  return db
+    .query<ContinueCandidateRow, any[]>(
+      `SELECT file_path, session_id, first_prompt, message_count, json_array_length(files_touched) AS files_count,
+              closing_user, closing_assistant, created_at
+       FROM sessions WHERE ${scope.clause}
+       ORDER BY COALESCE(NULLIF(ended_at, ''), NULLIF(started_at, ''), date) DESC`,
+    )
+    .all(...scope.params);
+}
+
+/** Sessions recorded in exactly `cwd` on or after `sinceDay` (YYYY-MM-DD) — the pool
+ *  identifyOwnSession picks the caller's live session from. */
+export async function ownSessionCandidates(cwd: string, sinceDay: string): Promise<OwnCandidate[]> {
+  const db = getDb();
+  await ensureIndexFresh();
+  return db
+    .query<OwnCandidate, [string, string]>(
+      'SELECT tool, session_id, cwd, started_at, ended_at FROM sessions WHERE cwd = ? AND date >= ?',
+    )
+    .all(cwd, sinceDay);
+}
+
 /**
  * Resolve a session id to its indexed JSONL file path. Refreshes the index
  * first (same as searchSessions) so recently created sessions resolve too.
@@ -1501,7 +1585,15 @@ export async function resolveSessionFile(sessionId: string): Promise<string | nu
       'SELECT file_path FROM sessions WHERE session_id = ? ORDER BY mtime DESC LIMIT 1',
     )
     .get(sessionId);
-  return row?.file_path ?? null;
+  if (row) return row.file_path;
+  // Pi and Codex ids are file stems ending in the uuid their CLIs print, so accept the bare uuid.
+  if (!/^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(sessionId)) return null;
+  const bySuffix = db
+    .query<{ file_path: string }, [string]>(
+      "SELECT file_path FROM sessions WHERE session_id LIKE '%' || ? ORDER BY mtime DESC LIMIT 1",
+    )
+    .get(sessionId);
+  return bySuffix?.file_path ?? null;
 }
 
 interface DateRangeRow {
@@ -1890,12 +1982,12 @@ function bytesToF32(bytes: Uint8Array): Float32Array {
 export const PRIMER_MEMORY_LIMIT = 8;
 
 /** Approved memories for a repo, always-on first, capped — plus the true in-scope total. */
-interface PrimerMemoryTier {
+export interface PrimerMemoryTier {
   memory: PrimerMemory[];
   memoryTotal: number;
 }
 
-function primerMemory(container: string): PrimerMemoryTier {
+export function primerMemory(container: string): PrimerMemoryTier {
   let all: MemoryRecord[];
   try {
     // No topic: the primer has no task to condition on. Opening the store must never be

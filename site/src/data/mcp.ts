@@ -81,6 +81,11 @@ const GROUPS: Group[] = [
           'Where you left off here: recent sessions in detail, older ones as headlines, the branch you were on, and the last thing each one said.',
       },
       {
+        name: 'get_handoff_brief',
+        blurb:
+          'Everything needed to pick an old session back up, checked against the code as it is now: what happened, whether its work landed, and what changed since in every file it touched. Resuming a transcript as-is would hand the agent stale file contents.',
+      },
+      {
         name: 'get_memory',
         blurb:
           'The standing instructions you have already given — build conventions, tooling constraints, rules you should not have to restate. Scoped to this repo, its project group, and your cross-repo workflow rules.',

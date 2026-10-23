@@ -2,11 +2,40 @@
 import { basename } from 'node:path';
 import type { MessageHit, SessionResult, Tool } from './types';
 
-/** The exact resume affordance both the CLI (clipboard) and the MCP (returned field) use. */
-export function buildResumeCommand(tool: Tool, cwd: string, sessionId: string): string {
-  if (tool === 'claude') return `cd "${cwd}" && claude --resume ${sessionId}`;
-  if (tool === 'opencode') return `cd "${cwd}" && opencode --session ${sessionId}`;
-  return `cd "${cwd}"`; // pi, codex: no direct session resume
+/** What a resume command needs from a session — a SessionResult satisfies it as-is. */
+export interface ResumeTarget {
+  tool: Tool;
+  cwd: string;
+  sessionId: string;
+  /** The transcript. Pi resumes by file, which also reaches sessions outside its default dir. */
+  filePath: string;
+}
+
+const TRAILING_UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** One literal shell word: single quotes stop every expansion, and an embedded quote is closed, escaped, reopened. */
+const shellQuote = (s: string): string => `'${s.replaceAll("'", `'\\''`)}'`;
+
+/**
+ * The exact resume affordance the CLI (clipboard), the MCP (returned field) and `why` use.
+ * `fork` starts a new session with the same history instead, leaving the original as it is.
+ */
+export function buildResumeCommand(s: ResumeTarget, opts: { fork?: boolean } = {}): string {
+  const cd = `cd ${shellQuote(s.cwd)}`;
+  const fork = opts.fork === true;
+  switch (s.tool) {
+    case 'claude':
+      return `${cd} && claude --resume ${s.sessionId}${fork ? ' --fork-session' : ''}`;
+    case 'opencode':
+      return `${cd} && opencode --session ${s.sessionId}${fork ? ' --fork' : ''}`;
+    case 'pi':
+      return `${cd} && pi ${fork ? '--fork' : '--session'} ${shellQuote(s.filePath)}`;
+    case 'codex': {
+      // The index's codex id is the file stem, `rollout-<timestamp>-<uuid>`; the CLI takes the uuid.
+      const id = TRAILING_UUID.exec(s.sessionId)?.[0];
+      return id ? `${cd} && codex ${fork ? 'fork' : 'resume'} ${id}` : cd;
+    }
+  }
 }
 
 /**
@@ -72,7 +101,7 @@ export function formatResult(r: SessionResult): FormattedResult {
     errored: r.errored,
     exists: r.exists,
     filePath: r.filePath,
-    resumeCommand: buildResumeCommand(r.tool, r.cwd, r.sessionId),
+    resumeCommand: buildResumeCommand(r),
     branches: r.branches,
     forkedFrom: r.forkedFrom ? basename(r.forkedFrom) : '',
   };

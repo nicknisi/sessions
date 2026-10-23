@@ -1,6 +1,6 @@
 import { test, expect, beforeAll, beforeEach, afterAll } from 'bun:test';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Database } from 'bun:sqlite';
 import { asJsonObject, type JsonValue } from './extract-util';
@@ -638,4 +638,58 @@ test('turn-duration excluded from index (and unknown customTypes are opt-in excl
   // …but neither the excluded timing-noise type nor the unknown type is.
   expect((await cache.searchSessions('chronofizzle', {})).map((x) => x.sessionId)).not.toContain('customnoise');
   expect((await cache.searchSessions('novelnoise', {})).map((x) => x.sessionId)).not.toContain('customnoise');
+});
+
+test('resolveSessionFile: a bare uuid resolves a pi/codex id that ends in it', async () => {
+  const uuid = '01a0d414-2e8c-720d-9624-9761e9511bbb';
+  writePi(`2026-08-04T17-00-00-000Z_${uuid}`, [piHeader, piModelChange, piTurn]);
+  await cache.refreshIndex();
+  expect(await cache.resolveSessionFile(uuid)).toEndWith(`_${uuid}.jsonl`);
+  expect(await cache.resolveSessionFile('9761e9511bbb')).toBeNull(); // a fragment isn't an id
+});
+
+test('continue: sessions order by last activity within a day; relative transcript paths resolve', async () => {
+  const header = { ...piHeader, cwd: '/repoOrder' };
+  const turn = (id: string, at: string, text: string): JsonValue => ({
+    type: 'message',
+    id,
+    parentId: 'm1',
+    timestamp: at,
+    message: { role: 'user', content: [{ type: 'text', text }] },
+  });
+  const reply = (at: string): JsonValue => ({
+    type: 'message',
+    id: 'r1',
+    parentId: 'u1',
+    timestamp: at,
+    message: { role: 'assistant', content: [{ type: 'text', text: 'done, edited the parser' }] },
+  });
+  // Same day: "morning" ends 09:00, "evening" 18:00. Ordering by day alone can't tell them apart.
+  writePi('order-morning', [
+    header,
+    piModelChange,
+    turn('u1', '2026-08-04T08:00:00.000Z', 'morning work'),
+    reply('2026-08-04T09:00:00.000Z'),
+    reply('2026-08-04T09:00:00.000Z'),
+  ]);
+  writePi('order-evening', [
+    header,
+    piModelChange,
+    turn('u1', '2026-08-04T17:00:00.000Z', 'evening work'),
+    reply('2026-08-04T18:00:00.000Z'),
+    reply('2026-08-04T18:00:00.000Z'),
+  ]);
+  await cache.refreshIndex();
+
+  const rows = await cache.sessionsByLastActivity(null, '/repoOrder');
+  expect(rows.map((r) => r.file_path.split('/').pop())).toEqual(
+    expect.arrayContaining(['order-evening.jsonl', 'order-morning.jsonl']),
+  );
+  const order = rows.map((r) => r.file_path.split('/').pop());
+  expect(order.indexOf('order-evening.jsonl')).toBeLessThan(order.indexOf('order-morning.jsonl'));
+
+  const { resolveTarget } = await import('./continue');
+  const evening = rows.find((r) => r.file_path.endsWith('order-evening.jsonl'))!.file_path;
+  expect(await resolveTarget(relative(process.cwd(), evening))).toBe(evening);
+  expect(await resolveTarget(join(tmp, 'not-indexed.jsonl'))).toBeNull();
 });

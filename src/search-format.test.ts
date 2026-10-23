@@ -4,10 +4,40 @@ import { buildResumeCommand, formatResult, MAX_COMMANDS, MAX_FILES } from './sea
 import { formatLine } from './display';
 import type { SessionResult } from './types';
 
-test('buildResumeCommand: claude resumes, pi/codex cd only', () => {
-  expect(buildResumeCommand('claude', '/r', 'abc')).toBe('cd "/r" && claude --resume abc');
-  expect(buildResumeCommand('pi', '/r', 'abc')).toBe('cd "/r"');
-  expect(buildResumeCommand('codex', '/r', 'abc')).toBe('cd "/r"');
+describe('buildResumeCommand', () => {
+  const uuid = '019ecc74-600b-7dd1-8c08-ed30054c97a1';
+  const claude = { tool: 'claude' as const, cwd: '/r', sessionId: 'abc', filePath: '/p/abc.jsonl' };
+  const opencode = { tool: 'opencode' as const, cwd: '/r', sessionId: 'ses_1', filePath: '/db/ses_1' };
+  const pi = { tool: 'pi' as const, cwd: '/r', sessionId: `2026-08-28T04-15-24-821Z_${uuid}`, filePath: '/s/x.jsonl' };
+  const codex = {
+    tool: 'codex' as const,
+    cwd: '/r',
+    sessionId: `rollout-2026-06-15T13-03-59-${uuid}`,
+    filePath: '/c/x.jsonl',
+  };
+
+  test('resumes every tool directly', () => {
+    expect(buildResumeCommand(claude)).toBe("cd '/r' && claude --resume abc");
+    expect(buildResumeCommand(opencode)).toBe("cd '/r' && opencode --session ses_1");
+    expect(buildResumeCommand(pi)).toBe("cd '/r' && pi --session '/s/x.jsonl'");
+    expect(buildResumeCommand(codex)).toBe(`cd '/r' && codex resume ${uuid}`);
+  });
+
+  test('fork starts a new session with the same history', () => {
+    expect(buildResumeCommand(claude, { fork: true })).toBe("cd '/r' && claude --resume abc --fork-session");
+    expect(buildResumeCommand(opencode, { fork: true })).toBe("cd '/r' && opencode --session ses_1 --fork");
+    expect(buildResumeCommand(pi, { fork: true })).toBe("cd '/r' && pi --fork '/s/x.jsonl'");
+    expect(buildResumeCommand(codex, { fork: true })).toBe(`cd '/r' && codex fork ${uuid}`);
+  });
+
+  test('paths are single literal shell words: no expansion, embedded quotes escaped', () => {
+    const odd = { ...pi, cwd: "/a $(id)/it's", filePath: '/s/`x`$HOME.jsonl' };
+    expect(buildResumeCommand(odd)).toBe(`cd '/a $(id)/it'\\''s' && pi --session '/s/\`x\`$HOME.jsonl'`);
+  });
+
+  test('a codex id with no uuid degrades to cd', () => {
+    expect(buildResumeCommand({ ...codex, sessionId: 'rollout-odd' })).toBe("cd '/r'");
+  });
 });
 
 test('formatResult: shapes a SessionResult for callers, including resumeCommand', () => {
@@ -44,7 +74,7 @@ test('formatResult: shapes a SessionResult for callers, including resumeCommand'
     errored: true,
     exists: true,
     filePath: '/f.jsonl',
-    resumeCommand: 'cd "/r" && claude --resume abc',
+    resumeCommand: "cd '/r' && claude --resume abc",
     branches: 0,
     forkedFrom: '',
   });

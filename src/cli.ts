@@ -23,6 +23,8 @@ ${C.bold}Options:${C.reset}
   --file <path>    Only sessions that touched or read this path (substring
                    match; repeatable — every path must match). Newest first
                    when no query is given
+  --fork           Copy a command that forks the picked session (new session,
+                   same history) instead of resuming it
   --mcp            Start as an MCP server (stdio transport)
   --clear-cache    Remove the search index (rebuilds on next use)
   -v, --version    Print the CLI version
@@ -38,6 +40,11 @@ ${C.bold}Commands:${C.reset}
   digest <session> Print the arc of one session as compact markdown (~8k chars):
                    each genuine user turn with its exchange's final assistant
                    reply. Accepts a JSONL file path or an indexed session id
+  continue [<session>]
+                   Pick a past session back up in any agent (--in claude|codex|
+                   pi|opencode) with a brief of its arc, whether its work landed,
+                   and what changed since in the files it touched. Defaults to the
+                   newest session in this repo; --print prints the brief instead
   report           Generate a usage report (HTML dashboard, opens in browser)
                    --out <path> saves instead of opening; --format json|html|both
                    (default html); --stdout prints JSON; --here scopes to the
@@ -89,7 +96,7 @@ function die(msg: string): never {
 }
 
 export function parseArgs(argv: string[]): CliArgs {
-  const args: CliArgs = { toolFilter: '', searchQuery: '', scopeHere: false, errored: false, files: [] };
+  const args: CliArgs = { toolFilter: '', searchQuery: '', scopeHere: false, errored: false, files: [], fork: false };
 
   let i = 0;
   while (i < argv.length) {
@@ -111,6 +118,9 @@ export function parseArgs(argv: string[]): CliArgs {
         break;
       case '--errored':
         args.errored = true;
+        break;
+      case '--fork':
+        args.fork = true;
         break;
       case '--file':
         i++;

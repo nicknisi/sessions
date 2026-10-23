@@ -11,7 +11,9 @@ import {
   getContextPrimer,
   recentSessionsForRepo,
   resolveSessionFile,
+  ownSessionCandidates,
 } from './cache';
+import { identifyOwnSession, START_SLACK_MS, type Caller, type SessionKey } from './own-session';
 import { formatResult, buildResumeCommand } from './search-format';
 import { getSessionMessages, type PiForkMarker } from './parser';
 import { splitFrontmatter, frontmatterDescription } from './skill-frontmatter';
@@ -31,6 +33,7 @@ import { version } from '../package.json';
 import {
   GetActivityDigestOutput,
   GetContextPrimerOutput,
+  GetHandoffBriefOutput,
   GetMemoryOutput,
   GetMemoryRecurrenceOutput,
   GetMemorySourcesOutput,
@@ -43,17 +46,19 @@ import {
   WhyDidThisChangeOutput,
 } from './mcp-schemas';
 import { why, MAX_SESSIONS } from './why/correlate';
+import { buildHandoff } from './continue';
 
 const INSTRUCTIONS =
   'Searchable history of every past AI coding session (Claude Code, Codex, Pi, OpenCode) on this machine — the conversations behind the commits. Decisions, rationale, abandoned approaches, and unfinished threads live here, not in git. ' +
   'Use proactively, without being asked, when: the user references prior work ("last time", "didn\'t we already", "that approach we tried", "why did we do it this way"); work resumes on a repo after a gap (call get_context_primer before starting); a why-question isn\'t answered by the code or git history; or a bug/task smells like something solved before (search_sessions first, re-derive second). ' +
   'Two ways to find things: search_sessions ranks the most relevant sessions for a topic (top-k, not exhaustive); grep_sessions finds every message matching a literal string or regex (exhaustive — use it for "every time", counts, or exact-pattern needs). ' +
   'Prefer bounded calls: get_session_digest over paging full transcripts. ' +
+  'To continue or pick up an earlier session, call get_handoff_brief: it says what changed in the code since, so you never act on stale file contents. ' +
   'Memory are the other half: short standing instructions and durable facts this user has already established (build conventions, tooling constraints, preferences). Call get_memory when starting work in a repo and treat what it returns as binding. ' +
   'Two read-only windows into what OTHER agents remember: get_memory_sources inventories every agent memory store on this machine (pi-hermes, Claude Code, Codex), and review_agent_memories reads their contents with provenance — use them to audit what another harness knows, to spot redundancy against get_memory, or before porting conventions between agents. get_memory_recurrence reports what recurs against that store — approved memories still being violated, untriaged repeats, and fuzzy paraphrase pairs awaiting triage confirmation.';
 
 /**
- * Correct for all 12 tools: every one reads the local index and mutates nothing.
+ * Correct for all 13 tools: every one reads the local index and mutates nothing.
  * why_did_this_change reads git READ-ONLY (log/blame/show) and never writes to a repo.
  * get_memory included — it reads stored memory, it does not record it. The two
  * agent-source tools read other harnesses' stores but only ever open them readonly.
@@ -143,20 +148,42 @@ type SessionMessagePayload = z.infer<typeof GetSessionMessagesOutput>['messages'
 
 // Exported, testable seam: the search_sessions tool delegates to this so its behavior
 // (errored filter, per-result metadata, resumeCommand) can be unit-tested without MCP.
-export async function runSearchSessions(args: {
-  query?: string;
-  tool?: Tool;
-  project?: string;
-  errored?: boolean;
-  files?: string[];
-  limit?: number;
-}): Promise<ToolResult> {
+/** Who is calling this server: the handshake's client name plus the process's own start and cwd. */
+function callerOf(server: McpServer): Caller {
+  return {
+    client: server.server.getClientVersion()?.name,
+    env: process.env,
+    serverStart: Date.now() - process.uptime() * 1000,
+    cwd: process.cwd(),
+  };
+}
+
+/** The caller's own live session (src/own-session.ts); null when there is no caller to ask about. */
+async function ownSession(caller: Caller | undefined): Promise<SessionKey | null> {
+  if (!caller) return null;
+  const since = new Date(caller.serverStart - START_SLACK_MS - 86_400_000).toISOString().slice(0, 10);
+  const candidates = await ownSessionCandidates(caller.cwd, since);
+  return identifyOwnSession(caller, () => candidates);
+}
+
+export async function runSearchSessions(
+  args: {
+    query?: string;
+    tool?: Tool;
+    project?: string;
+    errored?: boolean;
+    files?: string[];
+    limit?: number;
+  },
+  caller?: Caller,
+): Promise<ToolResult> {
   const results = await searchSessions(args.query ?? '', {
     tool: args.tool ?? '',
     project: args.project ?? '',
     errored: args.errored,
     files: args.files,
     limit: args.limit ?? 20,
+    exclude: await ownSession(caller),
   });
 
   const formatted = results.map(formatResult);
@@ -360,19 +387,23 @@ export async function runGetMemoryRecurrence(args: { repo?: string; all?: boolea
 
 // Exported, testable seam: the grep_sessions tool delegates here so its exhaustive-match
 // behavior, totals, and truncation can be unit-tested without MCP plumbing.
-export async function runGrepSessions(args: {
-  pattern: string;
-  regex?: boolean;
-  ignoreCase?: boolean;
-  role?: 'user' | 'assistant';
-  tool?: Tool;
-  project?: string;
-  after?: string;
-  before?: string;
-  limit?: number;
-}): Promise<ToolResult> {
+export async function runGrepSessions(
+  args: {
+    pattern: string;
+    regex?: boolean;
+    ignoreCase?: boolean;
+    role?: 'user' | 'assistant';
+    tool?: Tool;
+    project?: string;
+    after?: string;
+    before?: string;
+    limit?: number;
+  },
+  caller?: Caller,
+): Promise<ToolResult> {
   let result;
   try {
+    const exclude = await ownSession(caller);
     result = await grepSessions(args.pattern, {
       regex: args.regex,
       ignoreCase: args.ignoreCase,
@@ -382,6 +413,7 @@ export async function runGrepSessions(args: {
       after: args.after,
       before: args.before,
       limit: args.limit ?? 50,
+      exclude,
     });
   } catch (e) {
     return toolError(e instanceof Error ? e.message : String(e));
@@ -401,7 +433,7 @@ export async function runGrepSessions(args: {
       role: h.role,
       msgIndex: h.msgIndex,
       snippet: h.snippet,
-      resumeCommand: buildResumeCommand(h.tool, h.project, h.sessionId),
+      resumeCommand: buildResumeCommand({ ...h, cwd: h.project }),
     })),
   };
 
@@ -472,8 +504,15 @@ export async function runGetSessionDigest(args: { filePath: string }): Promise<T
   return toolResult({ ...buildSessionDigest(lines) });
 }
 
+// Exported, testable seam: the get_handoff_brief tool delegates here.
+export async function runGetHandoffBrief(args: { filePath: string; cwd?: string }): Promise<ToolResult> {
+  const brief = await buildHandoff(args.filePath, args.cwd ?? process.cwd());
+  if (!brief) return toolError(`Not an indexed, readable session: ${args.filePath}`);
+  return toolResult({ ...brief });
+}
+
 /**
- * All 12 tool registrations. Extracted alongside createServer() so a test can drive
+ * All 13 tool registrations. Extracted alongside createServer() so a test can drive
  * `tools/list` and `tools/call` over an in-memory transport — the only path that runs
  * the SDK's output validation. The exported `run*` seams stay the handlers' bodies, but
  * they bypass that validation, which is exactly why they cannot cover this surface.
@@ -570,7 +609,7 @@ function registerTools(server: McpServer): void {
     {
       title: 'Search past AI coding sessions',
       description:
-        'Search across all past AI coding sessions from Claude Code, Codex, Pi, and OpenCode. Use proactively when the user references prior work ("didn\'t we already", "last time", "that thing we tried"), when a why-question isn\'t answered by code or git history, or before re-solving a problem that may have been solved in an earlier session. Results are ranked by relevance and capped (top-k) — NOT exhaustive; for every-occurrence, counts, or an exact string/regex, use grep_sessions instead. Returns matching sessions with snippets, the files/commands involved, an errored flag, and a ready-to-run resume command. Each result includes messageHits — the specific matching messages (index, role, snippet); pass a hit\'s index as the offset to get_session_messages to jump straight to the matched exchange. Pi session results also carry `branches` (in-file /tree fork count) and `forkedFrom` (basename of the parent session file for /fork copies, empty when none). To answer "which sessions touched this file?", pass files (with no query) — results come back newest-first.',
+        'Search across all past AI coding sessions from Claude Code, Codex, Pi, and OpenCode. Use proactively when the user references prior work ("didn\'t we already", "last time", "that thing we tried"), when a why-question isn\'t answered by code or git history, or before re-solving a problem that may have been solved in an earlier session. Results are ranked by relevance and capped (top-k) — NOT exhaustive; for every-occurrence, counts, or an exact string/regex, use grep_sessions instead. Returns matching sessions with snippets, the files/commands involved, an errored flag, and a ready-to-run resume command. Each result includes messageHits — the specific matching messages (index, role, snippet); pass a hit\'s index as the offset to get_session_messages to jump straight to the matched exchange. Pi session results also carry `branches` (in-file /tree fork count) and `forkedFrom` (basename of the parent session file for /fork copies, empty when none). To answer "which sessions touched this file?", pass files (with no query) — results come back newest-first. Your own live session is left out when it can be identified.',
       inputSchema: {
         query: z
           .string()
@@ -593,7 +632,7 @@ function registerTools(server: McpServer): void {
       annotations: READ_ONLY,
     },
     async ({ query, tool, project, errored, files, limit }) =>
-      runSearchSessions({ query, tool, project, errored, files, limit }),
+      runSearchSessions({ query, tool, project, errored, files, limit }, callerOf(server)),
   );
 
   server.registerTool(
@@ -625,7 +664,7 @@ function registerTools(server: McpServer): void {
     {
       title: 'Grep every past session message',
       description:
-        'Exhaustively find EVERY message across all past sessions matching a literal string or regex — use this (not search_sessions) whenever completeness or a count matters: "every time I said X", "how many times", "all sessions where…", or any exact-pattern search. Returns totalHits (uncapped count of matching messages), totalSessions, and up to `limit` hit snippets; each hit carries filePath + msgIndex to feed get_session_messages(offset) directly (add include_tools to see what the assistant did around it). truncated=true means more matched than were returned — raise limit or narrow with filters. Searches message prose (user turns + assistant text), not assistant tool-call inputs.',
+        'Exhaustively find EVERY message across all past sessions matching a literal string or regex — use this (not search_sessions) whenever completeness or a count matters: "every time I said X", "how many times", "all sessions where…", or any exact-pattern search. Returns totalHits (uncapped count of matching messages), totalSessions, and up to `limit` hit snippets; each hit carries filePath + msgIndex to feed get_session_messages(offset) directly (add include_tools to see what the assistant did around it). truncated=true means more matched than were returned — raise limit or narrow with filters. Searches message prose (user turns + assistant text), not assistant tool-call inputs. Your own live session is left out when it can be identified.',
       inputSchema: {
         pattern: z.string().min(1).describe('Literal substring by default; a JS regex when regex=true.'),
         regex: z.boolean().optional().default(false).describe('Treat pattern as a JS regular expression.'),
@@ -645,7 +684,7 @@ function registerTools(server: McpServer): void {
       annotations: READ_ONLY,
     },
     async ({ pattern, regex, ignoreCase, role, tool, project, after, before, limit }) =>
-      runGrepSessions({ pattern, regex, ignoreCase, role, tool, project, after, before, limit }),
+      runGrepSessions({ pattern, regex, ignoreCase, role, tool, project, after, before, limit }, callerOf(server)),
   );
 
   server.registerTool(
@@ -695,6 +734,27 @@ function registerTools(server: McpServer): void {
       annotations: READ_ONLY,
     },
     async ({ filePath }) => runGetSessionDigest({ filePath }),
+  );
+
+  server.registerTool(
+    'get_handoff_brief',
+    {
+      title: 'Brief for continuing a past session',
+      description:
+        "Everything needed to pick a past session back up against the code as it is NOW, in one bounded call (~3k tokens): the session's arc (its digest), whether its work landed (commits touching its files during or just after it), and what changed since in the files it edited or read (later commits, uncommitted edits, deletions), plus the repo's standing memory. Use it when the user asks to continue, resume, or pick up an earlier session, from any agent: transcripts replayed as-is assume the repo froze when they ended, and file contents quoted in them may be stale. `markdown` is ready to act on; `drift` carries the same facts structured (null outside a git repo). Read-only on git and the index.",
+      inputSchema: {
+        filePath: z.string().describe('The session filePath from search_sessions results'),
+        cwd: z
+          .string()
+          .optional()
+          .describe(
+            "Where to check drift when the session's own directory is gone. Defaults to the server process cwd.",
+          ),
+      },
+      outputSchema: GetHandoffBriefOutput,
+      annotations: READ_ONLY,
+    },
+    async ({ filePath, cwd }) => runGetHandoffBrief({ filePath, cwd }),
   );
 
   server.registerTool(
