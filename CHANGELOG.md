@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.33.0](https://github.com/nicknisi/sessions/compare/v1.32.0...v1.33.0) (2026-10-23)
+
+
+### Features
+
+* continue sessions in any agent against today's code, plus direct Pi/Codex resume and fork ([#108](https://github.com/nicknisi/sessions/issues/108)) ([019c6d2](https://github.com/nicknisi/sessions/commit/019c6d22168ea0821ea4d0f11b89abf60c7d7714))
+* **search:** find Korean, Japanese and Chinese text in the lexical index ([#106](https://github.com/nicknisi/sessions/issues/106)) ([ef1fa60](https://github.com/nicknisi/sessions/commit/ef1fa6008ddbf44ee09f6f070a62a2cbbab4158a))
+* **semantic:** add opt-in OpenAI-compatible and TEI embedding endpoints ([#107](https://github.com/nicknisi/sessions/issues/107)) ([01bb6ea](https://github.com/nicknisi/sessions/commit/01bb6ea9d3bd3d0b49f69e5590cacbd05a1fd50c))
+
 ## [1.32.0](https://github.com/nicknisi/sessions/compare/v1.31.0...v1.32.0) (2026-10-20)
 
 
