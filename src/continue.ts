@@ -3,7 +3,7 @@
 // agent a bounded brief instead: the session's arc, whether its work landed, what changed
 // in the files it touched since, and the repo's standing memory.
 import { existsSync } from 'node:fs';
-import { isAbsolute, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { C, disableColors } from './colors';
 import { buildSessionDigest, clip, type SessionDigest } from './digest';
 import { readSessionLines } from './session-io';
@@ -75,7 +75,7 @@ export interface HandoffBrief {
   launchDir: string;
   startedAt: string;
   endedAt: string;
-  /** null outside a git repository. */
+  /** null outside a git repository, or for a session with no usable timestamps. */
   drift: Drift | null;
   markdown: string;
 }
@@ -99,20 +99,44 @@ const ref = (c: CommitInfo): CommitRef => ({
   committedAt: c.committedAt,
 });
 
-/** Read-only on git: one log walk, one diff, one ls-files. */
-export function computeDrift(repo: RepoInfo, row: HandoffSessionRow): Drift {
+/** A deleted worktree's root: the ancestor of the session's cwd under which the most of its
+ *  paths exist in this checkout, so a session that ran in a subdirectory still maps. The cwd
+ *  itself when none do. */
+function lostRoot(cwd: string, paths: string[], worktree: string): string {
+  let best = cwd;
+  let bestHits = 0;
+  for (let root = cwd; root !== dirname(root); root = dirname(root)) {
+    const prefix = root + '/';
+    const hits = paths.filter((p) => p.startsWith(prefix) && existsSync(join(worktree, p.slice(prefix.length)))).length;
+    if (hits > bestHits) {
+      best = root;
+      bestHits = hits;
+    }
+  }
+  return best;
+}
+
+/** Read-only on git: one log walk, two diffs, one ls-files. null when the session carries no
+ *  usable timestamps, since every drift judgment is relative to when it ran. */
+export function computeDrift(repo: RepoInfo, row: HandoffSessionRow): Drift | null {
   const { start, end } = sessionWindow(row);
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
   // A day of margin: the walk is bounded by committer time, landing is judged by author time.
   const commits = logSince(repo, new Date(start - 86_400_000).toISOString(), DRIFT_LOG_LIMIT);
 
   // Tool paths can be relative to the session's cwd, which need not be the repo root.
-  // The session's worktree is tried first; its recorded cwd covers a worktree since deleted.
-  const roots = [...new Set([repo.currentWorktree, row.cwd])];
-  const rel = (paths: string[]): string[] =>
-    [...new Set(paths.map((p) => toRepoRelative(isAbsolute(p) ? p : resolve(row.cwd, p), roots)))].filter(
-      (p) => p && !p.startsWith('/'),
-    );
-  const editedPaths = rel(parseFilesTouched(row.files_touched));
+  const toAbs = (p: string): string => (isAbsolute(p) ? p : resolve(row.cwd, p));
+  const touchedRaw = parseFilesTouched(row.files_touched);
+  const readRaw = parseFilesTouched(row.files_read);
+  // A live cwd sits inside `repo`'s worktree. A deleted one's root has to be recovered.
+  const roots = existsSync(row.cwd)
+    ? [repo.currentWorktree]
+    : [repo.currentWorktree, lostRoot(row.cwd, [...touchedRaw, ...readRaw].map(toAbs), repo.currentWorktree)];
+  const relOf = (raw: string): string | null => {
+    const p = toRepoRelative(toAbs(raw), roots);
+    return p && !p.startsWith('/') ? p : null;
+  };
+  const editedPaths = [...new Set(touchedRaw.map(relOf).filter((p) => p !== null))];
   const edited = new Set(editedPaths);
 
   // Its own work: written during the session (author time survives rebases), in its files.
@@ -141,11 +165,18 @@ export function computeDrift(repo: RepoInfo, row: HandoffSessionRow): Drift {
   const moved = (f: FileDrift): boolean => f.commitsSinceTotal > 0 || f.dirty || f.deleted;
   files.sort((a, b) => Number(moved(b)) - Number(moved(a)));
 
-  // Read files never landed anything, so any later commit counts, including one in the slack window.
-  const readChanged = rel(parseFilesTouched(row.files_read)).filter(
-    (p) =>
-      !edited.has(p) && (dirty.has(p) || commits.some((c) => Date.parse(c.committedAt) > end && c.files.includes(p))),
-  );
+  // Read files never landed anything, so any later commit counts, including one in the slack
+  // window. files_read also holds Grep/Glob patterns, so only an absolute, wildcard-free target
+  // (or any Pi read, which records nothing else) is a file whose absence means it was removed.
+  const concrete = (raw: string): boolean => (row.tool === 'pi' || isAbsolute(raw)) && !/[*?[\]{}]/.test(raw);
+  const readChanged: string[] = [];
+  for (const raw of readRaw) {
+    const p = relOf(raw);
+    if (!p || edited.has(p) || readChanged.includes(p)) continue;
+    const later = commits.some((c) => Date.parse(c.committedAt) > end && c.files.includes(p));
+    const missing = concrete(raw) && !existsSync(join(repo.currentWorktree, p));
+    if (dirty.has(p) || later || missing) readChanged.push(p);
+  }
 
   return {
     commitsSince: after.length,
@@ -179,12 +210,14 @@ export interface BriefInput {
   row: HandoffSessionRow;
   digest: SessionDigest;
   drift: Drift | null;
+  /** Why drift is null: no git repository, or no usable timestamps. */
+  driftNote?: string;
   memory: PrimerMemoryTier;
   now: number;
 }
 
 /** Pure: the markdown handed to the next agent as its first prompt. */
-export function renderBrief({ row, digest, drift, memory, now }: BriefInput): string {
+export function renderBrief({ row, digest, drift, driftNote, memory, now }: BriefInput): string {
   // SAFETY: the tool column is written by the index from Tool values only.
   const tool = TOOL_NAME[row.tool as Tool] ?? row.tool;
   const ended = row.ended_at || row.started_at || row.date;
@@ -214,7 +247,7 @@ export function renderBrief({ row, digest, drift, memory, now }: BriefInput): st
   out.push('## What changed since', '');
   if (!drift) {
     out.push(
-      'Not a git repository here, so what changed since could not be checked. Re-read files before editing.',
+      `${driftNote ?? 'Not a git repository here'}, so what changed since could not be checked. Re-read files before editing.`,
       '',
     );
   } else {
@@ -283,6 +316,7 @@ export async function buildHandoff(filePath: string, fallbackDir = process.cwd()
     row,
     digest: buildSessionDigest(lines),
     drift,
+    driftNote: repo ? 'The session has no usable timestamps' : 'Not a git repository here',
     memory: primerMemory(repo?.container ?? launchDir),
     now: Date.now(),
   });

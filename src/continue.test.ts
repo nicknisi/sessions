@@ -11,11 +11,10 @@ let dir: string;
 
 /** `date` sets both author and committer time; `committed` overrides the committer time alone. */
 function git(args: string[], date?: string, committed?: string): void {
-  const env = { ...process.env };
-  if (date) {
-    env.GIT_AUTHOR_DATE = date;
-    env.GIT_COMMITTER_DATE = committed ?? date;
-  }
+  // Hermetic: the developer's own config (commit signing, hooks) must not touch the fixture.
+  const env = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' };
+  const dates = date ? { GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: committed ?? date } : undefined;
+  Object.assign(env, dates);
   const r = Bun.spawnSync(['git', '-C', dir, '-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { env });
   if (r.exitCode !== 0) throw new Error(`git ${args.join(' ')}: ${r.stderr.toString()}`);
 }
@@ -49,8 +48,9 @@ beforeAll(() => {
   dir = realpathSync(mkdtempSync(join(tmpdir(), 'sessions-continue-')));
   git(['init', '-q', '-b', 'main']);
   mkdirSync(join(dir, 'pkg'));
-  const base = { 'a.ts': '1', 'b.ts': '1', 'c.ts': '1', 'd.ts': '1', 'e.ts': '1', 'f.ts': '1', 'pkg/g.ts': '1' };
-  commit(base, 'base', '2026-05-30T00:00:00Z');
+  const files = ['a', 'b', 'c', 'd', 'e', 'f', 'pkg/g', 'h', 's', 'é', 'q"x'];
+  commit(Object.fromEntries(files.map((f) => [`${f}.ts`, '1'])), 'base', '2026-05-30T00:00:00Z');
+  const baseSha = Bun.spawnSync(['git', '-C', dir, 'rev-parse', 'HEAD']).stdout.toString().trim();
   commit({ 'e.ts': '2' }, 'tweak a dependency', '2026-06-01T11:15:00Z'); // after the end, inside the slack
   commit({ 'a.ts': '2' }, 'land the parser fix', '2026-06-01T11:30:00Z'); // inside the 2h slack
   commit({ 'f.ts': '2' }, 'cherry-pick an old fix', '2026-05-20T00:00:00Z', '2026-06-02T08:00:00Z');
@@ -59,17 +59,30 @@ beforeAll(() => {
   commit({ 'b.ts': '4' }, 'b once more', '2026-06-05T09:00:00Z');
   commit({ 'b.ts': '5' }, 'b finally', '2026-06-06T09:00:00Z');
   commit({ 'pkg/g.ts': '2' }, 'touch the package', '2026-06-06T10:00:00Z');
+  commit({ 'é.ts': '2', 'q"x.ts': '2' }, 'touch names git quotes', '2026-06-06T11:00:00Z');
+  // A topic branch written before the session, merged after it: only the merge is in the walk.
+  git(['checkout', '-q', '-b', 'topic', baseSha]);
+  commit({ 'h.ts': '2' }, 'topic work', '2026-05-30T12:00:00Z');
+  git(['checkout', '-q', 'main']);
+  git(['merge', '-q', '--no-ff', '-m', 'merge topic', 'topic'], '2026-06-07T09:00:00Z');
   writeFileSync(join(dir, 'a.ts'), '3'); // uncommitted
   unlinkSync(join(dir, 'c.ts')); // deleted, uncommitted
-});
+  // Staged, then undone in the working tree: `git diff HEAD` alone would miss it.
+  writeFileSync(join(dir, 's.ts'), 'staged');
+  git(['add', 's.ts']);
+  writeFileSync(join(dir, 's.ts'), '1');
+}, 30_000); // ~30 git spawns: generous for a loaded CI box
 
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
+const driftFor = (over: Partial<HandoffSessionRow> = {}): Drift => computeDrift(resolveRepo(dir)!, row(over))!;
+const touched = (...files: string[]): string => JSON.stringify(files.map((f) => join(dir, f)));
+
 test('computeDrift: landed work, later commits, uncommitted edits, deletions', () => {
-  const drift = computeDrift(resolveRepo(dir)!, row());
+  const drift = driftFor();
   expect(HandoffDriftOutput.parse(drift)).toEqual(drift);
 
-  expect(drift.commitsSince).toBe(7); // everything after 11:00 except its own landing
+  expect(drift.commitsSince).toBe(9); // everything after 11:00 except its own landing
   expect(drift.landed.map((c) => c.subject)).toEqual(['land the parser fix']);
   expect(drift.editedTotal).toBe(4); // /elsewhere/x.ts is outside the repo
   const byPath = Object.fromEntries(drift.edited.map((f) => [f.path, f]));
@@ -80,27 +93,57 @@ test('computeDrift: landed work, later commits, uncommitted edits, deletions', (
 });
 
 test('computeDrift: per-file commit lists are capped with a true total', () => {
-  const b = computeDrift(resolveRepo(dir)!, row()).edited.find((f) => f.path === 'b.ts')!;
+  const b = driftFor().edited.find((f) => f.path === 'b.ts')!;
   expect(b.commitsSinceTotal).toBe(4);
   expect(b.commitsSince.map((c) => c.subject)).toEqual(['b finally', 'b once more', 'b again']);
 });
 
 test('computeDrift: a cherry-pick of older work after the session counts as a change', () => {
-  const f = computeDrift(resolveRepo(dir)!, row()).edited.find((x) => x.path === 'f.ts')!;
+  const f = driftFor().edited.find((x) => x.path === 'f.ts')!;
   expect(f.commitsSince.map((c) => c.subject)).toEqual(['cherry-pick an old fix']);
 });
 
 test('computeDrift: relative tool paths resolve against the session cwd, not the repo root', () => {
-  const drift = computeDrift(
-    resolveRepo(dir)!,
-    row({ cwd: join(dir, 'pkg'), files_touched: JSON.stringify(['g.ts']), files_read: '[]' }),
-  );
+  const drift = driftFor({ cwd: join(dir, 'pkg'), files_touched: JSON.stringify(['g.ts']), files_read: '[]' });
   expect(drift.edited).toMatchObject([{ path: 'pkg/g.ts', commitsSinceTotal: 1, deleted: false }]);
 });
 
 test('computeDrift: a session whose work never landed has no landed commits', () => {
-  const drift = computeDrift(resolveRepo(dir)!, row({ files_touched: JSON.stringify([join(dir, 'b.ts')]) }));
-  expect(drift.landed).toEqual([]);
+  expect(driftFor({ files_touched: touched('b.ts') }).landed).toEqual([]);
+});
+
+test('computeDrift: no usable timestamps means no drift, rather than a crash', () => {
+  expect(computeDrift(resolveRepo(dir)!, row({ started_at: '', ended_at: '', date: '?' }))).toBeNull();
+});
+
+test('computeDrift: a deleted worktree session in a subdirectory still maps onto this checkout', () => {
+  const gone = '/gone-worktree/pkg';
+  const drift = driftFor({ cwd: gone, files_touched: JSON.stringify([`${gone}/g.ts`]), files_read: '[]' });
+  expect(drift.edited).toMatchObject([{ path: 'pkg/g.ts', commitsSinceTotal: 1, deleted: false }]);
+});
+
+test('computeDrift: names git quotes (non-ASCII, embedded quotes) still match their commits', () => {
+  const drift = driftFor({ files_touched: touched('é.ts', 'q"x.ts'), files_read: '[]' });
+  expect(drift.edited.map((f) => [f.path, f.commitsSinceTotal])).toEqual([
+    ['é.ts', 1],
+    ['q"x.ts', 1],
+  ]);
+});
+
+test('computeDrift: a merge after the session counts for the files it brought in', () => {
+  const [h] = driftFor({ files_touched: touched('h.ts'), files_read: '[]' }).edited;
+  expect(h!.commitsSince.map((c) => c.subject)).toEqual(['merge topic']);
+});
+
+test('computeDrift: a staged change counts as uncommitted even when the working tree undid it', () => {
+  const [st] = driftFor({ files_touched: touched('s.ts'), files_read: '[]' }).edited;
+  expect(st).toMatchObject({ dirty: true, deleted: false });
+});
+
+test('computeDrift: a concrete read target that is gone counts as changed; search patterns never do', () => {
+  const reads = [join(dir, 'gone.ts'), 'buildResumeCommand', join(dir, '**/*.ts')];
+  const drift = driftFor({ files_touched: '[]', files_read: JSON.stringify(reads) });
+  expect(drift.readChanged).toEqual(['gone.ts']);
 });
 
 const digest = {

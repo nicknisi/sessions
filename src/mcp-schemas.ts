@@ -413,7 +413,7 @@ export const GetHandoffBriefOutput = z.object({
   launchDir: z.string(),
   startedAt: z.string(),
   endedAt: z.string(),
-  // null outside a git repository.
+  // null outside a git repository, or for a session with no usable timestamps.
   drift: HandoffDriftOutput.nullable(),
   markdown: z.string(),
 });

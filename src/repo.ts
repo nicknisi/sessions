@@ -152,6 +152,37 @@ const RS = '\x1e';
 const US = '\x1f';
 const COMMIT_FORMAT = `${RS}%H${US}%aI${US}%cI${US}%s${US}%P${US}%(trailers:only,unfold,separator=${US})`;
 
+const GIT_ESCAPES = new Map([
+  ['a', 7],
+  ['b', 8],
+  ['t', 9],
+  ['n', 10],
+  ['v', 11],
+  ['f', 12],
+  ['r', 13],
+  ['"', 34],
+  ['\\', 92],
+]);
+
+/**
+ * Undo git's C-style quoting of unusual path names: `"src/\303\251.ts"` is `src/é.ts`. Git
+ * quotes non-ASCII bytes (unless core.quotePath is off) and always quotes names holding a
+ * quote, a backslash or a control character. Octal escapes are raw bytes, so the whole name
+ * is rebuilt as bytes and decoded as UTF-8 once.
+ */
+export function unquoteGitPath(p: string): string {
+  if (p.length < 2 || !p.startsWith('"') || !p.endsWith('"')) return p;
+  const bytes: number[] = [];
+  const encoder = new TextEncoder();
+  for (const m of p.slice(1, -1).matchAll(/\\([0-7]{3}|.)|[^\\]+/gs)) {
+    const esc = m[1];
+    if (esc === undefined) bytes.push(...encoder.encode(m[0]));
+    else if (esc.length === 3) bytes.push(parseInt(esc, 8));
+    else bytes.push(GIT_ESCAPES.get(esc) ?? esc.charCodeAt(0));
+  }
+  return new TextDecoder().decode(new Uint8Array(bytes));
+}
+
 /** Parse the RS/US-delimited `--name-only` output of log/show into commits. */
 function parseCommits(out: string): CommitInfo[] {
   const commits: CommitInfo[] = [];
@@ -171,7 +202,8 @@ function parseCommits(out: string): CommitInfo[] {
     const files = rest
       .split('\n')
       .map((l) => l.trim())
-      .filter((l) => l.length > 0);
+      .filter((l) => l.length > 0)
+      .map(unquoteGitPath);
     commits.push({ sha, subject, authoredAt, committedAt, files, trailers, merge });
   }
   return commits;
@@ -214,10 +246,12 @@ export function isCommitRef(repo: RepoInfo, ref: string): boolean {
   return res.ok && res.out.trim() === 'commit';
 }
 
-/** Commits reachable from HEAD committed since `sinceIso`, newest first, capped at `limit`. */
+/** Commits reachable from HEAD committed since `sinceIso`, newest first, capped at `limit`. A
+ *  merge lists what it brought in against its first parent; plain --name-only lists nothing. */
 export function logSince(repo: RepoInfo, sinceIso: string, limit: number): CommitInfo[] {
   const res = git(repo.currentWorktree, [
     'log',
+    '--diff-merges=first-parent',
     `--since=${sinceIso}`,
     `--format=${COMMIT_FORMAT}`,
     '--name-only',
@@ -228,12 +262,15 @@ export function logSince(repo: RepoInfo, sinceIso: string, limit: number): Commi
   return parseCommits(res.out);
 }
 
-/** Repo-relative paths with uncommitted changes: modified or staged against HEAD, or untracked. */
+/** Repo-relative paths with uncommitted changes: unstaged, staged, or untracked. */
 export function dirtyPaths(repo: RepoInfo): Set<string> {
   const out = new Set<string>();
   // -z: NUL-separated and unquoted, so paths with spaces or unicode come through verbatim.
+  // Unstaged and staged separately: `diff HEAD` alone misses a staged change the working tree
+  // has since undone.
   for (const args of [
-    ['diff', '--name-only', '-z', 'HEAD'],
+    ['diff', '--name-only', '-z'],
+    ['diff', '--name-only', '-z', '--cached'],
     ['ls-files', '--others', '--exclude-standard', '-z'],
   ]) {
     const res = git(repo.currentWorktree, args);
