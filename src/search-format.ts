@@ -13,12 +13,15 @@ export interface ResumeTarget {
 
 const TRAILING_UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/** One literal shell word: single quotes stop every expansion, and an embedded quote is closed, escaped, reopened. */
+const shellQuote = (s: string): string => `'${s.replaceAll("'", `'\\''`)}'`;
+
 /**
  * The exact resume affordance the CLI (clipboard), the MCP (returned field) and `why` use.
  * `fork` starts a new session with the same history instead, leaving the original as it is.
  */
 export function buildResumeCommand(s: ResumeTarget, opts: { fork?: boolean } = {}): string {
-  const cd = `cd "${s.cwd}"`;
+  const cd = `cd ${shellQuote(s.cwd)}`;
   const fork = opts.fork === true;
   switch (s.tool) {
     case 'claude':
@@ -26,7 +29,7 @@ export function buildResumeCommand(s: ResumeTarget, opts: { fork?: boolean } = {
     case 'opencode':
       return `${cd} && opencode --session ${s.sessionId}${fork ? ' --fork' : ''}`;
     case 'pi':
-      return `${cd} && pi ${fork ? '--fork' : '--session'} "${s.filePath}"`;
+      return `${cd} && pi ${fork ? '--fork' : '--session'} ${shellQuote(s.filePath)}`;
     case 'codex': {
       // The index's codex id is the file stem, `rollout-<timestamp>-<uuid>`; the CLI takes the uuid.
       const id = TRAILING_UUID.exec(s.sessionId)?.[0];

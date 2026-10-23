@@ -17,21 +17,26 @@ describe('buildResumeCommand', () => {
   };
 
   test('resumes every tool directly', () => {
-    expect(buildResumeCommand(claude)).toBe('cd "/r" && claude --resume abc');
-    expect(buildResumeCommand(opencode)).toBe('cd "/r" && opencode --session ses_1');
-    expect(buildResumeCommand(pi)).toBe('cd "/r" && pi --session "/s/x.jsonl"');
-    expect(buildResumeCommand(codex)).toBe(`cd "/r" && codex resume ${uuid}`);
+    expect(buildResumeCommand(claude)).toBe("cd '/r' && claude --resume abc");
+    expect(buildResumeCommand(opencode)).toBe("cd '/r' && opencode --session ses_1");
+    expect(buildResumeCommand(pi)).toBe("cd '/r' && pi --session '/s/x.jsonl'");
+    expect(buildResumeCommand(codex)).toBe(`cd '/r' && codex resume ${uuid}`);
   });
 
   test('fork starts a new session with the same history', () => {
-    expect(buildResumeCommand(claude, { fork: true })).toBe('cd "/r" && claude --resume abc --fork-session');
-    expect(buildResumeCommand(opencode, { fork: true })).toBe('cd "/r" && opencode --session ses_1 --fork');
-    expect(buildResumeCommand(pi, { fork: true })).toBe('cd "/r" && pi --fork "/s/x.jsonl"');
-    expect(buildResumeCommand(codex, { fork: true })).toBe(`cd "/r" && codex fork ${uuid}`);
+    expect(buildResumeCommand(claude, { fork: true })).toBe("cd '/r' && claude --resume abc --fork-session");
+    expect(buildResumeCommand(opencode, { fork: true })).toBe("cd '/r' && opencode --session ses_1 --fork");
+    expect(buildResumeCommand(pi, { fork: true })).toBe("cd '/r' && pi --fork '/s/x.jsonl'");
+    expect(buildResumeCommand(codex, { fork: true })).toBe(`cd '/r' && codex fork ${uuid}`);
+  });
+
+  test('paths are single literal shell words: no expansion, embedded quotes escaped', () => {
+    const odd = { ...pi, cwd: "/a $(id)/it's", filePath: '/s/`x`$HOME.jsonl' };
+    expect(buildResumeCommand(odd)).toBe(`cd '/a $(id)/it'\\''s' && pi --session '/s/\`x\`$HOME.jsonl'`);
   });
 
   test('a codex id with no uuid degrades to cd', () => {
-    expect(buildResumeCommand({ ...codex, sessionId: 'rollout-odd' })).toBe('cd "/r"');
+    expect(buildResumeCommand({ ...codex, sessionId: 'rollout-odd' })).toBe("cd '/r'");
   });
 });
 
@@ -69,7 +74,7 @@ test('formatResult: shapes a SessionResult for callers, including resumeCommand'
     errored: true,
     exists: true,
     filePath: '/f.jsonl',
-    resumeCommand: 'cd "/r" && claude --resume abc',
+    resumeCommand: "cd '/r' && claude --resume abc",
     branches: 0,
     forkedFrom: '',
   });
