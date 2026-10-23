@@ -16,7 +16,22 @@ export interface VectorRow {
 
 // # ponytail: fixed constants; tune only against a logged real miss, per EVAL.md.
 export const RRF_K = 60;
+/** Default cosine floor below which a nearest-vector match is ignored. Cosine
+ *  distributions are model-specific, so this is only a default; see
+ *  abstentionThreshold(). */
 export const ABSTENTION_THRESHOLD = 0.45;
+
+/** The abstention floor actually in force: SESSIONS_EMBED_THRESHOLD when it parses
+ *  to a number strictly inside (0, 1), else the default above. Measured with
+ *  multilingual-e5-small, unrelated pairs already sit at roughly 0.75-0.85, where
+ *  0.45 filters nothing, so the floor is a per-model knob rather than one constant
+ *  for every embedder. */
+export function abstentionThreshold(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.SESSIONS_EMBED_THRESHOLD;
+  if (raw === undefined || raw.trim() === '') return ABSTENTION_THRESHOLD;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 && parsed < 1 ? parsed : ABSTENTION_THRESHOLD;
+}
 
 export function cosine(a: Float32Array, b: Float32Array): number {
   if (a.length !== b.length) return 0;

@@ -45,7 +45,7 @@ import { MAX_FILES as MAX_PRIMER_FILES } from './search-format';
 import { type RepoInfo, globPrefix, branchLabel, cwdUnder, mainCheckoutOf } from './repo';
 import { isTrivia, blendedScore, type ScorableSession } from './significance';
 import { detectEmbedder, embedQuery } from './semantic/embed';
-import { topKSimilar, fuseRRF, ABSTENTION_THRESHOLD, type VectorRow } from './semantic/fuse';
+import { topKSimilar, fuseRRF, abstentionThreshold, type VectorRow } from './semantic/fuse';
 
 // Source/cache locations default to the real home dirs but honor env overrides so
 // tests can point the index at hermetic temp fixtures (SESSIONS_* env vars).
@@ -1237,8 +1237,9 @@ export async function searchSessions(query: string, opts: SearchOptions = {}): P
         // only weak nearest vectors yields no semantic hits, so `ordered` stays
         // the empty lexical result) AND the noise filter (a fused query never
         // drags in unrelated near-zero-similarity sessions).
-        // # ponytail: fixed threshold; tune only against a logged real miss.
-        const semanticHits = sims.filter((s) => s.sim >= ABSTENTION_THRESHOLD);
+        // # ponytail: fixed default threshold; SESSIONS_EMBED_THRESHOLD overrides it.
+        const floor = abstentionThreshold();
+        const semanticHits = sims.filter((s) => s.sim >= floor);
         if (semanticHits.length > 0) {
           // Pull metadata (with the SAME filters) for purely-semantic candidates
           // so a paraphrase hit that BM25 never surfaced can enter the results.
