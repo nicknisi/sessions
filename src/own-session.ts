@@ -28,8 +28,9 @@ export interface OwnCandidate {
   ended_at: string;
 }
 
-/** A harness writes its session within a second or two of spawning MCP servers. Kept tight:
- *  wider catches the previous run in the same directory, which makes the match ambiguous. */
+/** A harness writes its session within a second or two of spawning MCP servers, before or
+ *  after. Kept tight on both sides: wider catches the previous run in the same directory, or
+ *  a later unrelated one, either of which makes the match ambiguous or wrong. */
 export const START_SLACK_MS = 10_000;
 
 const CLIENT_TOOL = new Map<string, Tool>([
@@ -45,8 +46,9 @@ const CLIENT_TOOL = new Map<string, Tool>([
  *    names itself as something else: opencode passes its whole environment through, so an
  *    opencode launched from inside Claude Code inherits that id.
  * 2. Otherwise the one session of the caller's tool, in the server's directory, that started
- *    around or after the server did and has been active since. Ambiguous means null: showing
- *    the caller its own session wastes a call, hiding someone else's loses it.
+ *    within START_SLACK_MS of the server and has been active since. A resumed session started
+ *    long before and is not found this way, which is the safe miss. Ambiguous means null:
+ *    showing the caller its own session wastes a call, hiding someone else's loses it.
  */
 export function identifyOwnSession(caller: Caller, candidates: () => OwnCandidate[]): SessionKey | null {
   const envId = caller.env.CLAUDE_CODE_SESSION_ID;
@@ -55,10 +57,12 @@ export function identifyOwnSession(caller: Caller, candidates: () => OwnCandidat
   const tool = caller.client ? CLIENT_TOOL.get(caller.client) : undefined;
   if (!tool) return null;
   const earliest = caller.serverStart - START_SLACK_MS;
+  const latest = caller.serverStart + START_SLACK_MS;
   const matches = candidates().filter((c) => {
     const started = Date.parse(c.started_at);
     const ended = Date.parse(c.ended_at);
-    return c.tool === tool && c.cwd === caller.cwd && started >= earliest && ended >= caller.serverStart;
+    const inWindow = started >= earliest && started <= latest;
+    return c.tool === tool && c.cwd === caller.cwd && inWindow && ended >= caller.serverStart;
   });
   return matches.length === 1 ? { tool, sessionId: matches[0]!.session_id } : null;
 }

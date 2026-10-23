@@ -37,6 +37,9 @@ test('fallback hides nothing when ambiguous, stale, elsewhere, or another tool',
   const c = caller({ client: 'codex-mcp-client' });
   expect(identifyOwnSession(c, () => [live('x'), live('y')])).toBeNull();
   expect(identifyOwnSession(c, () => [live('x', { started_at: '2026-06-01T09:00:00Z' })])).toBeNull();
+  // Opened an hour after the server: someone else's, e.g. while the caller resumed an older session.
+  const later = { started_at: '2026-06-01T11:00:00Z', ended_at: '2026-06-01T11:05:00Z' };
+  expect(identifyOwnSession(c, () => [live('x', later)])).toBeNull();
   expect(identifyOwnSession(c, () => [live('x', { ended_at: '2026-06-01T10:00:01Z' })])).toBeNull();
   expect(identifyOwnSession(c, () => [live('x', { cwd: '/elsewhere' })])).toBeNull();
   expect(identifyOwnSession(c, () => [live('x', { tool: 'claude' })])).toBeNull();
