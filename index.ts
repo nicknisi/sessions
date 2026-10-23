@@ -154,6 +154,7 @@ if (!selection) process.exit(0);
 // (filePath leads so fzf --preview can reference {1}; the display column is what
 // fzf shows and the builtin slices — both skip the leading metadata fields).
 const parts = selection.split('\t');
+const filePath = parts[0]!;
 const fullPath = parts[1]!;
 const tool = parts[2]!;
 const sessionId = parts[3]!;
@@ -178,7 +179,7 @@ process.stderr.write('\n');
 
 // SAFETY: the TSV field was written by formatLine from a SessionResult's Tool, and the
 // find() above matched it back to that same result.
-const resumeCmd = buildResumeCommand(tool as Tool, fullPath, sessionId);
+const resumeCmd = buildResumeCommand({ tool: tool as Tool, cwd: fullPath, sessionId, filePath }, { fork: args.fork });
 
 if (exists === 'deleted') {
   process.stderr.write(`  ${C.red}○${C.reset} ${C.bold}${fullPath}${C.reset} no longer exists\n`);

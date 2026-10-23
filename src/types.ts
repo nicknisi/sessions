@@ -88,6 +88,8 @@ export interface CliArgs {
   errored: boolean;
   /** --file values (repeatable): substring path filters, AND-composed. */
   files: string[];
+  /** --fork: copy a command that forks the picked session instead of resuming it. */
+  fork: boolean;
 }
 
 export interface ContextSession {

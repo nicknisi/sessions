@@ -401,7 +401,7 @@ export async function runGrepSessions(args: {
       role: h.role,
       msgIndex: h.msgIndex,
       snippet: h.snippet,
-      resumeCommand: buildResumeCommand(h.tool, h.project, h.sessionId),
+      resumeCommand: buildResumeCommand({ ...h, cwd: h.project }),
     })),
   };
 

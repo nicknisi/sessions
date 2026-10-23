@@ -23,6 +23,8 @@ ${C.bold}Options:${C.reset}
   --file <path>    Only sessions that touched or read this path (substring
                    match; repeatable — every path must match). Newest first
                    when no query is given
+  --fork           Copy a command that forks the picked session (new session,
+                   same history) instead of resuming it
   --mcp            Start as an MCP server (stdio transport)
   --clear-cache    Remove the search index (rebuilds on next use)
   -v, --version    Print the CLI version
@@ -89,7 +91,7 @@ function die(msg: string): never {
 }
 
 export function parseArgs(argv: string[]): CliArgs {
-  const args: CliArgs = { toolFilter: '', searchQuery: '', scopeHere: false, errored: false, files: [] };
+  const args: CliArgs = { toolFilter: '', searchQuery: '', scopeHere: false, errored: false, files: [], fork: false };
 
   let i = 0;
   while (i < argv.length) {
@@ -111,6 +113,9 @@ export function parseArgs(argv: string[]): CliArgs {
         break;
       case '--errored':
         args.errored = true;
+        break;
+      case '--fork':
+        args.fork = true;
         break;
       case '--file':
         i++;

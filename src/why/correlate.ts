@@ -171,7 +171,12 @@ function correlateCommit(repo: RepoInfo, commit: CommitInfo, rows: CandidateSess
         confidence,
         excerpts,
         // SAFETY: the tool column is written by the index from Tool values only.
-        resume: buildResumeCommand(row.tool as Tool, row.cwd, row.session_id),
+        resume: buildResumeCommand({
+          tool: row.tool as Tool,
+          cwd: row.cwd,
+          sessionId: row.session_id,
+          filePath: row.file_path,
+        }),
       };
       return { evidence, score, startedAt: row.started_at };
     })
@@ -233,7 +238,12 @@ async function findUnlandedAttempts(
         text: e.snippet,
       })),
       // SAFETY: the tool column is written by the index from Tool values only.
-      resume: buildResumeCommand(row.tool as Tool, row.cwd, row.session_id),
+      resume: buildResumeCommand({
+        tool: row.tool as Tool,
+        cwd: row.cwd,
+        sessionId: row.session_id,
+        filePath: row.file_path,
+      }),
     });
     if (attempts.length >= limit) break;
   }
@@ -269,7 +279,7 @@ async function correlateQuery(repo: RepoInfo | null, cwd: string, text: string, 
     overlappingFiles: [],
     confidence: 'time-only',
     excerpts: (r.messageHits ?? []).map((h) => ({ msgIndex: h.index, role: h.role, text: h.snippet })),
-    resume: buildResumeCommand(r.tool, r.cwd, r.sessionId),
+    resume: buildResumeCommand(r),
   }));
   return { commit: null, sessions, unlandedAttempts: [] };
 }

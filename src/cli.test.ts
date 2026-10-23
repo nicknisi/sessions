@@ -97,3 +97,8 @@ describe('formatLineage', () => {
     expect(line).toBe('Forked from parent.jsonl · 2 in-file forks');
   });
 });
+
+test('parseArgs: --fork sets the flag and defaults off', () => {
+  expect(parseArgs(['auth']).fork).toBe(false);
+  expect(parseArgs(['--fork', 'auth']).fork).toBe(true);
+});

@@ -215,9 +215,7 @@ describe('opencode cache integration', () => {
     });
     expect(results[0]!.files).toEqual(['/repo/app/router.ts', '/repo/app/old.ts']);
     const { buildResumeCommand } = await import('./search-format');
-    expect(buildResumeCommand('opencode', results[0]!.cwd, results[0]!.sessionId)).toBe(
-      'cd "/repo/app" && opencode --session ses_parent',
-    );
+    expect(buildResumeCommand(results[0]!)).toBe('cd "/repo/app" && opencode --session ses_parent');
   });
 
   test('subagent text makes the parent findable, without listing the subagent', async () => {
