@@ -184,6 +184,8 @@ sessions "rate limit"
 
 The CLI uses the same search index as the MCP server: results are ranked by relevance (BM25) rather than recency, matching uses porter stemming (`refactor` matches `refactoring`), and multi-word queries match sessions containing _any_ of the terms with the closest matches first. Search covers both your messages and the assistant's replies; system-injected content (`<system-reminder>`, etc.) is stripped from your messages so you only match what you actually typed. Search is message-granular: each matching session is shown with the best-matching message's snippet and its `msg#N` index, then piped into fzf.
 
+Korean, Japanese and Chinese text is searchable too. The main index splits on spaces and punctuation, which leaves an unspaced run of Han, Kana or Hangul as one token (searching `검색` would miss `검색을`, and `検索` would miss `全文検索機能`). So text that contains CJK is also indexed as overlapping two-character sequences in a side index, and a query is matched against both. This adds hits and drops none, and a corpus without CJK text is indexed and searched exactly as before. A one-character query matches words that begin or end with it. There is no word segmentation, so a short word can also match inside an unrelated longer one that contains the same two characters, and ranking across the two indexes is approximate. On a synthetic corpus where half the sessions mixed Korean, Japanese and Chinese with English, the index file grew from 10,428 KB to 18,160 KB; on an English-only corpus it went from 9,216 KB to 9,256 KB.
+
 ### After selection
 
 When you pick a session, `sessions` displays the resume command and copies it to your clipboard:
