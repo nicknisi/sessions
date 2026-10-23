@@ -234,7 +234,7 @@ The same correlation is exposed to agents as the read-only MCP tool `why_did_thi
 
 ### MCP tools
 
-The MCP server exposes twelve tools:
+The MCP server exposes twelve tools. `search_sessions` and `grep_sessions` leave out the calling agent's own live session when they can identify it (Claude Code's session id, or the lone session of the caller's agent that started alongside the server):
 
 | Tool                    | Description                                                                                                                                                                                                                                                                                                                                                                                         |
 | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

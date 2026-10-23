@@ -319,6 +319,24 @@ test('search_sessions handler returns metadata + resumeCommand', async () => {
   expect(parsed.results[0].resumeCommand).toContain('claude --resume');
 });
 
+test("search_sessions and grep_sessions leave out the caller's own session", async () => {
+  // Session A is claude, id 'a', cwd /repoA, active 10:00–10:01 on 2026-06-01.
+  const byEnv = { client: 'claude-code', env: { CLAUDE_CODE_SESSION_ID: 'a' }, serverStart: Date.now(), cwd: '/x' };
+  expect((await mcp.runSearchSessions({ query: 'kubectl' }, byEnv)).content[0]!.text).toContain('No sessions found');
+  const grep = { pattern: '^deploy$', regex: true, project: '/repoA' };
+  expect(payloadOf(await mcp.runGrepSessions(grep)).totalSessions).toBe(1);
+  expect((await mcp.runGrepSessions(grep, byEnv)).content[0]!.text).toContain('No matching messages');
+
+  // No env id: the lone claude session in the server's cwd that started with the server.
+  const serverStart = Date.parse('2026-06-01T10:00:05Z');
+  const byWindow = { client: 'claude-code', env: {}, serverStart, cwd: '/repoA' };
+  expect((await mcp.runSearchSessions({ query: 'kubectl' }, byWindow)).content[0]!.text).toContain('No sessions found');
+
+  // Someone else's session stays visible.
+  const other = { client: 'claude-code', env: { CLAUDE_CODE_SESSION_ID: 'nope' }, serverStart: Date.now(), cwd: '/x' };
+  expect(payloadOf(await mcp.runSearchSessions({ query: 'kubectl' }, other)).count).toBe(1);
+});
+
 test('search_sessions handler honors the errored filter', async () => {
   const res = await mcp.runSearchSessions({ errored: true });
   expect(res.content[0]!.text).toContain('No sessions found'); // session A did not error

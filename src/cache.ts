@@ -43,6 +43,7 @@ import { archiveFile, listArchived, loadManifest, saveManifest, type Manifest } 
 import { MAX_FILES as MAX_PRIMER_FILES } from './search-format';
 import { type RepoInfo, globPrefix, branchLabel, cwdUnder, mainCheckoutOf } from './repo';
 import { isTrivia, blendedScore, type ScorableSession } from './significance';
+import type { OwnCandidate, SessionKey } from './own-session';
 import { detectEmbedder, embedQuery } from './semantic/embed';
 import { topKSimilar, fuseRRF, ABSTENTION_THRESHOLD, type VectorRow } from './semantic/fuse';
 
@@ -934,6 +935,8 @@ export interface SearchOptions {
    *  Empty array = absent. With no query, filtered results order newest-first (created_at). */
   files?: string[];
   limit?: number;
+  /** One session to leave out: the MCP caller's own live session (src/own-session.ts). */
+  exclude?: SessionKey | null;
 }
 
 export async function searchSessions(query: string, opts: SearchOptions = {}): Promise<SessionResult[]> {
@@ -995,6 +998,10 @@ export async function searchSessions(query: string, opts: SearchOptions = {}): P
     condParams.push(...scope.params);
   }
   if (opts.errored) conditions.push('errored = 1');
+  if (opts.exclude) {
+    conditions.push('NOT (tool = ? AND session_id = ?)');
+    condParams.push(opts.exclude.tool, opts.exclude.sessionId);
+  }
   // Files filter: substring match over the JSON-array text columns — callers pass a
   // path suffix or full path. Deliberately imprecise (a short fragment can match an
   // unrelated longer path); precision comes from passing longer suffixes. LIKE
@@ -1235,6 +1242,8 @@ export interface GrepOptions {
   limit?: number;
   /** Snippet radius in chars around the match (default 60). */
   contextChars?: number;
+  /** One session to leave out: the MCP caller's own live session (src/own-session.ts). */
+  exclude?: SessionKey | null;
 }
 
 export interface GrepHit {
@@ -1315,6 +1324,10 @@ export async function grepSessions(pattern: string, opts: GrepOptions = {}): Pro
     conditions.push('s.date <= ?');
     params.push(opts.before);
   }
+  if (opts.exclude) {
+    conditions.push('NOT (s.tool = ? AND s.session_id = ?)');
+    params.push(opts.exclude.tool, opts.exclude.sessionId);
+  }
   // Literal mode: a LIKE filter cuts rows before the JS regex confirms each match — a huge
   // win for rare terms. But SQLite LIKE folds case for ASCII only, while the JS `/i` regex
   // folds Unicode too, so for a case-insensitive pattern containing a non-ASCII letter the
@@ -1382,6 +1395,18 @@ export async function grepSessions(pattern: string, opts: GrepOptions = {}): Pro
     truncated: totalHits > hits.length,
     hits,
   };
+}
+
+/** Sessions recorded in exactly `cwd` on or after `sinceDay` (YYYY-MM-DD) — the pool
+ *  identifyOwnSession picks the caller's live session from. */
+export async function ownSessionCandidates(cwd: string, sinceDay: string): Promise<OwnCandidate[]> {
+  const db = getDb();
+  await ensureIndexFresh();
+  return db
+    .query<OwnCandidate, [string, string]>(
+      'SELECT tool, session_id, cwd, started_at, ended_at FROM sessions WHERE cwd = ? AND date >= ?',
+    )
+    .all(cwd, sinceDay);
 }
 
 /**
