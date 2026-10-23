@@ -639,3 +639,11 @@ test('turn-duration excluded from index (and unknown customTypes are opt-in excl
   expect((await cache.searchSessions('chronofizzle', {})).map((x) => x.sessionId)).not.toContain('customnoise');
   expect((await cache.searchSessions('novelnoise', {})).map((x) => x.sessionId)).not.toContain('customnoise');
 });
+
+test('resolveSessionFile: a bare uuid resolves a pi/codex id that ends in it', async () => {
+  const uuid = '01a0d414-2e8c-720d-9624-9761e9511bbb';
+  writePi(`2026-08-04T17-00-00-000Z_${uuid}`, [piHeader, piModelChange, piTurn]);
+  await cache.refreshIndex();
+  expect(await cache.resolveSessionFile(uuid)).toEndWith(`_${uuid}.jsonl`);
+  expect(await cache.resolveSessionFile('9761e9511bbb')).toBeNull(); // a fragment isn't an id
+});

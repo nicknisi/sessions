@@ -40,6 +40,11 @@ ${C.bold}Commands:${C.reset}
   digest <session> Print the arc of one session as compact markdown (~8k chars):
                    each genuine user turn with its exchange's final assistant
                    reply. Accepts a JSONL file path or an indexed session id
+  continue [<session>]
+                   Pick a past session back up in any agent (--in claude|codex|
+                   pi|opencode) with a brief of its arc, whether its work landed,
+                   and what changed since in the files it touched. Defaults to the
+                   newest session in this repo; --print prints the brief instead
   report           Generate a usage report (HTML dashboard, opens in browser)
                    --out <path> saves instead of opening; --format json|html|both
                    (default html); --stdout prints JSON; --here scopes to the

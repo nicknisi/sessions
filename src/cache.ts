@@ -1397,6 +1397,34 @@ export async function grepSessions(pattern: string, opts: GrepOptions = {}): Pro
   };
 }
 
+/** One indexed session projected to what a handoff brief (src/continue.ts) needs. */
+export interface HandoffSessionRow {
+  file_path: string;
+  cwd: string;
+  tool: string;
+  session_id: string;
+  date: string;
+  started_at: string;
+  ended_at: string;
+  first_prompt: string;
+  custom_title: string;
+  files_touched: string;
+  files_read: string;
+}
+
+/** The indexed row for one transcript path, or null when it isn't indexed. */
+export async function sessionByFile(filePath: string): Promise<HandoffSessionRow | null> {
+  const db = getDb();
+  await ensureIndexFresh();
+  return db
+    .query<HandoffSessionRow, [string]>(
+      `SELECT file_path, cwd, tool, session_id, date, started_at, ended_at, first_prompt, custom_title,
+              files_touched, files_read
+       FROM sessions WHERE file_path = ?`,
+    )
+    .get(filePath);
+}
+
 /** Sessions recorded in exactly `cwd` on or after `sinceDay` (YYYY-MM-DD) — the pool
  *  identifyOwnSession picks the caller's live session from. */
 export async function ownSessionCandidates(cwd: string, sinceDay: string): Promise<OwnCandidate[]> {
@@ -1423,7 +1451,15 @@ export async function resolveSessionFile(sessionId: string): Promise<string | nu
       'SELECT file_path FROM sessions WHERE session_id = ? ORDER BY mtime DESC LIMIT 1',
     )
     .get(sessionId);
-  return row?.file_path ?? null;
+  if (row) return row.file_path;
+  // Pi and Codex ids are file stems ending in the uuid their CLIs print, so accept the bare uuid.
+  if (!/^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(sessionId)) return null;
+  const bySuffix = db
+    .query<{ file_path: string }, [string]>(
+      "SELECT file_path FROM sessions WHERE session_id LIKE '%' || ? ORDER BY mtime DESC LIMIT 1",
+    )
+    .get(sessionId);
+  return bySuffix?.file_path ?? null;
 }
 
 interface DateRangeRow {
@@ -1812,12 +1848,12 @@ function bytesToF32(bytes: Uint8Array): Float32Array {
 export const PRIMER_MEMORY_LIMIT = 8;
 
 /** Approved memories for a repo, always-on first, capped — plus the true in-scope total. */
-interface PrimerMemoryTier {
+export interface PrimerMemoryTier {
   memory: PrimerMemory[];
   memoryTotal: number;
 }
 
-function primerMemory(container: string): PrimerMemoryTier {
+export function primerMemory(container: string): PrimerMemoryTier {
   let all: MemoryRecord[];
   try {
     // No topic: the primer has no task to condition on. Opening the store must never be

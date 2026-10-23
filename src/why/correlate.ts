@@ -88,7 +88,7 @@ export function parseTarget(raw: string, cwd: string, repo: RepoInfo | null): Wh
 
 /** Repo-relative form of `p`, stripping the longest matching root prefix; absolute paths
  *  outside every root are returned unchanged (they degrade the match to time-only). */
-function toRepoRelative(p: string, roots: string[]): string {
+export function toRepoRelative(p: string, roots: string[]): string {
   if (!p.startsWith('/')) return p; // already relative (Codex apply_patch)
   for (const root of roots) {
     if (p === root) return '';
@@ -99,7 +99,7 @@ function toRepoRelative(p: string, roots: string[]): string {
 
 const filesTouchedSchema = z.array(z.string());
 
-function parseFilesTouched(json: string): string[] {
+export function parseFilesTouched(json: string): string[] {
   try {
     const parsed = filesTouchedSchema.safeParse(JSON.parse(json));
     return parsed.success ? parsed.data : [];

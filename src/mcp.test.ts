@@ -15,6 +15,7 @@ import { closeMemoryDb, setState, upsertCandidates } from './memory/store';
 import {
   GetActivityDigestOutput,
   GetContextPrimerOutput,
+  GetHandoffBriefOutput,
   GetMemoryOutput,
   GetMemoryRecurrenceOutput,
   GetMemorySourcesOutput,
@@ -661,6 +662,7 @@ async function connect(): Promise<Client> {
 const TOOL_NAMES = [
   'get_activity_digest',
   'get_context_primer',
+  'get_handoff_brief',
   'get_memory',
   'get_memory_recurrence',
   'get_memory_sources',
@@ -689,7 +691,7 @@ test('version: the server reports the package.json version, not a hardcoded lite
   await client.close();
 });
 
-test('tool surface: 12 tools, each with a title, annotations, and an object outputSchema', async () => {
+test('tool surface: 13 tools, each with a title, annotations, and an object outputSchema', async () => {
   const client = await connect();
   const { tools } = await client.listTools();
 
@@ -712,8 +714,8 @@ test('tool surface: 12 tools, each with a title, annotations, and an object outp
 test('tool surface: two createServer() instances in one process both connect', async () => {
   const a = await connect();
   const b = await connect();
-  expect((await a.listTools()).tools).toHaveLength(12);
-  expect((await b.listTools()).tools).toHaveLength(12);
+  expect((await a.listTools()).tools).toHaveLength(13);
+  expect((await b.listTools()).tools).toHaveLength(13);
   await a.close();
   await b.close();
 });
@@ -831,6 +833,8 @@ test('schema conformance: every tool validates against its declared outputSchema
     { name: 'grep_sessions', args: { pattern: 'flaky' }, schema: GrepSessionsOutput },
     { name: 'get_session_messages', args: { filePath: sessionB }, schema: GetSessionMessagesOutput },
     { name: 'get_session_digest', args: { filePath: sessionB }, schema: GetSessionDigestOutput },
+    // REPO_ROOT: session B's /repoB is gone, so drift is checked here — a real repo, non-null drift.
+    { name: 'get_handoff_brief', args: { filePath: sessionB, cwd: REPO_ROOT }, schema: GetHandoffBriefOutput },
     {
       name: 'get_activity_digest',
       args: { startDate: '2026-06-01', endDate: '2026-06-30', detail: 'highlights' },
@@ -960,7 +964,7 @@ describe('empty results', () => {
     rmSync(emptyTmp, { recursive: true, force: true });
   });
 
-  test('empty results: all 12 tools return a conforming payload alongside their sentinel', async () => {
+  test('empty results: every tool with an empty case returns a conforming payload alongside its sentinel', async () => {
     const client = await connect();
     const repoRoot = join(import.meta.dir, '..'); // a real git repo with no indexed sessions
     const calls: { name: string; args: JsonObject; schema: ZodType; text?: string }[] = [
@@ -1019,7 +1023,8 @@ describe('empty results', () => {
         text: 'No sessions correlate to this target.',
       },
     ];
-    expect(calls.map((c) => c.name).sort()).toEqual(TOOL_NAMES);
+    // get_handoff_brief has no empty case: an unknown session is an error, not an empty brief.
+    expect(calls.map((c) => c.name).sort()).toEqual(TOOL_NAMES.filter((n) => n !== 'get_handoff_brief'));
 
     for (const { name, args, schema, text } of calls) {
       const res = await client.callTool({ name, arguments: args });

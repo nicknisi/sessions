@@ -102,6 +102,12 @@ if (command === 'digest') {
   process.exit(0);
 }
 
+if (command === 'continue') {
+  const { parseContinueArgs, runContinue } = await import('./src/continue.ts');
+  await runContinue(parseContinueArgs(Bun.argv.slice(3)));
+  process.exit(0);
+}
+
 if (command === 'memory') {
   const { runMemory } = await import('./src/memory/cli.ts');
   await runMemory(Bun.argv.slice(3));

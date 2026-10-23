@@ -210,3 +210,33 @@ export function isCommitRef(repo: RepoInfo, ref: string): boolean {
   const res = git(repo.currentWorktree, ['cat-file', '-t', ref]);
   return res.ok && res.out.trim() === 'commit';
 }
+
+/** Commits reachable from HEAD committed since `sinceIso`, newest first, capped at `limit`.
+ *  Committer time bounds the walk (a rebase keeps author time), so callers filter on
+ *  authoredAt when that is what they mean. */
+export function logSince(repo: RepoInfo, sinceIso: string, limit: number): CommitInfo[] {
+  const res = git(repo.currentWorktree, [
+    'log',
+    `--since=${sinceIso}`,
+    `--format=${COMMIT_FORMAT}`,
+    '--name-only',
+    '-n',
+    String(limit),
+  ]);
+  if (!res.ok || !res.out) return [];
+  return parseCommits(res.out);
+}
+
+/** Repo-relative paths with uncommitted changes: modified or staged against HEAD, or untracked. */
+export function dirtyPaths(repo: RepoInfo): Set<string> {
+  const out = new Set<string>();
+  // -z: NUL-separated and unquoted, so paths with spaces or unicode come through verbatim.
+  for (const args of [
+    ['diff', '--name-only', '-z', 'HEAD'],
+    ['ls-files', '--others', '--exclude-standard', '-z'],
+  ]) {
+    const res = git(repo.currentWorktree, args);
+    if (res.ok) for (const p of res.out.split('\0')) if (p) out.add(p);
+  }
+  return out;
+}

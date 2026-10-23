@@ -33,6 +33,7 @@ import { version } from '../package.json';
 import {
   GetActivityDigestOutput,
   GetContextPrimerOutput,
+  GetHandoffBriefOutput,
   GetMemoryOutput,
   GetMemoryRecurrenceOutput,
   GetMemorySourcesOutput,
@@ -45,17 +46,19 @@ import {
   WhyDidThisChangeOutput,
 } from './mcp-schemas';
 import { why, MAX_SESSIONS } from './why/correlate';
+import { buildHandoff } from './continue';
 
 const INSTRUCTIONS =
   'Searchable history of every past AI coding session (Claude Code, Codex, Pi, OpenCode) on this machine — the conversations behind the commits. Decisions, rationale, abandoned approaches, and unfinished threads live here, not in git. ' +
   'Use proactively, without being asked, when: the user references prior work ("last time", "didn\'t we already", "that approach we tried", "why did we do it this way"); work resumes on a repo after a gap (call get_context_primer before starting); a why-question isn\'t answered by the code or git history; or a bug/task smells like something solved before (search_sessions first, re-derive second). ' +
   'Two ways to find things: search_sessions ranks the most relevant sessions for a topic (top-k, not exhaustive); grep_sessions finds every message matching a literal string or regex (exhaustive — use it for "every time", counts, or exact-pattern needs). ' +
   'Prefer bounded calls: get_session_digest over paging full transcripts. ' +
+  'To continue or pick up an earlier session, call get_handoff_brief: it says what changed in the code since, so you never act on stale file contents. ' +
   'Memory are the other half: short standing instructions and durable facts this user has already established (build conventions, tooling constraints, preferences). Call get_memory when starting work in a repo and treat what it returns as binding. ' +
   'Two read-only windows into what OTHER agents remember: get_memory_sources inventories every agent memory store on this machine (pi-hermes, Claude Code, Codex), and review_agent_memories reads their contents with provenance — use them to audit what another harness knows, to spot redundancy against get_memory, or before porting conventions between agents. get_memory_recurrence reports what recurs against that store — approved memories still being violated, untriaged repeats, and fuzzy paraphrase pairs awaiting triage confirmation.';
 
 /**
- * Correct for all 12 tools: every one reads the local index and mutates nothing.
+ * Correct for all 13 tools: every one reads the local index and mutates nothing.
  * why_did_this_change reads git READ-ONLY (log/blame/show) and never writes to a repo.
  * get_memory included — it reads stored memory, it does not record it. The two
  * agent-source tools read other harnesses' stores but only ever open them readonly.
@@ -501,8 +504,15 @@ export async function runGetSessionDigest(args: { filePath: string }): Promise<T
   return toolResult({ ...buildSessionDigest(lines) });
 }
 
+// Exported, testable seam: the get_handoff_brief tool delegates here.
+export async function runGetHandoffBrief(args: { filePath: string; cwd?: string }): Promise<ToolResult> {
+  const brief = await buildHandoff(args.filePath, args.cwd ?? process.cwd());
+  if (!brief) return toolError(`Not an indexed, readable session: ${args.filePath}`);
+  return toolResult({ ...brief });
+}
+
 /**
- * All 12 tool registrations. Extracted alongside createServer() so a test can drive
+ * All 13 tool registrations. Extracted alongside createServer() so a test can drive
  * `tools/list` and `tools/call` over an in-memory transport — the only path that runs
  * the SDK's output validation. The exported `run*` seams stay the handlers' bodies, but
  * they bypass that validation, which is exactly why they cannot cover this surface.
@@ -724,6 +734,27 @@ function registerTools(server: McpServer): void {
       annotations: READ_ONLY,
     },
     async ({ filePath }) => runGetSessionDigest({ filePath }),
+  );
+
+  server.registerTool(
+    'get_handoff_brief',
+    {
+      title: 'Brief for continuing a past session',
+      description:
+        "Everything needed to pick a past session back up against the code as it is NOW, in one bounded call (~3k tokens): the session's arc (its digest), whether its work landed (commits touching its files during or just after it), and what changed since in the files it edited or read (later commits, uncommitted edits, deletions), plus the repo's standing memory. Use it when the user asks to continue, resume, or pick up an earlier session, from any agent: transcripts replayed as-is assume the repo froze when they ended, and file contents quoted in them may be stale. `markdown` is ready to act on; `drift` carries the same facts structured (null outside a git repo). Read-only on git and the index.",
+      inputSchema: {
+        filePath: z.string().describe('The session filePath from search_sessions results'),
+        cwd: z
+          .string()
+          .optional()
+          .describe(
+            "Where to check drift when the session's own directory is gone. Defaults to the server process cwd.",
+          ),
+      },
+      outputSchema: GetHandoffBriefOutput,
+      annotations: READ_ONLY,
+    },
+    async ({ filePath, cwd }) => runGetHandoffBrief({ filePath, cwd }),
   );
 
   server.registerTool(

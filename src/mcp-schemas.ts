@@ -1,4 +1,4 @@
-// The 12 tools' `outputSchema` shapes, kept out of src/mcp.ts so that file stays readable.
+// The 13 tools' `outputSchema` shapes, kept out of src/mcp.ts so that file stays readable.
 //
 // Two invariants govern everything here:
 //
@@ -380,4 +380,32 @@ export const WhyDidThisChangeOutput = z.object({
     .nullable(),
   sessions: z.array(WhySession),
   unlandedAttempts: z.array(WhySession),
+});
+
+// ——— get_handoff_brief ———
+
+const commitRef = z.object({ sha: z.string(), subject: z.string(), authoredAt: z.string() });
+
+export const HandoffDriftOutput = z.object({
+  commitsSince: z.number(),
+  capped: z.boolean(),
+  edited: z.array(
+    z.object({ path: z.string(), commitsSince: z.array(commitRef), dirty: z.boolean(), deleted: z.boolean() }),
+  ),
+  editedTotal: z.number(),
+  readChanged: z.array(z.string()),
+  landed: z.array(commitRef),
+});
+
+export const GetHandoffBriefOutput = z.object({
+  tool: toolName,
+  sessionId: z.string(),
+  filePath: z.string(),
+  cwd: z.string(),
+  launchDir: z.string(),
+  startedAt: z.string(),
+  endedAt: z.string(),
+  // null outside a git repository.
+  drift: HandoffDriftOutput.nullable(),
+  markdown: z.string(),
 });
