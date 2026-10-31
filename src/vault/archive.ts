@@ -13,7 +13,16 @@
 // raw-bytes: its sessions are SQLite rows with no file, so a normalized JSONL export
 // (the same shape the live materializer emits) is the rawest form there is to keep.
 
-import { existsSync, mkdirSync, copyFileSync, readFileSync, writeFileSync, renameSync, statSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  copyFileSync,
+  readFileSync,
+  readdirSync,
+  writeFileSync,
+  renameSync,
+  statSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { type Tool } from '../types';
@@ -133,6 +142,7 @@ export function archiveFile(
   } else {
     copyFileSync(entry.path, vaultPath);
   }
+  if (entry.tool === 'claude') copySubagents(subagentsDir(entry.path), subagentsDir(vaultPath));
 
   manifest[entry.path] = {
     tool: entry.tool,
@@ -144,6 +154,30 @@ export function archiveFile(
     vaultPath,
   };
   return true;
+}
+
+/** Claude keeps a session's subagent transcripts in `<id>/subagents/` beside `<id>.jsonl`. */
+export function subagentsDir(transcriptPath: string): string {
+  return join(transcriptPath.replace(/\.jsonl$/, ''), 'subagents');
+}
+
+/** One-shot backfill for sessions archived before subagents were: copies only when the vault has none yet. */
+export function backfillSubagents(originalPath: string, vaultPath: string): void {
+  const dst = subagentsDir(vaultPath);
+  if (!existsSync(dst)) copySubagents(subagentsDir(originalPath), dst);
+}
+
+function copySubagents(src: string, dst: string): void {
+  if (!existsSync(src)) return;
+  mkdirSync(dst, { recursive: true });
+  for (const file of readdirSync(src, { withFileTypes: true })) {
+    if (!file.isFile()) continue;
+    const from = join(src, file.name);
+    const to = join(dst, file.name);
+    const size = statSync(from).size;
+    if (existsSync(to) && statSync(to).size === size) continue;
+    copyFileSync(from, to);
+  }
 }
 
 /**
