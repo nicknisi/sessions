@@ -11,9 +11,8 @@ import { z } from 'zod';
 import type { UsageEvent } from './types.ts';
 
 // Message rows come from OpenCode's own DB; per-field catch keeps a malformed
-// optional field from discarding an otherwise usable row. Legacy `message` rows
-// carry flat modelID/providerID; v2 `session_message` rows nest them under `model`
-// and have no `role` (the row `type` column is authoritative there).
+// optional field from discarding an otherwise usable row. Legacy rows carry flat
+// modelID/providerID; v2 rows nest them under `model` and have no `role`.
 const opencodeMessageSchema = z.object({
   role: z.string().optional(),
   modelID: z.string().optional().catch(undefined),
@@ -51,9 +50,7 @@ export async function parseOpencode(dbPath: string): Promise<UsageEvent[]> {
 
   const events: UsageEvent[] = [];
   try {
-    // OpenCode writes two schemas to the same DB; a session id can exist in both with
-    // the legacy copy frozen at the migration point. v2 rows win; legacy rows are read
-    // only for ids v2 does not have (and not at all on installs without the v2 tables).
+    // v2 rows win for shared ids so usage is neither stale nor double-counted.
     const hasV2 = db.query(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session_v2'`).get() != null;
     type Row = { session_id: string; data: string; directory: string; v2: number };
     const rows: Row[] = [];

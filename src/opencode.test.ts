@@ -27,10 +27,8 @@ let tmp: string;
 let dbPath: string;
 
 // A minimal OpenCode DB with the exact columns src/opencode.ts and the report parser read.
-// OpenCode writes two schemas to the same DB; the fixture mirrors ses_parent/ses_child
-// into the v2 tables (as the real migration does) and keeps ses_plain legacy-only so
-// both the v2-preferred path and the legacy fallback are exercised. includeV2=false
-// emulates an older install with no v2 tables.
+// ses_parent/ses_child are mirrored into the v2 tables (as the real migration does);
+// ses_plain stays legacy-only. includeV2=false emulates an older install.
 function buildFixtureDb(path: string, includeV2 = true): void {
   const db = new Database(path);
   db.run(

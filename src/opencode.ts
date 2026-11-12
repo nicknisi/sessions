@@ -12,12 +12,9 @@ import { tryParse, asJsonObject, asJsonString, asJsonNumber, type JsonObject } f
 // so the parser and extractors treat OpenCode like any other tool. Env override
 // keeps tests hermetic (they point at a temp fixture DB), matching SESSIONS_*_DIR.
 //
-// OpenCode writes two schemas to the same DB: the original `session`/`message`/`part`
-// tables and the newer `session_v2`/`session_message` ones (one row per turn with
-// the content inline in `data`, no `part` rows). During the migration a session id
-// can exist in both tables with the legacy copy frozen at the migration point, so
-// every read prefers `session_v2` and falls back to legacy — that covers v2-only
-// ids, legacy-only ids, and installs where either schema is absent entirely.
+// OpenCode also writes a newer `session_v2`/`session_message` schema to the same
+// DB; reads below prefer the v2 row when an id exists in both and fall back to
+// legacy otherwise.
 
 /** Absolute path to the OpenCode SQLite DB, honoring SESSIONS_OPENCODE_DB. I.e. ~/.local/share/opencode/opencode.db */
 export function getOpencodeDbPath(): string {
@@ -68,8 +65,8 @@ export function closeOpencodeDb(): void {
   _conn = null;
 }
 
-/** Whether a table exists in the OpenCode DB: pre-v2 installs have no `session_v2`,
- *  and the legacy tables will eventually be dropped, so neither schema is assumed. */
+/** Whether a table exists: pre-v2 installs lack `session_v2`, and the legacy tables
+ *  will eventually be dropped — neither schema is assumed. */
 function tableExists(d: Database, name: string): boolean {
   try {
     return (
@@ -87,8 +84,7 @@ interface DiscoveredSession {
   tool: Tool;
 }
 
-/** Top-level sessions (subagents fold into their parent), as synthetic file_paths for discovery.
- *  Ids can exist in both schemas during the migration; the Set dedupes them. */
+/** Top-level sessions (subagents fold into their parent), as synthetic file_paths for discovery. */
 export function discoverOpencodeSessions(): DiscoveredSession[] {
   const d = db();
   if (!d) return [];
@@ -105,9 +101,7 @@ export function discoverOpencodeSessions(): DiscoveredSession[] {
   }
 }
 
-/** Cache-invalidation signal for a session: time_updated as mtime, message count as size.
- *  Prefers the v2 row (the legacy copy is frozen at the migration point); the count
- *  comes from whichever schema will serve the reads, so an update in it changes the stat. */
+/** Cache-invalidation signal for a session: time_updated as mtime, message count as size. */
 export function opencodeStat(filePath: string): { mtimeMs: number; size: number } | null {
   const d = db();
   if (!d) return null;
@@ -141,8 +135,7 @@ export function opencodeStat(filePath: string): { mtimeMs: number; size: number 
  * shared parser already understands: a Pi-style `session` line carrying the cwd,
  * an optional `custom-title` line, then one `message` line per turn whose
  * `message.content[]` mixes text, thinking, tool, and patch blocks (the generic
- * `type:'message'` shape pi/codex already parse). Reads from `session_v2` when the
- * session exists there (the legacy copy is frozen at the migration point), else legacy.
+ * `type:'message'` shape pi/codex already parse).
  */
 export function readOpencodeSession(filePath: string): string[] {
   const d = db();
@@ -345,7 +338,7 @@ function partsBySession(d: Database, sessionId: string): Map<string, JsonObject[
 }
 
 /** Map message content blocks to content blocks: text→text, reasoning→thinking, tool→tool, patch→patch.
- *  v2 names the tool in `name`; legacy parts use `tool` — both map onto the `tool` field. */
+ *  v2 names the tool in `name`, legacy parts in `tool`. */
 function buildContent(parts: JsonObject[]): JsonObject[] {
   const blocks: JsonObject[] = [];
   for (const p of parts) {
