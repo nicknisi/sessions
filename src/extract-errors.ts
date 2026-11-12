@@ -83,13 +83,14 @@ function extractPi(lines: string[], push: (m: string) => void): void {
   }
 }
 
-// OpenCode: a tool block whose `state.status` is 'error' — the message is `state.error`.
+// OpenCode: a tool block whose `state.status` is 'error' — the message is `state.error`
+// (a string in legacy parts, a `{ type, message }` object in v2 rows).
 function extractOpencode(lines: string[], push: (m: string) => void): void {
   for (const block of opencodeAssistantBlocks(lines)) {
     if (block.type !== 'tool') continue;
     const state = asJsonObject(block.state);
     if (!state || state.status !== 'error') continue;
-    const msg = asJsonString(state.error) ?? '';
+    const msg = asJsonString(state.error) ?? asJsonString(asJsonObject(state.error)?.message) ?? '';
     push(msg || `${asJsonString(block.tool) ?? 'tool'} error`);
   }
 }

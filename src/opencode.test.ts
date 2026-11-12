@@ -115,11 +115,20 @@ function buildFixtureDb(path: string, includeV2 = true): void {
     const sessionV2 = db.query(
       'INSERT INTO session_v2 (id, project_id, parent_id, directory, title, time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?, ?)',
     );
-    const turn = db.query('INSERT INTO session_message (id, session_id, type, seq, time_created, data) VALUES (?, ?, ?, ?, ?, ?)');
+    const turn = db.query(
+      'INSERT INTO session_message (id, session_id, type, seq, time_created, data) VALUES (?, ?, ?, ?, ?, ?)',
+    );
 
     // ses_parent mirrored into v2 (same turns, newer time_updated) — v2 must win over the frozen legacy copy.
     sessionV2.run('ses_parent', 'p1', null, '/repo/app', 'Refactor the router', 1000, 2500);
-    turn.run('sm_u1', 'ses_parent', 'user', 1, 1100, j({ text: 'please refactor the router lazerhawk', time: { created: 1100 } }));
+    turn.run(
+      'sm_u1',
+      'ses_parent',
+      'user',
+      1,
+      1100,
+      j({ text: 'please refactor the router lazerhawk', time: { created: 1100 } }),
+    );
     turn.run(
       'sm_a1',
       'ses_parent',
@@ -138,8 +147,12 @@ function buildFixtureDb(path: string, includeV2 = true): void {
           { type: 'tool', name: 'bash', state: { status: 'completed', input: { command: 'bun test' } } },
           { type: 'tool', name: 'edit', state: { status: 'completed', input: { filePath: '/repo/app/router.ts' } } },
           { type: 'tool', name: 'read', state: { status: 'completed', input: { filePath: '/repo/app/old.ts' } } },
-          { type: 'patch', files: ['/repo/app/router.ts'] },
-          { type: 'tool', name: 'bash', state: { status: 'error', input: { command: 'x' }, error: 'boom quux' } },
+          // v2 errors are `{ type, message }` objects (legacy parts carry a plain string).
+          {
+            type: 'tool',
+            name: 'bash',
+            state: { status: 'error', input: { command: 'x' }, error: { type: 'unknown', message: 'boom quux' } },
+          },
         ],
       }),
     );
@@ -149,11 +162,30 @@ function buildFixtureDb(path: string, includeV2 = true): void {
 
     // Migrated subagent — parent recall must find it through v2.
     sessionV2.run('ses_child', 'p1', 'ses_parent', '/repo/app', 'Explore (@explore subagent)', 1200, 1400);
-    turn.run('sm_u2', 'ses_child', 'user', 1, 1200, j({ text: 'subagent secret term wibbleflorp', time: { created: 1200 } }));
+    turn.run(
+      'sm_u2',
+      'ses_child',
+      'user',
+      1,
+      1200,
+      j({ text: 'subagent secret term wibbleflorp', time: { created: 1200 } }),
+    );
+
+    // A legacy-only subagent of a migrated parent — recall must still find it.
+    session.run('ses_oldchild', 'p1', 'ses_parent', '/repo/app', 'Old subagent', 1300, 1300);
+    message.run('msg_u5', 'ses_oldchild', 1300, j({ role: 'user', time: { created: 1300 } }));
+    part.run('prt_u5', 'msg_u5', 'ses_oldchild', 1300, j({ type: 'text', text: 'legacy child term snorkelbat' }));
 
     // v2-only session — invisible to the legacy schema entirely.
     sessionV2.run('ses_fresh', 'p3', null, '/repo/fresh', 'Fresh v2 session', 4000, 4500);
-    turn.run('sm_u4', 'ses_fresh', 'user', 1, 4100, j({ text: 'a v2-only session about grousewalker', time: { created: 4100 } }));
+    turn.run(
+      'sm_u4',
+      'ses_fresh',
+      'user',
+      1,
+      4100,
+      j({ text: 'a v2-only session about grousewalker', time: { created: 4100 } }),
+    );
     turn.run(
       'sm_a2',
       'ses_fresh',
@@ -165,8 +197,30 @@ function buildFixtureDb(path: string, includeV2 = true): void {
         cost: 0.02,
         tokens: { input: 20, output: 10, reasoning: 5, cache: { read: 0, write: 0 } },
         time: { created: 4200, completed: 4300 },
-        content: [{ type: 'text', text: 'grousewalker handled' }],
+        // Written with `experimental.part_rows`: inline content is empty, the parts live in session_part.
+        content: [],
       }),
+    );
+    db.run(
+      'CREATE TABLE session_part (message_id TEXT, session_id TEXT, ordinal INTEGER, type TEXT, data TEXT, PRIMARY KEY (message_id, ordinal))',
+    );
+    const sessionPart = db.query(
+      'INSERT INTO session_part (message_id, session_id, ordinal, type, data) VALUES (?, ?, ?, ?, ?)',
+    );
+    // Inserted out of order: reads must follow ordinal.
+    sessionPart.run(
+      'sm_a2',
+      'ses_fresh',
+      1,
+      'tool',
+      j({ type: 'tool', name: 'bash', state: { status: 'completed', input: { command: 'bun run quillfeather' } } }),
+    );
+    sessionPart.run(
+      'sm_a2',
+      'ses_fresh',
+      0,
+      'text',
+      j({ type: 'text', text: 'grousewalker handled via quillfeather' }),
     );
   }
 
@@ -203,7 +257,7 @@ describe('opencode module', () => {
 
   test('stat prefers the v2 row for shared ids and serves v2-only ids', () => {
     expect(opencodeStat(opencodeFilePath('ses_parent'))).toEqual({ mtimeMs: 2500, size: 4 }); // newer v2 time_updated; v2 rows include bookkeeping
-    expect(opencodeStat(opencodeFilePath('ses_fresh'))).toEqual({ mtimeMs: 4500, size: 2 });
+    expect(opencodeStat(opencodeFilePath('ses_fresh'))).toEqual({ mtimeMs: 4500, size: 4 }); // 2 message rows + 2 part rows
     expect(opencodeStat(opencodeFilePath('ses_plain'))).toEqual({ mtimeMs: 3500, size: 1 }); // legacy-only id
     expect(opencodeStat(opencodeFilePath('ses_missing'))).toBeNull();
   });
@@ -214,7 +268,11 @@ describe('opencode module', () => {
     process.env.SESSIONS_OPENCODE_DB = legacyPath;
     closeOpencodeDb();
     try {
-      expect(discoverOpencodeSessions().map((s) => sessionIdFromPath(s.path)).sort()).toEqual(['ses_parent', 'ses_plain']);
+      expect(
+        discoverOpencodeSessions()
+          .map((s) => sessionIdFromPath(s.path))
+          .sort(),
+      ).toEqual(['ses_parent', 'ses_plain']);
       expect(opencodeStat(opencodeFilePath('ses_parent'))).toEqual({ mtimeMs: 2000, size: 2 }); // legacy time_updated + legacy count
       const lines = readSessionLines(opencodeFilePath('ses_parent'));
       expect(firstPrompt(lines, 'opencode')).toBe('please refactor the router lazerhawk');
@@ -250,8 +308,22 @@ describe('opencode module', () => {
     expect(errors.messages[0]).toBe('boom quux');
   });
 
+  test('reads assistant content from session_part rows in ordinal order', () => {
+    const lines = readOpencodeSession(opencodeFilePath('ses_fresh'));
+    expect(messageCount(lines)).toBe(2);
+    const assistant = JSON.parse(lines.at(-1)!).message;
+    expect(assistant.content).toEqual([
+      { type: 'text', text: 'grousewalker handled via quillfeather' },
+      { type: 'tool', tool: 'bash', state: { status: 'completed', input: { command: 'bun run quillfeather' } } },
+    ]);
+    expect(extractCommands(lines, 'opencode')).toEqual(['bun run quillfeather']);
+  });
+
   test('collects subagent user text for parent-session recall', () => {
-    expect(collectOpencodeSubagentText(opencodeFilePath('ses_parent'))).toBe('subagent secret term wibbleflorp');
+    // ses_child is in both schemas (counted once, from v2); ses_oldchild only in legacy.
+    expect(collectOpencodeSubagentText(opencodeFilePath('ses_parent'))).toBe(
+      'subagent secret term wibbleflorp\nlegacy child term snorkelbat',
+    );
     expect(collectOpencodeSubagentText(opencodeFilePath('ses_plain'))).toBe('');
   });
 
@@ -320,7 +392,12 @@ describe('opencode cache integration', () => {
   test('a v2-only session is searchable, and the v2 copy wins for shared ids', async () => {
     const results = await cache.searchSessions('grousewalker');
     expect(results).toHaveLength(1);
-    expect(results[0]).toMatchObject({ tool: 'opencode', sessionId: 'ses_fresh', cwd: '/repo/fresh', customTitle: 'Fresh v2 session' });
+    expect(results[0]).toMatchObject({
+      tool: 'opencode',
+      sessionId: 'ses_fresh',
+      cwd: '/repo/fresh',
+      customTitle: 'Fresh v2 session',
+    });
     // ses_plain exists only in the legacy tables — the fallback still indexes it.
     const legacyOnly = await cache.searchSessions('hello there');
     expect(legacyOnly).toHaveLength(1);
@@ -357,6 +434,11 @@ describe('opencode report parser', () => {
     buildFixtureDb(legacyPath, false);
     const events = await parseOpencode(legacyPath);
     expect(events).toHaveLength(1);
-    expect(events[0]).toMatchObject({ sessionId: 'ses_parent', model: 'claude-opus-4-6', provider: 'anthropic', costUSD: 0.05 });
+    expect(events[0]).toMatchObject({
+      sessionId: 'ses_parent',
+      model: 'claude-opus-4-6',
+      provider: 'anthropic',
+      costUSD: 0.05,
+    });
   });
 });

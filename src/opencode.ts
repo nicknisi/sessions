@@ -72,7 +72,10 @@ export function closeOpencodeDb(): void {
  *  and the legacy tables will eventually be dropped, so neither schema is assumed. */
 function tableExists(d: Database, name: string): boolean {
   try {
-    return d.query<{ 1: number }, [string]>(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`).get(name) != null;
+    return (
+      d.query<{ 1: number }, [string]>(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`).get(name) !=
+      null
+    );
   } catch {
     return false;
   }
@@ -96,11 +99,7 @@ export function discoverOpencodeSessions(): DiscoveredSession[] {
       const rows = d.query<{ id: string }, []>(`SELECT id FROM ${table} WHERE parent_id IS NULL`).all();
       for (const r of rows) ids.add(r.id);
     }
-    return [...ids].map((id) => ({
-      path: opencodeFilePath(id),
-      // SAFETY: 'opencode' is itself a member of the Tool union.
-      tool: 'opencode' as Tool,
-    }));
+    return [...ids].map((id) => ({ path: opencodeFilePath(id), tool: 'opencode' }));
   } catch {
     return [];
   }
@@ -115,11 +114,15 @@ export function opencodeStat(filePath: string): { mtimeMs: number; size: number 
   const id = sessionIdFromPath(filePath);
   try {
     if (tableExists(d, 'session_v2')) {
+      // Part rows are counted too: appending one to an assistant turn adds no session_message row.
+      const parts = tableExists(d, 'session_part')
+        ? ' + (SELECT COUNT(*) FROM session_part WHERE session_id = ?1)'
+        : '';
       const v2 = d
-        .query<{ time_updated: number; c: number }, [string, string]>(
-          'SELECT time_updated, (SELECT COUNT(*) FROM session_message WHERE session_id = ?) AS c FROM session_v2 WHERE id = ?',
+        .query<{ time_updated: number; c: number }, [string]>(
+          `SELECT time_updated, (SELECT COUNT(*) FROM session_message WHERE session_id = ?1)${parts} AS c FROM session_v2 WHERE id = ?1`,
         )
-        .get(id, id);
+        .get(id);
       if (v2) return { mtimeMs: v2.time_updated, size: v2.c };
     }
     const row = d
@@ -180,8 +183,13 @@ export function readOpencodeSession(filePath: string): string[] {
     lines.push(JSON.stringify({ type: 'custom-title', customTitle: session.title }));
   }
 
-  const messages = fromV2 ? readV2Messages(d, id, session.time_created) : readLegacyMessages(d, id, session.time_created);
-  for (const m of messages) lines.push(JSON.stringify({ type: 'message', timestamp: m.timestamp, message: { role: m.role, content: m.content } }));
+  const messages = fromV2
+    ? readV2Messages(d, id, session.time_created)
+    : readLegacyMessages(d, id, session.time_created);
+  for (const m of messages)
+    lines.push(
+      JSON.stringify({ type: 'message', timestamp: m.timestamp, message: { role: m.role, content: m.content } }),
+    );
 
   return lines;
 }
@@ -200,15 +208,16 @@ export function serializeOpencodeSession(filePath: string): string {
 }
 
 /** Genuine user text across a session's subagent (child) sessions, for parent-session search recall.
- *  Follows the same v2-preferred rule as reads, so a migrated parent finds children on both
- *  sides of the migration. */
+ *  Children come from both schemas with the same per-session v2 preference as reads, so a
+ *  parent finds children on either side of the migration without double-counting shared ones. */
 export function collectOpencodeSubagentText(filePath: string): string {
   const d = db();
   if (!d) return '';
   const id = sessionIdFromPath(filePath);
   try {
     const texts: string[] = [];
-    if (tableExists(d, 'session_v2') && hasSessionV2Row(d, id)) {
+    const hasV2 = tableExists(d, 'session_v2');
+    if (hasV2) {
       const rows = d
         .query<{ text: string | null }, [string]>(
           `SELECT json_extract(data, '$.text') AS text FROM session_message
@@ -216,12 +225,14 @@ export function collectOpencodeSubagentText(filePath: string): string {
         )
         .all(id);
       for (const r of rows) if (r.text !== null && r.text.length > 0) texts.push(r.text);
-    } else {
+    }
+    if (tableExists(d, 'session')) {
       const rows = d
         .query<{ text: string | null }, [string]>(
           `SELECT json_extract(p.data, '$.text') AS text
            FROM part p JOIN message m ON m.id = p.message_id
            WHERE p.session_id IN (SELECT id FROM session WHERE parent_id = ?)
+             ${hasV2 ? 'AND p.session_id NOT IN (SELECT id FROM session_v2)' : ''}
              AND json_extract(p.data, '$.type') = 'text'
              AND json_extract(m.data, '$.role') = 'user'`,
         )
@@ -243,25 +254,18 @@ interface RawMessage {
   content: JsonObject[];
 }
 
-/** Whether the id is a `session_v2` row (the caller has already checked the table exists). */
-function hasSessionV2Row(d: Database, id: string): boolean {
-  try {
-    return d.query(`SELECT 1 FROM session_v2 WHERE id = ?`).get(id) != null;
-  } catch {
-    return false;
-  }
-}
-
-/** v2 turns: one `session_message` row per message, content inline in `data`.
- *  Only `user`/`assistant` rows are transcript turns; v2 also stores bookkeeping
- *  rows (system, compaction, synthetic, idle, model-switched, location-switched, shell)
- *  that are skipped here. User rows carry plain `$.text`; assistant rows `$.content[]`. */
+/** v2 turns: one `session_message` row per message. Only `user`/`assistant` rows are
+ *  transcript turns; v2 also stores bookkeeping rows (system, compaction, synthetic, idle,
+ *  skill, agent/model/location-switched, shell) that are skipped here. User rows carry plain
+ *  `$.text`. Assistant content is `$.content[]` inline, or, once OpenCode writes part rows
+ *  (`experimental.part_rows`), `session_part` rows by ordinal with an empty inline `content`. */
 function readV2Messages(d: Database, id: string, fallbackTime: number): RawMessage[] {
   const rows = d
-    .query<{ type: string; time_created: number; data: string }, [string]>(
-      'SELECT type, time_created, data FROM session_message WHERE session_id = ? ORDER BY time_created ASC, seq ASC',
+    .query<{ id: string; type: string; time_created: number; data: string }, [string]>(
+      'SELECT id, type, time_created, data FROM session_message WHERE session_id = ? ORDER BY time_created ASC, seq ASC',
     )
     .all(id);
+  const partsByMessage = v2PartsBySession(d, id);
   const out: RawMessage[] = [];
   for (const r of rows) {
     if (r.type !== 'user' && r.type !== 'assistant') continue;
@@ -274,11 +278,32 @@ function readV2Messages(d: Database, id: string, fallbackTime: number): RawMessa
     } else {
       // SAFETY: the Array.isArray guard narrows `content` to an array of JSON values,
       // which is the JsonObject[] shape buildContent reads.
-      const content = buildContent(Array.isArray(md.content) ? (md.content as JsonObject[]) : []);
+      const inline = Array.isArray(md.content) ? (md.content as JsonObject[]) : [];
+      const content = buildContent(partsByMessage.get(r.id) ?? inline);
       if (content.length > 0) out.push({ role: 'assistant', timestamp: ts, content });
     }
   }
   return out;
+}
+
+/** A v2 session's `session_part` rows grouped by message id, in ordinal order (empty when the table is absent).
+ *  The row's `type` column wins over the JSON, as OpenCode's own reader does. */
+function v2PartsBySession(d: Database, sessionId: string): Map<string, JsonObject[]> {
+  const byMessage = new Map<string, JsonObject[]>();
+  if (!tableExists(d, 'session_part')) return byMessage;
+  const rows = d
+    .query<{ message_id: string; type: string; data: string }, [string]>(
+      'SELECT message_id, type, data FROM session_part WHERE session_id = ? ORDER BY message_id ASC, ordinal ASC',
+    )
+    .all(sessionId);
+  for (const r of rows) {
+    const pd = tryParse(r.data);
+    if (!pd) continue;
+    const list = byMessage.get(r.message_id);
+    if (list) list.push({ ...pd, type: r.type });
+    else byMessage.set(r.message_id, [{ ...pd, type: r.type }]);
+  }
+  return byMessage;
 }
 
 /** Legacy turns: `message` rows joined with their `part` rows. */
