@@ -11,11 +11,20 @@ import { z } from 'zod';
 import type { UsageEvent } from './types.ts';
 
 // Message rows come from OpenCode's own DB; per-field catch keeps a malformed
-// optional field from discarding an otherwise usable row.
+// optional field from discarding an otherwise usable row. Legacy `message` rows
+// carry flat modelID/providerID; v2 `session_message` rows nest them under `model`
+// and have no `role` (the row `type` column is authoritative there).
 const opencodeMessageSchema = z.object({
   role: z.string().optional(),
   modelID: z.string().optional().catch(undefined),
   providerID: z.string().optional().catch(undefined),
+  model: z
+    .object({
+      id: z.string().optional().catch(undefined),
+      providerID: z.string().optional().catch(undefined),
+    })
+    .optional()
+    .catch(undefined),
   cost: z.number().optional().catch(undefined),
   time: z.object({ created: z.number().optional(), completed: z.number().optional() }).optional().catch(undefined),
   path: z.object({ cwd: z.string().optional() }).optional().catch(undefined),
@@ -42,18 +51,41 @@ export async function parseOpencode(dbPath: string): Promise<UsageEvent[]> {
 
   const events: UsageEvent[] = [];
   try {
-    const rows = db
-      .query<{ session_id: string; data: string; directory: string }, []>(
-        `SELECT m.session_id, m.data, s.directory
-         FROM message m JOIN session s ON s.id = m.session_id
-         WHERE json_extract(m.data, '$.role') = 'assistant'`,
-      )
-      .all();
+    // OpenCode writes two schemas to the same DB; a session id can exist in both with
+    // the legacy copy frozen at the migration point. v2 rows win; legacy rows are read
+    // only for ids v2 does not have (and not at all on installs without the v2 tables).
+    const hasV2 =
+      db.query(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session_v2'`).get() != null;
+    const rows: { session_id: string; data: string; directory: string; v2: number }[] = [];
+    if (hasV2) {
+      rows.push(
+        ...db
+          .query(
+            `SELECT sm.session_id, sm.data, s.directory, 1 AS v2
+             FROM session_message sm JOIN session_v2 s ON s.id = sm.session_id
+             WHERE sm.type = 'assistant'`,
+          )
+          .all(),
+      );
+    }
+    rows.push(
+      ...db
+        .query(
+          `SELECT m.session_id, m.data, s.directory, 0 AS v2
+           FROM message m JOIN session s ON s.id = m.session_id
+           WHERE json_extract(m.data, '$.role') = 'assistant'
+             ${hasV2 ? 'AND NOT EXISTS (SELECT 1 FROM session_v2 v WHERE v.id = m.session_id)' : ''}`,
+        )
+        .all(),
+    );
 
     for (const row of rows) {
       const msg = tryParse(row.data);
-      if (!msg || msg.role !== 'assistant') continue;
-      const { modelID, providerID, tokens } = msg;
+      if (!msg) continue;
+      if (!row.v2 && msg.role !== 'assistant') continue; // v2 rows have no `role`; the `type` column already filtered
+      const modelID = msg.modelID ?? msg.model?.id;
+      const providerID = msg.providerID ?? msg.model?.providerID;
+      const { tokens } = msg;
       if (!modelID || !providerID || !tokens) continue;
 
       const created = msg.time?.completed ?? msg.time?.created;
