@@ -91,6 +91,7 @@ sessions setup
     /recall            What did I do on a specific project?
     /session-metrics   Usage dashboard with tool breakdown
     /session-reflect   Reflect on prompting, corrections, and delegation
+    /instruction-review Propose cited improvements to repo instructions
     /memory            Triage durable facts mined from past sessions
 
   Run `sessions setup` again after upgrading to update skills.
@@ -291,9 +292,18 @@ The plugin bundles skills that compose the MCP tools (and, for `/memory`, the CL
 | `/weekly-summary`  | "summarize my week", "weekly recap"                            | Fetches full digest for the past 7 days, writes structured report, then nudges toward any new memory candidates |
 | `/session-metrics` | "session stats", "which tool do I use most"                    | Tool/project breakdown, daily activity, active hours heatmap                                                    |
 | `/session-reflect` | "reflect on my workflow", "why do I keep correcting the agent" | Cited interaction patterns and workflow experiments, with no automatic memory or instruction changes            |
+| `/instruction-review` | "review my instructions", "improve AGENTS.md from past sessions" | Up to three cited additions or clarifications to existing repo-root instructions; proposals only, never writes |
 | `/memory`          | "triage memory", "review memory"                               | Runs the mine, clusters paraphrases, merges them, and walks approve / reject / snooze                           |
 
 Skills work with Claude Code, Cursor, Codex, and any agent that supports the skills.sh format.
+
+### Instruction review
+
+`/instruction-review` uses Sessions as an **evidence layer**: the current agent reads scoped history and existing repo-root `AGENTS.md` / `CLAUDE.md`, then proposes at most three small additions or clarifications. Each proposal needs context from two independent sessions, retrievable message citations, and an inspected current-text/proposed-text comparison. Thin evidence or an already-clear instruction can produce no suggested change.
+
+The default is the current repository and the last 30 local calendar days. Retrieval is bounded and incomplete coverage is disclosed. A connected Sessions MCP server and at least one existing root instruction file are required; a memory store is not. Current instructions and recurring corrections do not prove that a rule was loaded historically or caused a failure.
+
+This is **proposal-only**: it never writes instructions, creates files, approves memories, removes rules, or applies a suggestion after review. Applying a change is a separate user-requested task. Use `/session-reflect` for interaction habits and `/memory` for durable-fact triage. The workflow is inspired by [Backpass](https://github.com/kunchenguid/backpass), not an integration, dependency, or replacement for its proposal/apply engine. Indexing stays local, but retrieved text enters your current agent's model context—analysis is not necessarily on-device.
 
 ### Project groups
 

@@ -13,6 +13,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { linkPiSkills, unlinkPiSkills, installedSkills } from './setup';
 import { PLUGIN_FILES } from './plugin-files';
+import { splitFrontmatter } from './skill-frontmatter';
 
 let tmp: string;
 let pluginSkills: string;
@@ -74,27 +75,35 @@ describe('unlinkPiSkills', () => {
   });
 });
 
-test('bundles session-reflect and its checks for setup discovery and Pi links', () => {
-  const bundledSkills = join(tmp, 'reflection-plugin', 'skills');
-  const skillDir = join(bundledSkills, 'session-reflect');
-  const linksDir = join(tmp, 'reflection-pi');
-  mkdirSync(skillDir, { recursive: true });
+test('bundles instruction-review alongside session-reflect and their checks for setup discovery and Pi links', () => {
+  const bundledSkills = join(tmp, 'review-plugin', 'skills');
+  const linksDir = join(tmp, 'review-pi');
+  const skills = [
+    { name: 'instruction-review', description: 'Propose evidence-backed improvements to repository instructions using sessions history.' },
+    { name: 'session-reflect', description: 'Reflect on how you work with AI coding agents using sessions history.' },
+  ];
 
-  for (const file of ['SKILL.md', 'tests.md']) {
-    const embedded = PLUGIN_FILES[`skills/session-reflect/${file}`];
-    const source = readFileSync(join(import.meta.dir, '..', 'plugin', 'skills', 'session-reflect', file), 'utf8');
-    expect(embedded).toBe(source);
-    writeFileSync(join(skillDir, file), embedded!);
+  for (const { name } of skills) {
+    const skillDir = join(bundledSkills, name);
+    mkdirSync(skillDir, { recursive: true });
+    for (const file of ['SKILL.md', 'tests.md']) {
+      const embedded = PLUGIN_FILES[`skills/${name}/${file}`];
+      expect(embedded).toBeDefined();
+      const source = readFileSync(join(import.meta.dir, '..', 'plugin', 'skills', name, file), 'utf8');
+      expect(embedded).toBe(source);
+      if (file === 'SKILL.md') {
+        expect(Bun.YAML.parse(splitFrontmatter(source).frontmatter)).toMatchObject({ name });
+      }
+      writeFileSync(join(skillDir, file), embedded!);
+    }
   }
 
-  expect(installedSkills(bundledSkills)).toEqual([
-    { name: 'session-reflect', description: 'Reflect on how you work with AI coding agents using sessions history.' },
-  ]);
-  expect(linkPiSkills(linksDir, bundledSkills)).toEqual([{ name: 'session-reflect', status: 'linked' }]);
-  for (const file of ['SKILL.md', 'tests.md']) {
-    expect(PLUGIN_FILES[`skills/session-reflect/${file}`]).toBe(
-      readFileSync(join(linksDir, 'session-reflect', file), 'utf8'),
-    );
+  expect(installedSkills(bundledSkills)).toEqual(skills);
+  expect(linkPiSkills(linksDir, bundledSkills)).toEqual(skills.map(({ name }) => ({ name, status: 'linked' })));
+  for (const { name } of skills) {
+    for (const file of ['SKILL.md', 'tests.md']) {
+      expect(PLUGIN_FILES[`skills/${name}/${file}`]).toBe(readFileSync(join(linksDir, name, file), 'utf8'));
+    }
   }
 });
 
