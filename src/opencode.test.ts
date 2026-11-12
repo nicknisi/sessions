@@ -27,7 +27,9 @@ let tmp: string;
 let dbPath: string;
 
 // A minimal OpenCode DB with the exact columns src/opencode.ts and the report parser read.
-function buildFixtureDb(path: string): void {
+// ses_parent/ses_child are mirrored into the v2 tables (as the real migration does);
+// ses_plain stays legacy-only. includeV2=false emulates an older install.
+function buildFixtureDb(path: string, includeV2 = true): void {
   const db = new Database(path);
   db.run(
     'CREATE TABLE session (id TEXT PRIMARY KEY, project_id TEXT, parent_id TEXT, directory TEXT, title TEXT, time_created INTEGER, time_updated INTEGER)',
@@ -101,6 +103,125 @@ function buildFixtureDb(path: string): void {
   message.run('msg_u3', 'ses_plain', 3000, j({ role: 'user', time: { created: 3000 } }));
   part.run('prt_u3', 'msg_u3', 'ses_plain', 3000, j({ type: 'text', text: 'hello there' }));
 
+  if (includeV2) {
+    db.run(
+      'CREATE TABLE session_v2 (id TEXT PRIMARY KEY, project_id TEXT, parent_id TEXT, directory TEXT, title TEXT, time_created INTEGER, time_updated INTEGER)',
+    );
+    db.run(
+      'CREATE TABLE session_message (id TEXT PRIMARY KEY, session_id TEXT, type TEXT, seq INTEGER, time_created INTEGER, data TEXT)',
+    );
+    const sessionV2 = db.query(
+      'INSERT INTO session_v2 (id, project_id, parent_id, directory, title, time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    );
+    const turn = db.query(
+      'INSERT INTO session_message (id, session_id, type, seq, time_created, data) VALUES (?, ?, ?, ?, ?, ?)',
+    );
+
+    // ses_parent mirrored into v2 (same turns, newer time_updated) — v2 must win over the frozen legacy copy.
+    sessionV2.run('ses_parent', 'p1', null, '/repo/app', 'Refactor the router', 1000, 2500);
+    turn.run(
+      'sm_u1',
+      'ses_parent',
+      'user',
+      1,
+      1100,
+      j({ text: 'please refactor the router lazerhawk', time: { created: 1100 } }),
+    );
+    turn.run(
+      'sm_a1',
+      'ses_parent',
+      'assistant',
+      2,
+      1500,
+      j({
+        agent: 'build',
+        model: { id: 'claude-opus-4-6', providerID: 'anthropic', variant: 'default' },
+        cost: 0.05,
+        tokens: { input: 100, output: 50, reasoning: 10, cache: { read: 200, write: 30 } },
+        time: { created: 1500, completed: 1600 },
+        content: [
+          { type: 'reasoning', text: 'thinking about zorptastic' },
+          { type: 'text', text: 'Done refactoring' },
+          { type: 'tool', name: 'bash', state: { status: 'completed', input: { command: 'bun test' } } },
+          { type: 'tool', name: 'edit', state: { status: 'completed', input: { filePath: '/repo/app/router.ts' } } },
+          { type: 'tool', name: 'read', state: { status: 'completed', input: { filePath: '/repo/app/old.ts' } } },
+          // v2 errors are `{ type, message }` objects (legacy parts carry a plain string).
+          {
+            type: 'tool',
+            name: 'bash',
+            state: { status: 'error', input: { command: 'x' }, error: { type: 'unknown', message: 'boom quux' } },
+          },
+        ],
+      }),
+    );
+    // Bookkeeping rows v2 also stores — not turns, must never become messages.
+    turn.run('sm_c1', 'ses_parent', 'compaction', 3, 1700, j({ text: 'compacted history lazerhawk' }));
+    turn.run('sm_s1', 'ses_parent', 'system', 4, 1800, j({ text: 'system notice' }));
+
+    // Migrated subagent — parent recall must find it through v2.
+    sessionV2.run('ses_child', 'p1', 'ses_parent', '/repo/app', 'Explore (@explore subagent)', 1200, 1400);
+    turn.run(
+      'sm_u2',
+      'ses_child',
+      'user',
+      1,
+      1200,
+      j({ text: 'subagent secret term wibbleflorp', time: { created: 1200 } }),
+    );
+
+    // A legacy-only subagent of a migrated parent — recall must still find it.
+    session.run('ses_oldchild', 'p1', 'ses_parent', '/repo/app', 'Old subagent', 1300, 1300);
+    message.run('msg_u5', 'ses_oldchild', 1300, j({ role: 'user', time: { created: 1300 } }));
+    part.run('prt_u5', 'msg_u5', 'ses_oldchild', 1300, j({ type: 'text', text: 'legacy child term snorkelbat' }));
+
+    // v2-only session — invisible to the legacy schema entirely.
+    sessionV2.run('ses_fresh', 'p3', null, '/repo/fresh', 'Fresh v2 session', 4000, 4500);
+    turn.run(
+      'sm_u4',
+      'ses_fresh',
+      'user',
+      1,
+      4100,
+      j({ text: 'a v2-only session about grousewalker', time: { created: 4100 } }),
+    );
+    turn.run(
+      'sm_a2',
+      'ses_fresh',
+      'assistant',
+      2,
+      4200,
+      j({
+        model: { id: 'claude-opus-4-6', providerID: 'anthropic' },
+        cost: 0.02,
+        tokens: { input: 20, output: 10, reasoning: 5, cache: { read: 0, write: 0 } },
+        time: { created: 4200, completed: 4300 },
+        // Written with `experimental.part_rows`: inline content is empty, the parts live in session_part.
+        content: [],
+      }),
+    );
+    db.run(
+      'CREATE TABLE session_part (message_id TEXT, session_id TEXT, ordinal INTEGER, type TEXT, data TEXT, PRIMARY KEY (message_id, ordinal))',
+    );
+    const sessionPart = db.query(
+      'INSERT INTO session_part (message_id, session_id, ordinal, type, data) VALUES (?, ?, ?, ?, ?)',
+    );
+    // Inserted out of order: reads must follow ordinal.
+    sessionPart.run(
+      'sm_a2',
+      'ses_fresh',
+      1,
+      'tool',
+      j({ type: 'tool', name: 'bash', state: { status: 'completed', input: { command: 'bun run quillfeather' } } }),
+    );
+    sessionPart.run(
+      'sm_a2',
+      'ses_fresh',
+      0,
+      'text',
+      j({ type: 'text', text: 'grousewalker handled via quillfeather' }),
+    );
+  }
+
   db.close();
 }
 
@@ -125,16 +246,39 @@ describe('opencode module', () => {
     expect(isOpencodePath('/home/x/.claude/projects/p/abc.jsonl')).toBe(false);
   });
 
-  test('discovers only top-level sessions (subagents fold into the parent)', () => {
+  test('discovers top-level sessions from both schemas, deduping shared ids (subagents fold into the parent)', () => {
     const ids = discoverOpencodeSessions()
       .map((s) => sessionIdFromPath(s.path))
       .sort();
-    expect(ids).toEqual(['ses_parent', 'ses_plain']);
+    expect(ids).toEqual(['ses_fresh', 'ses_parent', 'ses_plain']);
   });
 
-  test('stat reports time_updated as mtime and message count as size', () => {
-    expect(opencodeStat(opencodeFilePath('ses_parent'))).toEqual({ mtimeMs: 2000, size: 2 });
+  test('stat prefers the v2 row for shared ids and serves v2-only ids', () => {
+    expect(opencodeStat(opencodeFilePath('ses_parent'))).toEqual({ mtimeMs: 2500, size: 4 }); // newer v2 time_updated; v2 rows include bookkeeping
+    expect(opencodeStat(opencodeFilePath('ses_fresh'))).toEqual({ mtimeMs: 4500, size: 4 }); // 2 message rows + 2 part rows
+    expect(opencodeStat(opencodeFilePath('ses_plain'))).toEqual({ mtimeMs: 3500, size: 1 }); // legacy-only id
     expect(opencodeStat(opencodeFilePath('ses_missing'))).toBeNull();
+  });
+
+  test('a DB with no v2 tables (older OpenCode) reads the legacy schema', () => {
+    const legacyPath = join(tmp, 'opencode-legacy.db');
+    buildFixtureDb(legacyPath, false);
+    process.env.SESSIONS_OPENCODE_DB = legacyPath;
+    closeOpencodeDb();
+    try {
+      expect(
+        discoverOpencodeSessions()
+          .map((s) => sessionIdFromPath(s.path))
+          .sort(),
+      ).toEqual(['ses_parent', 'ses_plain']);
+      expect(opencodeStat(opencodeFilePath('ses_parent'))).toEqual({ mtimeMs: 2000, size: 2 }); // legacy time_updated + legacy count
+      const lines = readSessionLines(opencodeFilePath('ses_parent'));
+      expect(firstPrompt(lines, 'opencode')).toBe('please refactor the router lazerhawk');
+      expect(extractCommands(lines, 'opencode')).toEqual(['bun test', 'x']);
+    } finally {
+      process.env.SESSIONS_OPENCODE_DB = dbPath;
+      closeOpencodeDb();
+    }
   });
 
   test('synthesizes lines the shared parser understands', () => {
@@ -162,8 +306,22 @@ describe('opencode module', () => {
     expect(errors.messages[0]).toBe('boom quux');
   });
 
+  test('reads assistant content from session_part rows in ordinal order', () => {
+    const lines = readOpencodeSession(opencodeFilePath('ses_fresh'));
+    expect(messageCount(lines)).toBe(2);
+    const assistant = JSON.parse(lines.at(-1)!).message;
+    expect(assistant.content).toEqual([
+      { type: 'text', text: 'grousewalker handled via quillfeather' },
+      { type: 'tool', tool: 'bash', state: { status: 'completed', input: { command: 'bun run quillfeather' } } },
+    ]);
+    expect(extractCommands(lines, 'opencode')).toEqual(['bun run quillfeather']);
+  });
+
   test('collects subagent user text for parent-session recall', () => {
-    expect(collectOpencodeSubagentText(opencodeFilePath('ses_parent'))).toBe('subagent secret term wibbleflorp');
+    // ses_child is in both schemas (counted once, from v2); ses_oldchild only in legacy.
+    expect(collectOpencodeSubagentText(opencodeFilePath('ses_parent'))).toBe(
+      'subagent secret term wibbleflorp\nlegacy child term snorkelbat',
+    );
     expect(collectOpencodeSubagentText(opencodeFilePath('ses_plain'))).toBe('');
   });
 
@@ -175,7 +333,7 @@ describe('opencode module', () => {
     copyFileSync(dbPath, copyPath);
     process.env.SESSIONS_OPENCODE_DB = copyPath;
     closeOpencodeDb();
-    expect(discoverOpencodeSessions()).toHaveLength(2); // handle now open + cached
+    expect(discoverOpencodeSessions()).toHaveLength(3); // handle now open + cached (both schemas)
     rmSync(copyPath);
     expect(discoverOpencodeSessions()).toEqual([]);
     process.env.SESSIONS_OPENCODE_DB = dbPath;
@@ -226,15 +384,30 @@ describe('opencode cache integration', () => {
 
   test('lists top-level sessions when filtered to the opencode tool', async () => {
     const results = await cache.searchSessions('', { tool: 'opencode', limit: 100 });
-    expect(results.map((r) => r.sessionId).sort()).toEqual(['ses_parent', 'ses_plain']);
+    expect(results.map((r) => r.sessionId).sort()).toEqual(['ses_fresh', 'ses_parent', 'ses_plain']);
+  });
+
+  test('a v2-only session is searchable, and the v2 copy wins for shared ids', async () => {
+    const results = await cache.searchSessions('grousewalker');
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({
+      tool: 'opencode',
+      sessionId: 'ses_fresh',
+      cwd: '/repo/fresh',
+      customTitle: 'Fresh v2 session',
+    });
+    // ses_plain exists only in the legacy tables — the fallback still indexes it.
+    const legacyOnly = await cache.searchSessions('hello there');
+    expect(legacyOnly).toHaveLength(1);
+    expect(legacyOnly[0]!.sessionId).toBe('ses_plain');
   });
 });
 
 describe('opencode report parser', () => {
-  test('emits one usage event per assistant message with tokens + pre-computed cost', async () => {
+  test('emits one usage event per assistant message, preferring v2 rows and nesting model under `model`', async () => {
     const { parseOpencode } = await import('./report/parsers/opencode');
     const events = await parseOpencode(dbPath);
-    expect(events).toHaveLength(1); // only ses_parent's assistant turn carries tokens
+    expect(events).toHaveLength(2); // ses_parent + ses_fresh; the frozen legacy copy of ses_parent is excluded
     expect(events[0]).toMatchObject({
       tool: 'opencode',
       provider: 'anthropic',
@@ -245,10 +418,25 @@ describe('opencode report parser', () => {
       tokens: { input: 100, output: 60, cacheRead: 200, cacheWrite: 30 },
       costUSD: 0.05,
     });
+    expect(events[1]).toMatchObject({ sessionId: 'ses_fresh', projectPath: '/repo/fresh', costUSD: 0.02 });
   });
 
   test('returns [] for a missing DB', async () => {
     const { parseOpencode } = await import('./report/parsers/opencode');
     expect(await parseOpencode(join(tmp, 'nope.db'))).toEqual([]);
+  });
+
+  test('a DB with no v2 tables reports from the legacy schema (flat model fields)', async () => {
+    const { parseOpencode } = await import('./report/parsers/opencode');
+    const legacyPath = join(tmp, 'opencode-legacy-report.db');
+    buildFixtureDb(legacyPath, false);
+    const events = await parseOpencode(legacyPath);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      sessionId: 'ses_parent',
+      model: 'claude-opus-4-6',
+      provider: 'anthropic',
+      costUSD: 0.05,
+    });
   });
 });
