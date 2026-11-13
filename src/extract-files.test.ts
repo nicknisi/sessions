@@ -107,6 +107,16 @@ describe('extractFiles — opencode', () => {
     expect(extractFiles(lines, 'opencode')).toEqual(['/repo/a.ts', '/repo/b.ts', '/repo/c.ts']);
   });
 
+  test('accepts the renamed `path` key for edit/write (opencode ≥ mid-Oct 2026)', () => {
+    const lines = jsonl(
+      ocAssistant(
+        tool('edit', { path: '/repo/a.ts' }),
+        tool('write', { path: '/repo/b.ts' }),
+      ),
+    );
+    expect(extractFiles(lines, 'opencode')).toEqual(['/repo/a.ts', '/repo/b.ts']);
+  });
+
   test('parses apply_patch headers like codex', () => {
     const patchText = [
       '*** Begin Patch',
@@ -132,6 +142,11 @@ describe('extractFiles — opencode', () => {
     );
     expect(extractFilesRead(lines, 'opencode')).toEqual(['/repo/read.ts', '/repo/src', 'packages/**/x*']);
     expect(extractFiles(lines, 'opencode')).toEqual(['/repo/edited.ts']);
+  });
+
+  test('read targets accept the renamed `path` key for the read tool', () => {
+    const lines = jsonl(ocAssistant(tool('read', { path: '/repo/read.ts' })));
+    expect(extractFilesRead(lines, 'opencode')).toEqual(['/repo/read.ts']);
   });
 });
 
