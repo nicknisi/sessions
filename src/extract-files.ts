@@ -103,7 +103,9 @@ function extractPi(lines: string[], push: (p: string) => void): void {
 /**
  * OpenCode: edited files surface three ways in a synthesized assistant message —
  * `patch` blocks (an authoritative `files[]` list), `edit`/`write` tool blocks
- * (`state.input.filePath`), and `apply_patch` tool blocks whose `state.input.patchText`
+ * (`state.input.filePath` or `state.input.path` — OpenCode renamed the key around
+ * mid-October 2026, and old sessions still carry `filePath`), and `apply_patch`
+ * tool blocks whose `state.input.patchText`
  * carries the same `*** … File:` headers as Codex. Shape confirmed against opencode.db.
  */
 function extractOpencode(lines: string[], push: (p: string) => void): void {
@@ -114,7 +116,7 @@ function extractOpencode(lines: string[], push: (p: string) => void): void {
     }
     if (block.type !== 'tool') continue;
     const input = toolInput(block);
-    const filePath = asJsonString(input.filePath);
+    const filePath = asJsonString(input.filePath ?? input.path);
     if ((block.tool === 'edit' || block.tool === 'write') && filePath) {
       push(filePath);
     } else if (block.tool === 'apply_patch') {
@@ -197,14 +199,14 @@ export function extractFilesRead(lines: string[], tool: Tool): string[] {
   return out;
 }
 
-/** OpenCode: read/searched targets — `read` tool `filePath`, `grep`/`glob` `path`/`pattern`. */
+/** OpenCode: read/searched targets — `read` tool `filePath`/`path`, `grep`/`glob` `path`/`pattern`. */
 function extractOpencodeRead(lines: string[], push: (p: string) => void): void {
   for (const block of opencodeAssistantBlocks(lines)) {
     if (block.type !== 'tool') continue;
     const input = toolInput(block);
     const path =
       block.tool === 'read'
-        ? input.filePath
+        ? (input.filePath ?? input.path)
         : block.tool === 'grep' || block.tool === 'glob' || block.tool === 'list'
           ? (input.path ?? input.pattern)
           : undefined;

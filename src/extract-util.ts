@@ -176,7 +176,7 @@ export function opencodeAssistantBlocks(lines: string[]): JsonObject[] {
   return blocks;
 }
 
-/** A tool block's `state.input` as an object (empty when absent). I.e. { command, filePath, pattern }. */
+/** A tool block's `state.input` as an object (empty when absent). I.e. { command, filePath/path, pattern }. */
 export function toolInput(block: JsonObject): JsonObject {
   const state = asJsonObject(block.state);
   return asJsonObject(state?.input) ?? {};
