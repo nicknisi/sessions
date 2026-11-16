@@ -1,7 +1,14 @@
-import { readFileSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { type Tool } from './types';
 import { isOpencodePath, readOpencodeSession, opencodeStat } from './opencode';
-import { getArchiveDir, getManifestPath, loadManifest, type Manifest, type VaultEntry } from './vault/archive';
+import {
+  getArchiveDir,
+  getManifestPath,
+  loadManifest,
+  subagentsDir,
+  type Manifest,
+  type VaultEntry,
+} from './vault/archive';
 
 // Generic session IO: every consumer (indexer, scanner, digest, MCP) reads a
 // session as JSONL-style `lines[]` through here. JSONL tools read their file
@@ -83,4 +90,14 @@ export function statSession(filePath: string, tool: Tool): { mtimeMs: number; si
     } catch {}
   }
   return null;
+}
+
+/** A Claude session's subagent transcript dir, falling back to its vault copy when the live one is gone. */
+export function resolveSubagentsDir(filePath: string): string | null {
+  const live = subagentsDir(filePath);
+  if (existsSync(live)) return live;
+  const entry = vaultEntry(filePath);
+  if (!entry) return null;
+  const archived = subagentsDir(entry.vaultPath);
+  return existsSync(archived) ? archived : null;
 }

@@ -36,8 +36,15 @@ import { extractErrors } from './extract-errors';
 import { extractThinking } from './extract-thinking';
 import { extractCustomContext } from './extract-custom';
 import { discoverOpencodeSessions, collectOpencodeSubagentText, closeOpencodeDb, opencodeStat } from './opencode';
-import { readSessionLines, statSession } from './session-io';
-import { archiveFile, listArchived, loadManifest, saveManifest, type Manifest } from './vault/archive';
+import { readSessionLines, resolveSubagentsDir, statSession } from './session-io';
+import {
+  archiveFile,
+  backfillSubagents,
+  listArchived,
+  loadManifest,
+  saveManifest,
+  type Manifest,
+} from './vault/archive';
 // The same cap the search projection uses. Aliased at the import so the name reads as the
 // primer's projection cap rather than being confused with extract-files.ts's own MAX_FILES
 // (50 — the bound on the indexed files_touched column, a different number for a different job).
@@ -424,8 +431,8 @@ async function discoverFiles(): Promise<FileEntry[]> {
 }
 
 function collectSubagentContent(filePath: string): string {
-  const dir = join(filePath.replace(/\.jsonl$/, ''), 'subagents');
-  if (!existsSync(dir)) return '';
+  const dir = resolveSubagentsDir(filePath);
+  if (!dir) return '';
 
   const parts: string[] = [];
   try {
@@ -465,15 +472,10 @@ interface RefreshCtx {
 
 // Archive one transcript into the vault, best-effort. Indexing must never be blocked
 // by archiving, so a copy failure warns at most once per refresh and is swallowed.
-function tryArchive(
-  ctx: RefreshCtx,
-  entry: { path: string; tool: Tool },
-  parsed: { cwd: string; sessionId: string },
-  stat: { mtime: number; size: number },
-): void {
+function tryArchive(ctx: RefreshCtx, write: () => void): void {
   if (!ctx.archive) return;
   try {
-    archiveFile(entry, parsed, stat, ctx.manifest, ctx.dir);
+    write();
   } catch (e) {
     if (!ctx.warned) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -658,11 +660,14 @@ function indexFile(db: Database, filePath: string, tool: Tool, ctx: RefreshCtx):
     // Archive only when the LIVE source is present. `stat` is the live stat in that
     // case (statSession tries the original path before the vault fallback).
     if (liveSourcePresent(filePath, tool)) {
-      tryArchive(
-        ctx,
-        { path: filePath, tool },
-        { cwd: indexed.cwd, sessionId: basename(filePath).replace('.jsonl', '') },
-        { mtime: stat.mtimeMs, size: stat.size },
+      tryArchive(ctx, () =>
+        archiveFile(
+          { path: filePath, tool },
+          { cwd: indexed.cwd, sessionId: basename(filePath).replace('.jsonl', '') },
+          { mtime: stat.mtimeMs, size: stat.size },
+          ctx.manifest,
+          ctx.dir,
+        ),
       );
     }
     return true;
@@ -785,15 +790,22 @@ async function runRefreshIndex(opts: RefreshOptions): Promise<RefreshResult> {
         .all()
     : [];
   for (const row of indexedRows) {
-    if (ctx.manifest[row.file_path]) continue;
+    const archived = ctx.manifest[row.file_path];
+    if (archived) {
+      if (row.tool === 'claude') tryArchive(ctx, () => backfillSubagents(row.file_path, archived.vaultPath));
+      continue;
+    }
     // SAFETY: the tool column is written by the index from Tool values only.
     const tool = row.tool as Tool;
     if (!liveSourcePresent(row.file_path, tool)) continue;
-    tryArchive(
-      ctx,
-      { path: row.file_path, tool },
-      { cwd: row.cwd, sessionId: row.session_id },
-      { mtime: row.mtime, size: row.size },
+    tryArchive(ctx, () =>
+      archiveFile(
+        { path: row.file_path, tool },
+        { cwd: row.cwd, sessionId: row.session_id },
+        { mtime: row.mtime, size: row.size },
+        ctx.manifest,
+        ctx.dir,
+      ),
     );
   }
 
