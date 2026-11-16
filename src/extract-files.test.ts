@@ -108,12 +108,7 @@ describe('extractFiles — opencode', () => {
   });
 
   test('accepts the renamed `path` key for edit/write (opencode ≥ mid-Oct 2026)', () => {
-    const lines = jsonl(
-      ocAssistant(
-        tool('edit', { path: '/repo/a.ts' }),
-        tool('write', { path: '/repo/b.ts' }),
-      ),
-    );
+    const lines = jsonl(ocAssistant(tool('edit', { path: '/repo/a.ts' }), tool('write', { path: '/repo/b.ts' })));
     expect(extractFiles(lines, 'opencode')).toEqual(['/repo/a.ts', '/repo/b.ts']);
   });
 
