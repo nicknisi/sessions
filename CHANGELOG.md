@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.34.1](https://github.com/nicknisi/sessions/compare/v1.34.0...v1.34.1) (2026-11-16)
+
+
+### Bug Fixes
+
+* **deps:** bump MCP SDK to 1.32.2 and zod to 4.6.7 ([#119](https://github.com/nicknisi/sessions/issues/119)) ([eabf424](https://github.com/nicknisi/sessions/commit/eabf424c0f2c174e5903e22b273659409b1f6e1f))
+
 ## [1.34.0](https://github.com/nicknisi/sessions/compare/v1.33.0...v1.34.0) (2026-11-16)
 
 
