@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.34.0](https://github.com/nicknisi/sessions/compare/v1.33.0...v1.34.0) (2026-11-16)
+
+
+### Features
+
+* **opencode:** index session_v2 / session_message rows ([#114](https://github.com/nicknisi/sessions/issues/114)) ([a0d5bda](https://github.com/nicknisi/sessions/commit/a0d5bda27a034a202d0faf997bc2ea41e1c8c131))
+* **vault:** archive Claude Code subagent transcripts alongside their parent ([#112](https://github.com/nicknisi/sessions/issues/112)) ([3ccb3b2](https://github.com/nicknisi/sessions/commit/3ccb3b2047c82ec6511586712ab9d8759ec78f9b)), closes [#110](https://github.com/nicknisi/sessions/issues/110)
+
+
+### Bug Fixes
+
+* **opencode:** accept renamed `path` tool-input key for read/edit/write ([#116](https://github.com/nicknisi/sessions/issues/116)) ([6464208](https://github.com/nicknisi/sessions/commit/6464208bd34d6c8e98d71c5dfcc921a903ae389b))
+* skip non-directory entries in session roots ([#117](https://github.com/nicknisi/sessions/issues/117)) ([4ab9ede](https://github.com/nicknisi/sessions/commit/4ab9edeb7ad53a83069f8a24ab76348a00ea7211))
+
 ## [1.33.0](https://github.com/nicknisi/sessions/compare/v1.32.0...v1.33.0) (2026-10-23)
 
 
