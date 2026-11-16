@@ -374,8 +374,13 @@ async function discoverFiles(): Promise<FileEntry[]> {
     for (const dirname of dirs) {
       const dirpath = join(claudeDir, dirname);
       const glob = new Bun.Glob('*.jsonl');
-      for await (const p of glob.scan(dirpath)) {
-        entries.push({ path: join(dirpath, p), tool: 'claude' });
+      try {
+        for await (const p of glob.scan(dirpath)) {
+          entries.push({ path: join(dirpath, p), tool: 'claude' });
+        }
+      } catch (error) {
+        // SAFETY: Bun.Glob.scan rejects only with Node fs errors, which carry an optional errno `code`.
+        if (!['ENOTDIR', 'ENOENT'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
       }
     }
   }
@@ -390,8 +395,13 @@ async function discoverFiles(): Promise<FileEntry[]> {
     for (const dirname of dirs) {
       const dirpath = join(piDir, dirname);
       const glob = new Bun.Glob('*.jsonl');
-      for await (const p of glob.scan(dirpath)) {
-        entries.push({ path: join(dirpath, p), tool: 'pi' });
+      try {
+        for await (const p of glob.scan(dirpath)) {
+          entries.push({ path: join(dirpath, p), tool: 'pi' });
+        }
+      } catch (error) {
+        // SAFETY: Bun.Glob.scan rejects only with Node fs errors, which carry an optional errno `code`.
+        if (!['ENOTDIR', 'ENOENT'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
       }
     }
   }

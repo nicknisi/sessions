@@ -163,6 +163,14 @@ afterAll(() => {
   rmSync(tmp, { recursive: true, force: true });
 });
 
+test('refresh skips non-directory entries in Claude and Pi session roots', async () => {
+  writeFileSync(join(tmp, 'claude', '.DS_Store'), 'Finder metadata');
+  writeFileSync(join(tmp, 'pi', 'ordinary-file'), 'not a project directory');
+  await cache.refreshIndex();
+  expect((await cache.searchSessions('', { tool: 'claude' })).some((s) => s.sessionId === 'claudeone')).toBe(true);
+  expect((await cache.searchSessions('', { tool: 'pi' })).some((s) => s.sessionId === 'branched')).toBe(true);
+});
+
 test('lineage: a branched pi session stores the fork count and the PiFork[] JSON verbatim', () => {
   const row = lineageRow(piPath('branched'));
   expect(row).not.toBeNull();
