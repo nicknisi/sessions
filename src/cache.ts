@@ -372,6 +372,7 @@ async function discoverFiles(): Promise<FileEntry[]> {
           entries.push({ path: join(dirpath, p), tool: 'claude' });
         }
       } catch (error) {
+        // SAFETY: Bun.Glob.scan rejects only with Node fs errors, which carry an optional errno `code`.
         if (!['ENOTDIR', 'ENOENT'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
       }
     }
@@ -392,6 +393,7 @@ async function discoverFiles(): Promise<FileEntry[]> {
           entries.push({ path: join(dirpath, p), tool: 'pi' });
         }
       } catch (error) {
+        // SAFETY: Bun.Glob.scan rejects only with Node fs errors, which carry an optional errno `code`.
         if (!['ENOTDIR', 'ENOENT'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
       }
     }
