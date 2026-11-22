@@ -956,6 +956,11 @@ function refreshIntervalMs(): number {
 
 async function ensureIndexFresh(opts: RefreshOptions = {}): Promise<RefreshResult> {
   if (_refreshPromise) return _refreshPromise;
+  // SESSIONS_REFRESH=external: another process keeps the index current (a timer
+  // running `sessions index`), so reads never pay for a refresh. Agents whose own
+  // transcripts are hundreds of MB and change every turn would otherwise re-parse
+  // them on every lookup.
+  if (process.env.SESSIONS_REFRESH === 'external') return _lastRefreshResult;
   if (_db && Date.now() - _lastRefreshAt < refreshIntervalMs()) return _lastRefreshResult;
   return refreshIndex(opts);
 }
