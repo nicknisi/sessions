@@ -1,5 +1,5 @@
 import { Database } from 'bun:sqlite';
-import { existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, basename } from 'node:path';
 import { homedir } from 'node:os';
 import { readdir } from 'node:fs/promises';
@@ -702,6 +702,23 @@ function indexFile(db: Database, filePath: string, tool: Tool, ctx: RefreshCtx):
 /** Transcripts above this size get a full collection after they are indexed. */
 const LARGE_TRANSCRIPT_BYTES = 64 * 1024 * 1024;
 
+/** Bytes of transcript data indexing a session parses: the file itself plus, for
+ *  Claude, the subagent transcripts writeSessionRow reads alongside it. */
+function parsedTranscriptBytes(filePath: string, tool: Tool): number {
+  let bytes = statSession(filePath, tool)?.size ?? 0;
+  const dir = tool === 'claude' ? resolveSubagentsDir(filePath) : null;
+  if (!dir) return bytes;
+  try {
+    for (const f of readdirSync(dir)) {
+      if (!f.endsWith('.jsonl')) continue;
+      try {
+        bytes += statSync(join(dir, f)).size;
+      } catch {}
+    }
+  } catch {}
+  return bytes;
+}
+
 async function runRefreshIndex(opts: RefreshOptions): Promise<RefreshResult> {
   const db = getDb();
   // The vault manifest, loaded once and saved once (saveManifest at the end):
@@ -786,7 +803,7 @@ async function runRefreshIndex(opts: RefreshOptions): Promise<RefreshResult> {
         // (the whole-file string, its lines, every parsed line) is several times
         // that, and the collector does not reclaim it before the next file, so peak
         // memory grows with the corpus rather than with the largest file.
-        if ((statSession(file.path, file.tool)?.size ?? 0) > LARGE_TRANSCRIPT_BYTES) Bun.gc(true);
+        if (parsedTranscriptBytes(file.path, file.tool) > LARGE_TRANSCRIPT_BYTES) Bun.gc(true);
       }
       db.exec('COMMIT');
     } catch (error) {
