@@ -96,6 +96,14 @@ if (command === 'context') {
   process.exit(0);
 }
 
+if (command === 'index') {
+  const { refreshIndex } = await import('./src/cache');
+  const result = await refreshIndex();
+  // `total` counts every transcript file found, including those indexing skips (no cwd).
+  process.stdout.write(`indexed ${result.updated} changed of ${result.total} transcript files\n`);
+  process.exit(0);
+}
+
 if (command === 'digest') {
   const { parseDigestArgs, runDigest } = await import('./src/digest.ts');
   await runDigest(parseDigestArgs(Bun.argv.slice(3)));

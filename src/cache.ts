@@ -172,12 +172,16 @@ export function closeDb(): void {
   closeOpencodeDb();
 }
 
+/** The index must be rebuilt by `sessions index` (external mode). A distinct type so
+ *  getDb's corruption recovery, which deletes the index, never mistakes it for one. */
+class IndexRebuildRequired extends Error {}
+
 // Open (or create) the index DB and bring it to the v6 schema, resolving the path
 // lazily so hermetic tests honoring SESSIONS_CACHE_DIR get their own file. busy_timeout
 // makes a statement wait for a contended write lock (e.g. a concurrent refreshIndex)
 // instead of erroring with SQLITE_BUSY immediately. This does NOT assign the `_db`
 // singleton — getDb owns that, so it can retry openDb after discarding a corrupt file.
-function openDb(): Database {
+function openDb(allowRebuild: boolean): Database {
   const db = new Database(getDbPath());
   db.run('PRAGMA busy_timeout=5000');
   db.run('PRAGMA journal_mode=WAL');
@@ -185,6 +189,16 @@ function openDb(): Database {
 
   const row = db.query<{ user_version: number }, []>('PRAGMA user_version').get();
   if (!row || row.user_version !== SCHEMA_VERSION) {
+    // With SESSIONS_REFRESH=external only `sessions index` builds the index. A reader
+    // that reset it would answer with no sessions until the next run, and during an
+    // upgrade two versions sharing one index would keep dropping each other's tables.
+    if (!allowRebuild && externalRefresh()) {
+      db.close();
+      throw new IndexRebuildRequired(
+        `The session index (${getDbPath()}) is missing or was built by another version of sessions. ` +
+          'SESSIONS_REFRESH=external is set, so reads do not rebuild it: run `sessions index`.',
+      );
+    }
     db.run('DROP TABLE IF EXISTS sessions');
     db.run('DROP TABLE IF EXISTS session_fts');
     db.run('DROP TABLE IF EXISTS message_fts');
@@ -338,17 +352,25 @@ function isCorruption(cause: unknown): boolean {
   return msg.includes('malformed') || msg.includes('corrupt') || msg.includes('not a database');
 }
 
-function getDb(): Database {
+// SESSIONS_REFRESH=external: another process keeps the index current (a timer
+// running `sessions index`), and reads use the index as it is.
+function externalRefresh(): boolean {
+  return process.env.SESSIONS_REFRESH === 'external';
+}
+
+/** `allowRebuild`: the caller may reset an index from another schema version. Every
+ *  caller may in the default mode; with SESSIONS_REFRESH=external only refreshIndex. */
+function getDb(allowRebuild = false): Database {
   if (_db) return _db;
   mkdirSync(getCacheDir(), { recursive: true });
   try {
-    _db = openDb();
+    _db = openDb(allowRebuild);
   } catch (e) {
-    if (!isCorruption(e)) throw e;
+    if (e instanceof IndexRebuildRequired || !isCorruption(e)) throw e;
     // The index is a disposable, rebuildable cache of the session files — so a
     // corrupt one is safe to delete and recreate. refreshIndex repopulates on use.
     removeDbFiles();
-    _db = openDb();
+    _db = openDb(allowRebuild);
   }
   return _db;
 }
@@ -700,7 +722,7 @@ function indexFile(db: Database, filePath: string, tool: Tool, ctx: RefreshCtx):
 }
 
 async function runRefreshIndex(opts: RefreshOptions): Promise<RefreshResult> {
-  const db = getDb();
+  const db = getDb(true);
   // The vault manifest, loaded once and saved once (saveManifest at the end):
   // archiveFile mutates this map in place during the batches, and a per-file save
   // could persist an archive whose index write later rolled back. One write follows.
@@ -956,6 +978,9 @@ function refreshIntervalMs(): number {
 
 async function ensureIndexFresh(opts: RefreshOptions = {}): Promise<RefreshResult> {
   if (_refreshPromise) return _refreshPromise;
+  // External mode: reads never pay for a refresh. Agents whose own transcripts are
+  // hundreds of MB and change every turn would otherwise re-parse them on every lookup.
+  if (externalRefresh()) return _lastRefreshResult;
   if (_db && Date.now() - _lastRefreshAt < refreshIntervalMs()) return _lastRefreshResult;
   return refreshIndex(opts);
 }

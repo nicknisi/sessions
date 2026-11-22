@@ -610,6 +610,54 @@ test('custom content findable at session level: recap, web-search fetch, and cus
   }
 });
 
+test('SESSIONS_REFRESH=external: reads never refresh; refreshIndex (`sessions index`) does', async () => {
+  writePi('extrefresh', [
+    piHeader,
+    piModelChange,
+    { ...piTurn, message: { role: 'user', content: [{ type: 'text', text: 'the plinthwobble turn' }] } },
+  ]);
+  process.env.SESSIONS_REFRESH = 'external';
+  try {
+    expect((await cache.searchSessions('plinthwobble', {})).map((x) => x.sessionId)).not.toContain('extrefresh');
+    await cache.refreshIndex();
+    expect((await cache.searchSessions('plinthwobble', {})).map((x) => x.sessionId)).toContain('extrefresh');
+  } finally {
+    delete process.env.SESSIONS_REFRESH;
+  }
+});
+
+test('SESSIONS_REFRESH=external: a read leaves an index from another version alone and says to run `sessions index`', async () => {
+  writePi('extversion', [
+    piHeader,
+    piModelChange,
+    { ...piTurn, message: { role: 'user', content: [{ type: 'text', text: 'the quorblat turn' }] } },
+  ]);
+  // A cache path containing "corrupt": the error must not pass for database corruption,
+  // whose recovery deletes the index. (beforeEach restores the usual cache dir.)
+  process.env.SESSIONS_CACHE_DIR = join(tmp, 'corrupt-index');
+  cache.closeDb();
+  await cache.refreshIndex();
+  cache.closeDb();
+  const other = new Database(cache.getDbPath());
+  other.run('PRAGMA user_version = 999999');
+  other.close();
+  process.env.SESSIONS_REFRESH = 'external';
+  try {
+    await expect(cache.searchSessions('quorblat', {})).rejects.toThrow('run `sessions index`');
+    const kept = new Database(cache.getDbPath(), { readonly: true });
+    try {
+      expect(kept.query<{ user_version: number }, []>('PRAGMA user_version').get()?.user_version ?? 0).toBe(999999);
+      expect(kept.query<{ n: number }, []>('SELECT count(*) AS n FROM sessions').get()?.n ?? 0).toBeGreaterThan(0);
+    } finally {
+      kept.close();
+    }
+    await cache.refreshIndex();
+    expect((await cache.searchSessions('quorblat', {})).map((x) => x.sessionId)).toContain('extversion');
+  } finally {
+    delete process.env.SESSIONS_REFRESH;
+  }
+});
+
 test('turn-duration excluded from index (and unknown customTypes are opt-in excluded)', async () => {
   writePi('customnoise', [
     piHeader,
