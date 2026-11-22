@@ -239,6 +239,20 @@ describe('customTitle', () => {
     expect(extractSessionMetadata(jsonl(piHeader, piName('First'), piName('')), 'pi').customTitle).toBe('');
     expect(extractSessionMetadata(jsonl(piHeader, piName('First'), piName()), 'pi').customTitle).toBe('');
   });
+
+  // oh-my-pi (omp) writes a `title` line before its session header and a
+  // `title_change` entry whenever the title moves; the latest one is the title.
+  test('omp: title and title_change entries set the title; the header is line 2', () => {
+    const lines = jsonl(
+      { type: 'title', v: 1, title: 'Read the brief', source: 'auto' },
+      { ...piHeader, parentSession: '/s/parent.jsonl' },
+      { type: 'title_change', id: 't', parentId: 's', title: 'Choose the CLI language', source: 'auto' },
+    );
+    expect(customTitle(lines)).toBe('Choose the CLI language');
+    expect(extractSessionMetadata(lines, 'pi').customTitle).toBe('Choose the CLI language');
+    expect(extractSessionMetadata(lines, 'pi').cwd).toBe('/r');
+    expect(sessionParentSession(lines, 'pi')).toBe('/s/parent.jsonl');
+  });
 });
 
 describe('firstTimestamp', () => {
