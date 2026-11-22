@@ -29,7 +29,16 @@ import {
   type ExtractedMessage,
 } from './parser';
 import { buildPiTree } from './pi-tree';
-import { PiFileIndexer, readLineChunks, resumableState, type SessionDoc } from './pi-stream';
+import {
+  HEAD_BYTES,
+  PiFileIndexer,
+  TranscriptReadError,
+  headHash,
+  readLineChunks,
+  resumableState,
+  type PiIndexState,
+  type SessionDoc,
+} from './pi-stream';
 import { extractFiles, extractFilesRead } from './extract-files';
 import { jsonStrings } from './extract-util';
 import { cjkIndexText, cjkQuery, cjkSnippet } from './cjk';
@@ -705,7 +714,19 @@ function indexPiStream(
     ? (db.query<{ state: string }, [string]>('SELECT state FROM pi_index_state WHERE file_path = ?').get(filePath)
         ?.state ?? null)
     : null;
-  const resumed = resumableState(filePath, saved, stat.size);
+  // The head is hashed before the parse and again after it: a file replaced while it
+  // was read must not keep a state whose head describes the new file but whose rows
+  // and offset describe the old one.
+  const headLen = Math.min(HEAD_BYTES, stat.size);
+  let resumed: PiIndexState | null;
+  let headBefore: string;
+  try {
+    resumed = resumableState(filePath, saved, stat.size);
+    headBefore = headHash(filePath, headLen);
+  } catch (error) {
+    if (error instanceof TranscriptReadError) return null;
+    throw error;
+  }
   const indexer = new PiFileIndexer(resumed ?? undefined);
   const insert = messageInserter(db, filePath);
   let pending: ExtractedMessage[] | null = resumed ? null : [];
@@ -725,15 +746,23 @@ function indexPiStream(
     });
     if (pending) throw new UnusablePiFile(); // no complete line at all
     writeSessionLevel(db, filePath, 'pi', stat, indexer.doc(), hasExisting);
-    db.run('INSERT OR REPLACE INTO pi_index_state (file_path, state) VALUES (?, ?)', [
-      filePath,
-      JSON.stringify(indexer.state(filePath, offset)),
-    ]);
+    const state = indexer.state(filePath, offset);
+    if (headHash(filePath, headLen) === headBefore) {
+      db.run('INSERT OR REPLACE INTO pi_index_state (file_path, state) VALUES (?, ?)', [
+        filePath,
+        JSON.stringify(state),
+      ]);
+    } else {
+      // Replaced while it was read: no resume state, so the next refresh parses it whole.
+      db.run('DELETE FROM pi_index_state WHERE file_path = ?', [filePath]);
+    }
     db.exec('RELEASE pi_stream');
   } catch (error) {
     db.exec('ROLLBACK TO pi_stream');
     db.exec('RELEASE pi_stream');
-    if (error instanceof UnusablePiFile) return null;
+    // An unreadable or vanished source falls back like an unusable one: indexFile then
+    // tries the whole-file path and the vault copy instead of aborting the batch.
+    if (error instanceof UnusablePiFile || error instanceof TranscriptReadError) return null;
     throw error;
   }
   return { cwd: indexer.cwd };

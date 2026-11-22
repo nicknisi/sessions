@@ -137,7 +137,7 @@ test('fed in chunks, and resumed from saved JSON state after every chunk, the in
   }
 });
 
-test('readLineChunks stops before an unfinished last line and resumes there', () => {
+test('readLineChunks stops before an unfinished last line, resumes there, and keeps later line numbers exact', () => {
   const file = join(tmp, 'growing.jsonl');
   const head = LINES.slice(0, 3).join('\n') + '\n';
   const partial = LINES[3]!.slice(0, 40);
@@ -154,6 +154,21 @@ test('readLineChunks stops before an unfinished last line and resumes there', ()
   const end2 = readLineChunks(file, end1, total, (lines) => more.push(...lines));
   expect(more).toEqual(LINES.slice(3, 5));
   expect(end2).toBe(total);
+
+  // That line's newline arrives with the rest of the session (which holds the /tree
+  // fork): it ends the line already read, so no empty line shifts the fork's lines.
+  appendFileSync(file, '\n' + LINES.slice(5).join('\n') + '\n');
+  const rest: string[] = [];
+  readLineChunks(file, end2, Buffer.byteLength(LINES.join('\n') + '\n'), (lines) => rest.push(...lines));
+  expect(rest).toEqual(LINES.slice(5));
+  let state: PiIndexState | undefined;
+  for (const part of [seen, more, rest]) {
+    // SAFETY: a JSON round trip of a PiIndexState, as the index stores it.
+    const indexer = new PiFileIndexer(state ? (JSON.parse(JSON.stringify(state)) as PiIndexState) : undefined);
+    indexer.add(part, () => {});
+    state = indexer.state(file, 0);
+    if (part === rest) expect(indexer.doc()).toEqual(wholeFileDoc(LINES).doc);
+  }
 });
 
 test('a saved state is not resumed when the file shrank or its first bytes changed', () => {

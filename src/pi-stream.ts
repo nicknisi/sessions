@@ -45,11 +45,31 @@ export const CHUNK_CHARS = 16 * 1024 * 1024;
 const READ_BYTES = 4 * 1024 * 1024;
 const STATE_VERSION = 1;
 
+/** The transcript could not be opened or read (vanished, unreadable): a source
+ *  problem, unlike a database error, so the caller can fall back to another copy. */
+export class TranscriptReadError extends Error {}
+
+function openTranscript(filePath: string): number {
+  try {
+    return openSync(filePath, 'r');
+  } catch (error) {
+    throw new TranscriptReadError(String(error));
+  }
+}
+
+function readTranscript(fd: number, buf: Buffer, length: number, position: number): number {
+  try {
+    return readSync(fd, buf, 0, length, position);
+  } catch (error) {
+    throw new TranscriptReadError(String(error));
+  }
+}
+
 export function headHash(filePath: string, length: number): string {
-  const fd = openSync(filePath, 'r');
+  const fd = openTranscript(filePath);
   try {
     const buf = Buffer.alloc(length);
-    const n = readSync(fd, buf, 0, length, 0);
+    const n = readTranscript(fd, buf, length, 0);
     return createHash('sha1').update(buf.subarray(0, n)).digest('hex');
   } finally {
     closeSync(fd);
@@ -78,11 +98,19 @@ export function readLineChunks(
   end: number,
   onChunk: (lines: string[]) => void,
 ): number {
-  const fd = openSync(filePath, 'r');
+  const fd = openTranscript(filePath);
   try {
     const buf = Buffer.allocUnsafe(READ_BYTES);
     let pos = start;
-    let consumed = start;
+    // A previous read took a complete last line that had no newline yet. The newline
+    // written since ends that line; read as a line separator it would add an empty
+    // line and shift every later line number by one. A real blank line follows a
+    // newline, so it is kept.
+    if (start > 0 && start < end) {
+      const edge = Buffer.alloc(2);
+      if (readTranscript(fd, edge, 2, start - 1) === 2 && edge[0] !== 10 && edge[1] === 10) pos = start + 1;
+    }
+    let consumed = pos;
     let carry: Buffer[] = [];
     let lines: string[] = [];
     let chars = 0;
@@ -96,7 +124,7 @@ export function readLineChunks(
       }
     };
     while (pos < end) {
-      const n = readSync(fd, buf, 0, Math.min(READ_BYTES, end - pos), pos);
+      const n = readTranscript(fd, buf, Math.min(READ_BYTES, end - pos), pos);
       if (n === 0) break;
       const view = buf.subarray(0, n);
       let s = 0;
