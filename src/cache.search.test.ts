@@ -632,6 +632,10 @@ test('SESSIONS_REFRESH=external: a read leaves an index from another version alo
     piModelChange,
     { ...piTurn, message: { role: 'user', content: [{ type: 'text', text: 'the quorblat turn' }] } },
   ]);
+  // A cache path containing "corrupt": the error must not pass for database corruption,
+  // whose recovery deletes the index. (beforeEach restores the usual cache dir.)
+  process.env.SESSIONS_CACHE_DIR = join(tmp, 'corrupt-index');
+  cache.closeDb();
   await cache.refreshIndex();
   cache.closeDb();
   const other = new Database(cache.getDbPath());

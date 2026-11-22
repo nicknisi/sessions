@@ -172,6 +172,10 @@ export function closeDb(): void {
   closeOpencodeDb();
 }
 
+/** The index must be rebuilt by `sessions index` (external mode). A distinct type so
+ *  getDb's corruption recovery, which deletes the index, never mistakes it for one. */
+class IndexRebuildRequired extends Error {}
+
 // Open (or create) the index DB and bring it to the v6 schema, resolving the path
 // lazily so hermetic tests honoring SESSIONS_CACHE_DIR get their own file. busy_timeout
 // makes a statement wait for a contended write lock (e.g. a concurrent refreshIndex)
@@ -190,7 +194,7 @@ function openDb(allowRebuild: boolean): Database {
     // upgrade two versions sharing one index would keep dropping each other's tables.
     if (!allowRebuild && externalRefresh()) {
       db.close();
-      throw new Error(
+      throw new IndexRebuildRequired(
         `The session index (${getDbPath()}) is missing or was built by another version of sessions. ` +
           'SESSIONS_REFRESH=external is set, so reads do not rebuild it: run `sessions index`.',
       );
@@ -362,7 +366,7 @@ function getDb(allowRebuild = false): Database {
   try {
     _db = openDb(allowRebuild);
   } catch (e) {
-    if (!isCorruption(e)) throw e;
+    if (e instanceof IndexRebuildRequired || !isCorruption(e)) throw e;
     // The index is a disposable, rebuildable cache of the session files — so a
     // corrupt one is safe to delete and recreate. refreshIndex repopulates on use.
     removeDbFiles();
