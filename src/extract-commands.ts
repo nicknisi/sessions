@@ -1,5 +1,14 @@
 import type { Tool } from './types';
-import { tryParse, opencodeAssistantBlocks, toolInput, asJsonObject, asJsonString, jsonStrings } from './extract-util';
+import {
+  tryParse,
+  opencodeAssistantBlocks,
+  toolInput,
+  asJsonObject,
+  asJsonString,
+  jsonStrings,
+  createDedupCollector,
+  type Collector,
+} from './extract-util';
 
 /** Upper bound on stored distinct commands per session (bounds the indexed column). */
 export const MAX_COMMANDS = 100;
@@ -78,16 +87,21 @@ function extractOpencode(lines: string[], push: (c: string) => void): void {
 
 /** De-duplicated, order-preserving, capped list of shell commands run in a session. */
 export function extractCommands(lines: string[], tool: Tool): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  const push = (c: string): void => {
-    if (seen.has(c) || out.length >= MAX_COMMANDS) return;
-    seen.add(c);
-    out.push(c);
-  };
-  if (tool === 'claude') extractClaude(lines, push);
-  else if (tool === 'codex') extractCodex(lines, push);
-  else if (tool === 'pi') extractPi(lines, push);
-  else if (tool === 'opencode') extractOpencode(lines, push);
-  return out;
+  const collector = createCommandsCollector(tool);
+  collector.add(lines);
+  return collector.result();
+}
+
+/** extractCommands, fed chunk by chunk (see Collector). */
+export function createCommandsCollector(tool: Tool, seed?: string[]): Collector<string[]> {
+  return createDedupCollector(
+    MAX_COMMANDS,
+    (lines, push) => {
+      if (tool === 'claude') extractClaude(lines, push);
+      else if (tool === 'codex') extractCodex(lines, push);
+      else if (tool === 'pi') extractPi(lines, push);
+      else if (tool === 'opencode') extractOpencode(lines, push);
+    },
+    seed,
+  );
 }

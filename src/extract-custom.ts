@@ -1,5 +1,12 @@
 import type { Tool } from './types';
-import { tryParse, asJsonObject, asJsonString } from './extract-util';
+import {
+  tryParse,
+  asJsonObject,
+  asJsonString,
+  createCappedTextCollector,
+  type CappedTextState,
+  type Collector,
+} from './extract-util';
 
 /** Total cap on a session's custom context, mirroring MAX_THINKING_LEN — recaps run
  *  ~2k, so 20k is generous while a pathological extension cannot bloat the FTS row. */
@@ -23,7 +30,7 @@ const MAX_URL_CONTENT_LEN = 500;
  *
  * Never throws: entries with missing data/content are skipped, collection continues.
  */
-function collect(lines: string[]): string {
+function collect(lines: string[]): string[] {
   const parts: string[] = [];
   for (const line of lines) {
     const d = tryParse(line);
@@ -53,7 +60,7 @@ function collect(lines: string[]): string {
       if (content !== undefined) parts.push(content);
     }
   }
-  return parts.join('\n').slice(0, MAX_CUSTOM_CONTEXT_LEN);
+  return parts;
 }
 
 /**
@@ -61,6 +68,12 @@ function collect(lines: string[]): string {
  * tools write no custom/custom_message lines and return empty.
  */
 export function extractCustomContext(lines: string[], tool: Tool): string {
-  if (tool !== 'pi') return '';
-  return collect(lines);
+  const collector = createCustomContextCollector(tool);
+  collector.add(lines);
+  return collector.result();
+}
+
+/** extractCustomContext, fed chunk by chunk (see Collector). */
+export function createCustomContextCollector(tool: Tool, seed?: CappedTextState): Collector<string, CappedTextState> {
+  return createCappedTextCollector(MAX_CUSTOM_CONTEXT_LEN, (lines) => (tool === 'pi' ? collect(lines) : []), seed);
 }

@@ -26,8 +26,10 @@ import {
   extractSessionMetadata,
   summarizeMessages,
   sessionParentSession,
+  type ExtractedMessage,
 } from './parser';
 import { buildPiTree } from './pi-tree';
+import { PiFileIndexer, readLineChunks, resumableState, type SessionDoc } from './pi-stream';
 import { extractFiles, extractFilesRead } from './extract-files';
 import { jsonStrings } from './extract-util';
 import { cjkIndexText, cjkQuery, cjkSnippet } from './cjk';
@@ -116,7 +118,10 @@ function getCodexDir(): string {
 // sequences for Han/Kana/Hangul text (src/cjk.ts), which `porter unicode61` cannot
 // split. Existing transcripts need a re-parse to populate them, which the drop+rebuild
 // below provides.
-const SCHEMA_VERSION = 14;
+// v15: adds pi_index_state — per pi file, the byte offset indexed so far and the
+// extractor state at that point, so a refresh parses only appended lines
+// (src/pi-stream.ts). Rows written before it have no state to resume from.
+const SCHEMA_VERSION = 15;
 let _db: Database | null = null;
 let _refreshPromise: Promise<RefreshResult> | null = null;
 let _lastRefreshAt = 0;
@@ -192,6 +197,7 @@ function openDb(): Database {
     db.run('DROP TABLE IF EXISTS session_vectors');
     db.run('DROP TABLE IF EXISTS session_cjk_fts');
     db.run('DROP TABLE IF EXISTS message_cjk_fts');
+    db.run('DROP TABLE IF EXISTS pi_index_state');
     db.run(`PRAGMA user_version = ${SCHEMA_VERSION}`);
   }
 
@@ -313,6 +319,15 @@ function openDb(): Database {
       vec BLOB NOT NULL,
       mtime REAL NOT NULL,
       size INTEGER NOT NULL
+    )
+  `);
+  // v15: resumable pi indexing state (src/pi-stream.ts). `state` is PiIndexState JSON.
+  // It describes the file's message_fts rows, so every path that deletes those rows
+  // deletes this row too.
+  db.run(`
+    CREATE TABLE IF NOT EXISTS pi_index_state (
+      file_path TEXT PRIMARY KEY,
+      state TEXT NOT NULL
     )
   `);
   return db;
@@ -517,12 +532,17 @@ function ignoreSession(
     db.run('DELETE FROM session_cjk_fts WHERE file_path = ?', [filePath]);
     db.run('DELETE FROM message_cjk_fts WHERE file_path = ?', [filePath]);
     db.run('DELETE FROM session_vectors WHERE file_path = ?', [filePath]);
+    db.run('DELETE FROM pi_index_state WHERE file_path = ?', [filePath]);
   }
   db.run('INSERT OR REPLACE INTO ignored_files (file_path, mtime, size) VALUES (?, ?, ?)', [
     filePath,
     stat.mtimeMs,
     stat.size,
   ]);
+}
+
+function usableCwd(cwd: string): boolean {
+  return cwd !== '' && !cwd.includes('.claude/worktrees') && !cwd.includes('/.bare');
 }
 
 // Parse `lines` and write the session row + FTS rows, returning the session cwd on
@@ -539,43 +559,86 @@ function writeSessionRow(
   if (lines.length === 0) return null;
 
   const metadata = extractSessionMetadata(lines, tool);
-  if (!metadata.cwd) return null;
-  if (metadata.cwd.includes('.claude/worktrees') || metadata.cwd.includes('/.bare')) return null;
+  if (!usableCwd(metadata.cwd)) return null;
 
-  const sessionId = basename(filePath).replace('.jsonl', '');
   const messages = extractMessages(lines);
-  const summary = summarizeMessages(messages);
   const subagentContent = collectSubagentText(filePath, tool);
-
-  const filesTouchedArr = extractFiles(lines, tool);
-  const filesTouched = JSON.stringify(filesTouchedArr);
-  const filesReadArr = extractFilesRead(lines, tool);
-  const filesRead = JSON.stringify(filesReadArr);
-  const commandsArr = extractCommands(lines, tool);
-  const commands = JSON.stringify(commandsArr);
-  const errors = extractErrors(lines, tool);
-  const thinking = extractThinking(lines, tool);
   // Pi lineage. buildPiTree already ran inside extractMessages above (phase 1); this
   // is a deliberate second linear pass per changed pi file rather than threading the
   // tree out of extractMessages and coupling two stable interfaces. mtime-gated, so
   // the cost lands only on files that actually changed.
-  const forkedFrom = sessionParentSession(lines, tool);
   const piTree = tool === 'pi' ? buildPiTree(lines) : null;
-  const branches = piTree?.forks.length ?? 0;
-  const forkPoints = JSON.stringify(piTree?.forks ?? []);
+  const doc: SessionDoc = {
+    metadata,
+    summary: summarizeMessages(messages),
+    filesTouched: extractFiles(lines, tool),
+    filesRead: extractFilesRead(lines, tool),
+    commands: extractCommands(lines, tool),
+    errors: extractErrors(lines, tool),
+    thinking: extractThinking(lines, tool),
+    customContext: extractCustomContext(lines, tool),
+    forkedFrom: sessionParentSession(lines, tool),
+    forks: piTree?.forks ?? [],
+  };
+  if (hasExisting) deleteMessageRows(db, filePath);
+  writeSessionLevel(db, filePath, tool, stat, doc, hasExisting);
+  // Message rows: assistant turns always; user turns only when genuine — injected
+  // skill bodies and tool results match everything and are exactly the noise the
+  // trust fixes eliminated elsewhere. Their indices are still consumed by the
+  // numbering (extractMessages counts them), they just get no FTS row.
+  const insert = messageInserter(db, filePath);
+  for (const m of messages) insert(m);
+  // Subagent transcripts have no place in the parent's message numbering, so their
+  // user text rides in a single sentinel row (msg_index -1): it keeps the session
+  // findable by subagent-only terms but is excluded from messageHits.
+  if (subagentContent) insert({ role: 'user', text: subagentContent, index: -1, genuine: true, tools: [] });
+  return { cwd: metadata.cwd };
+}
+
+function deleteMessageRows(db: Database, filePath: string): void {
+  db.run('DELETE FROM message_fts WHERE file_path = ?', [filePath]);
+  db.run('DELETE FROM message_cjk_fts WHERE file_path = ?', [filePath]);
+  db.run('DELETE FROM pi_index_state WHERE file_path = ?', [filePath]);
+}
+
+// One message_fts row per indexed message (see writeSessionRow for which). db.query()
+// caches the prepared statement, which matters at ~74 rows/session; the calls run
+// inside refreshIndex's per-batch transaction, never autocommit.
+function messageInserter(db: Database, filePath: string): (m: ExtractedMessage) => void {
+  const insertMessage = db.query('INSERT INTO message_fts (file_path, msg_index, role, text) VALUES (?, ?, ?, ?)');
+  const insertMessageCjk = db.query('INSERT INTO message_cjk_fts (rowid, file_path, cjk) VALUES (?, ?, ?)');
+  // A CJK-bearing message also gets a message_cjk_fts row under the SAME rowid; every
+  // path that deletes message_fts rows by file_path deletes the cjk rows with them.
+  return (m) => {
+    if (m.role === 'user' && !m.genuine) return;
+    const { lastInsertRowid } = insertMessage.run(filePath, m.index, m.role, m.text);
+    const cjk = cjkIndexText(m.text);
+    if (cjk !== '') insertMessageCjk.run(lastInsertRowid, filePath, cjk);
+  };
+}
+
+// The sessions row and the session-level FTS rows. Message rows are the caller's.
+function writeSessionLevel(
+  db: Database,
+  filePath: string,
+  tool: Tool,
+  stat: { mtimeMs: number; size: number },
+  doc: SessionDoc,
+  hasExisting: boolean,
+): void {
+  const { metadata, summary, errors } = doc;
+  const sessionId = basename(filePath).replace('.jsonl', '');
   const headline = `${summary.firstPrompt}\n${metadata.customTitle}`;
-  const pathsText = [...filesTouchedArr, ...filesReadArr].join('\n');
-  const commandsText = commandsArr.join('\n');
+  const pathsText = [...doc.filesTouched, ...doc.filesRead].join('\n');
+  const commandsText = doc.commands.join('\n');
   // context_text carries conversational context that is not a message: error text
   // (all tools) plus pi custom/custom_message injections (recaps, web-search
   // fetches, intercom) — extension output, never turns, so it stays out of
   // message_fts and ranks at the middle bm25 weight.
-  const contextText = [errors.messages.join('\n'), extractCustomContext(lines, tool)].filter(Boolean).join('\n');
+  const contextText = [errors.messages.join('\n'), doc.customContext].filter(Boolean).join('\n');
   if (hasExisting) {
     db.run('DELETE FROM session_fts WHERE file_path = ?', [filePath]);
-    db.run('DELETE FROM message_fts WHERE file_path = ?', [filePath]);
     db.run('DELETE FROM session_cjk_fts WHERE file_path = ?', [filePath]);
-    db.run('DELETE FROM message_cjk_fts WHERE file_path = ?', [filePath]);
   }
   db.run('DELETE FROM ignored_files WHERE file_path = ?', [filePath]);
   db.run(
@@ -595,55 +658,85 @@ function writeSessionRow(
       summary.firstPrompt,
       metadata.customTitle,
       metadata.messageCount,
-      filesTouched,
-      filesRead,
-      commands,
+      JSON.stringify(doc.filesTouched),
+      JSON.stringify(doc.filesRead),
+      JSON.stringify(doc.commands),
       errors.errored ? 1 : 0,
       errors.count,
       summary.closingUser,
       summary.closingAssistant,
       metadata.branch,
-      branches,
-      forkPoints,
-      forkedFrom,
+      doc.forks.length,
+      JSON.stringify(doc.forks),
+      doc.forkedFrom,
       mainCheckoutOf(metadata.cwd),
     ],
   );
   db.run(
     'INSERT INTO session_fts (file_path, headline, commands, paths, context_text, thinking) VALUES (?, ?, ?, ?, ?, ?)',
-    [filePath, headline, commandsText, pathsText, contextText, thinking],
+    [filePath, headline, commandsText, pathsText, contextText, doc.thinking],
   );
-  const sessionCjk = [headline, commandsText, pathsText, contextText, thinking].map(cjkIndexText);
+  const sessionCjk = [headline, commandsText, pathsText, contextText, doc.thinking].map(cjkIndexText);
   if (sessionCjk.some((text) => text !== '')) {
     db.run(
       'INSERT INTO session_cjk_fts (file_path, headline, commands, paths, context_text, thinking) VALUES (?, ?, ?, ?, ?, ?)',
       [filePath, ...sessionCjk],
     );
   }
-  // Message rows: assistant turns always; user turns only when genuine — injected
-  // skill bodies and tool results match everything and are exactly the noise the
-  // trust fixes eliminated elsewhere. Their indices are still consumed by the
-  // numbering (extractMessages counts them), they just get no FTS row. db.query()
-  // caches the prepared statement, which matters at ~74 rows/session; the calls run
-  // inside refreshIndex's per-batch transaction, never autocommit.
-  const insertMessage = db.query('INSERT INTO message_fts (file_path, msg_index, role, text) VALUES (?, ?, ?, ?)');
-  const insertMessageCjk = db.query('INSERT INTO message_cjk_fts (rowid, file_path, cjk) VALUES (?, ?, ?)');
-  // A CJK-bearing message also gets a message_cjk_fts row under the SAME rowid; every
-  // path that deletes message_fts rows by file_path deletes the cjk rows with them.
-  const insertWithCjk = (index: number, role: string, text: string): void => {
-    const { lastInsertRowid } = insertMessage.run(filePath, index, role, text);
-    const cjk = cjkIndexText(text);
-    if (cjk !== '') insertMessageCjk.run(lastInsertRowid, filePath, cjk);
-  };
-  for (const m of messages) {
-    if (m.role === 'user' && !m.genuine) continue;
-    insertWithCjk(m.index, m.role, m.text);
+}
+
+// Thrown out of a pi stream whose first lines carry no usable cwd: the whole-file
+// path then decides (it reads the vault copy or records the file as ignored).
+class UnusablePiFile extends Error {}
+
+/**
+ * Index a live pi transcript by streaming it, resuming after the bytes the last
+ * refresh indexed when the saved state still matches the file (see pi-stream.ts).
+ * An append inserts only the new messages' rows and rewrites the session row.
+ * Returns null when the file is unusable, for indexFile's whole-file fallback.
+ */
+function indexPiStream(
+  db: Database,
+  filePath: string,
+  stat: { mtimeMs: number; size: number },
+  hasExisting: boolean,
+): { cwd: string } | null {
+  const saved = hasExisting
+    ? (db.query<{ state: string }, [string]>('SELECT state FROM pi_index_state WHERE file_path = ?').get(filePath)
+        ?.state ?? null)
+    : null;
+  const resumed = resumableState(filePath, saved, stat.size);
+  const indexer = new PiFileIndexer(resumed ?? undefined);
+  const insert = messageInserter(db, filePath);
+  let pending: ExtractedMessage[] | null = resumed ? null : [];
+  let offset: number;
+  // Rows are written inside the caller's transaction, so an unusable file's partial
+  // writes are never seen; the first chunk holds the header that decides usability.
+  db.exec('SAVEPOINT pi_stream');
+  try {
+    if (hasExisting && !resumed) deleteMessageRows(db, filePath);
+    offset = readLineChunks(filePath, resumed?.offset ?? 0, stat.size, (lines) => {
+      indexer.add(lines, (m) => (pending ? pending.push(m) : insert(m)));
+      if (pending) {
+        if (!usableCwd(indexer.cwd)) throw new UnusablePiFile();
+        for (const m of pending) insert(m);
+        pending = null;
+      }
+    });
+    if (pending) throw new UnusablePiFile(); // no complete line at all
+    writeSessionLevel(db, filePath, 'pi', stat, indexer.doc(), hasExisting);
+    db.run('INSERT OR REPLACE INTO pi_index_state (file_path, state) VALUES (?, ?)', [
+      filePath,
+      JSON.stringify(indexer.state(filePath, offset)),
+    ]);
+    db.exec('RELEASE pi_stream');
+  } catch (error) {
+    db.exec('ROLLBACK TO pi_stream');
+    db.exec('RELEASE pi_stream');
+    if (error instanceof UnusablePiFile) return null;
+    throw error;
   }
-  // Subagent transcripts have no place in the parent's message numbering, so their
-  // user text rides in a single sentinel row (msg_index -1): it keeps the session
-  // findable by subagent-only terms but is excluded from messageHits.
-  if (subagentContent) insertWithCjk(-1, 'user', subagentContent);
-  return { cwd: metadata.cwd };
+  return { cwd: indexer.cwd };
 }
 
 function indexFile(db: Database, filePath: string, tool: Tool, ctx: RefreshCtx): boolean {
@@ -664,8 +757,11 @@ function indexFile(db: Database, filePath: string, tool: Tool, ctx: RefreshCtx):
     .get(filePath);
   if (ignored && ignored.mtime === stat.mtimeMs && ignored.size === stat.size) return false;
 
-  const lines = readSessionLines(filePath, tool);
-  const indexed = writeSessionRow(db, filePath, tool, stat, lines, !!existing);
+  // Live pi transcripts stream (and resume after their last indexed byte); every
+  // other source, and a pi file the stream finds unusable, is parsed whole.
+  const streamed =
+    tool === 'pi' && liveSourcePresent(filePath, tool) ? indexPiStream(db, filePath, stat, !!existing) : null;
+  const indexed = streamed ?? writeSessionRow(db, filePath, tool, stat, readSessionLines(filePath, tool), !!existing);
   if (indexed) {
     // Archive only when the LIVE source is present. `stat` is the live stat in that
     // case (statSession tries the original path before the vault fallback).
@@ -742,6 +838,7 @@ async function runRefreshIndex(opts: RefreshOptions): Promise<RefreshResult> {
         db.run('DELETE FROM session_cjk_fts WHERE file_path = ?', [path]);
         db.run('DELETE FROM message_cjk_fts WHERE file_path = ?', [path]);
         db.run('DELETE FROM session_vectors WHERE file_path = ?', [path]);
+        db.run('DELETE FROM pi_index_state WHERE file_path = ?', [path]);
         db.run('DELETE FROM ignored_files WHERE file_path = ?', [path]);
       }
       db.exec('COMMIT');

@@ -181,3 +181,68 @@ export function toolInput(block: JsonObject): JsonObject {
   const state = asJsonObject(block.state);
   return asJsonObject(state?.input) ?? {};
 }
+
+/**
+ * Streaming form of an extractor: feed the transcript's lines in file order, in any
+ * number of chunks, and `result()` equals one call over the whole file. The state is
+ * plain data, so an index can save it and resume from where a file last ended.
+ */
+export interface Collector<R, S = R> {
+  add(lines: string[]): void;
+  result(): R;
+  state(): S;
+}
+
+/**
+ * The de-duplicating, order-preserving, capped list every list extractor returns.
+ * `seed` resumes from a previous `state()`: `seen` is exactly the set of `out`,
+ * because an item is only remembered when it is kept.
+ */
+export function createDedupCollector(
+  cap: number,
+  feed: (lines: string[], push: (item: string) => void) => void,
+  seed: string[] = [],
+): Collector<string[]> {
+  const out = seed.slice();
+  const seen = new Set(out);
+  const push = (item: string): void => {
+    if (seen.has(item) || out.length >= cap) return;
+    seen.add(item);
+    out.push(item);
+  };
+  return {
+    add: (lines) => feed(lines, push),
+    result: () => out,
+    state: () => out,
+  };
+}
+
+export interface CappedTextState {
+  text: string;
+  /** Whether any part was seen. An empty part still adds a separator. */
+  any: boolean;
+}
+
+/**
+ * `parts.join('\n').slice(0, cap)` over the whole file, built chunk by chunk. Cutting
+ * the running text to `cap` after each chunk keeps it bounded and keeps the same
+ * prefix the whole-file join would have.
+ */
+export function createCappedTextCollector(
+  cap: number,
+  parts: (lines: string[]) => string[],
+  seed: CappedTextState = { text: '', any: false },
+): Collector<string, CappedTextState> {
+  let { text, any } = seed;
+  return {
+    add(lines) {
+      if (text.length >= cap) return;
+      const chunk = parts(lines);
+      if (chunk.length === 0) return;
+      text = ((any ? `${text}\n` : '') + chunk.join('\n')).slice(0, cap);
+      any = true;
+    },
+    result: () => text,
+    state: () => ({ text, any }),
+  };
+}

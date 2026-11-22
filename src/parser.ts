@@ -9,6 +9,7 @@ import {
   asJsonObject,
   asJsonString,
   parsedObjectSchema,
+  type Collector,
   type JsonObject,
   type JsonValue,
 } from './extract-util';
@@ -82,66 +83,26 @@ export interface SessionMetadata {
  * records over and over.
  */
 export function extractSessionMetadata(lines: string[], tool: Tool): SessionMetadata {
-  let cwd = '';
-  let title = '';
-  let firstDate = '?';
-  let firstTs = '';
-  let lastTs = '';
-  let lastDate = '?';
-  let count = 0;
-  let branch = '';
+  const collector = createMetadataCollector(tool);
+  collector.add(lines);
+  return collector.result();
+}
 
-  for (const line of lines) {
-    const d = tryParseJson(line);
-    if (!d) continue;
+/**
+ * extractSessionMetadata, fed chunk by chunk (see Collector). The result maps one to
+ * one onto the running state, so a previous result is also the seed to resume from.
+ */
+export function createMetadataCollector(tool: Tool, seed?: SessionMetadata): Collector<SessionMetadata> {
+  let cwd = seed?.cwd ?? '';
+  let title = seed?.customTitle ?? '';
+  let firstDate = seed?.createdAt ?? '?';
+  let firstTs = seed?.startedAt ?? '';
+  let lastTs = seed?.endedAt ?? '';
+  let lastDate = seed?.date ?? '?';
+  let count = seed?.messageCount ?? 0;
+  let branch = seed?.branch ?? '';
 
-    if (!cwd) {
-      if (tool === 'claude' && d.cwd) {
-        cwd = d.cwd;
-      } else if ((tool === 'pi' || tool === 'opencode') && d.type === 'session' && d.cwd) {
-        cwd = d.cwd;
-      } else if (tool === 'codex' && d.type === 'session_meta') {
-        const value = asJsonString(d.payload?.cwd);
-        if (value) cwd = value;
-      }
-    }
-
-    if (d.type === 'custom-title') title = d.customTitle ?? '';
-    else if (d.type === 'session_info') title = piSessionName(d);
-
-    if (d.timestamp?.[0] === '2') {
-      const date = d.timestamp.slice(0, 10);
-      if (firstDate === '?') {
-        firstDate = date;
-        firstTs = d.timestamp;
-      }
-      lastTs = d.timestamp;
-      lastDate = date;
-    }
-
-    if (isUserMessage(d) || d.type === 'assistant') {
-      count++;
-    } else if (d.type === 'message') {
-      if (asJsonObject(d.message)?.role === 'assistant') count++;
-    } else if (d.type === 'response_item') {
-      // The same envelope gap extractMessages had, in the counting loop. Left unfixed,
-      // every Codex row indexed with message_count 0 even once its messages parsed —
-      // `developer` is excluded here for the same reason it is there: injected framing.
-      const p = d.payload;
-      const role = p?.['type'] === 'message' ? p['role'] : undefined;
-      if (role === 'user' || role === 'assistant') count++;
-    }
-
-    if (tool === 'claude') {
-      const b = asJsonString(d.gitBranch);
-      if (b) branch = b;
-    } else if (tool === 'codex' && !branch && d.type === 'session_meta') {
-      const b = asJsonString(asJsonObject(d.payload?.git)?.branch);
-      if (b) branch = b;
-    }
-  }
-
-  return {
+  const result = (): SessionMetadata => ({
     cwd,
     customTitle: title,
     date: lastDate,
@@ -150,7 +111,60 @@ export function extractSessionMetadata(lines: string[], tool: Tool): SessionMeta
     endedAt: lastTs,
     messageCount: count,
     branch,
+  });
+
+  const add = (lines: string[]): void => {
+    for (const line of lines) {
+      const d = tryParseJson(line);
+      if (!d) continue;
+
+      if (!cwd) {
+        if (tool === 'claude' && d.cwd) {
+          cwd = d.cwd;
+        } else if ((tool === 'pi' || tool === 'opencode') && d.type === 'session' && d.cwd) {
+          cwd = d.cwd;
+        } else if (tool === 'codex' && d.type === 'session_meta') {
+          const value = asJsonString(d.payload?.cwd);
+          if (value) cwd = value;
+        }
+      }
+
+      if (d.type === 'custom-title') title = d.customTitle ?? '';
+      else if (d.type === 'session_info') title = piSessionName(d);
+
+      if (d.timestamp?.[0] === '2') {
+        const date = d.timestamp.slice(0, 10);
+        if (firstDate === '?') {
+          firstDate = date;
+          firstTs = d.timestamp;
+        }
+        lastTs = d.timestamp;
+        lastDate = date;
+      }
+
+      if (isUserMessage(d) || d.type === 'assistant') {
+        count++;
+      } else if (d.type === 'message') {
+        if (asJsonObject(d.message)?.role === 'assistant') count++;
+      } else if (d.type === 'response_item') {
+        // The same envelope gap extractMessages had, in the counting loop. Left unfixed,
+        // every Codex row indexed with message_count 0 even once its messages parsed —
+        // `developer` is excluded here for the same reason it is there: injected framing.
+        const p = d.payload;
+        const role = p?.['type'] === 'message' ? p['role'] : undefined;
+        if (role === 'user' || role === 'assistant') count++;
+      }
+
+      if (tool === 'claude') {
+        const b = asJsonString(d.gitBranch);
+        if (b) branch = b;
+      } else if (tool === 'codex' && !branch && d.type === 'session_meta') {
+        const b = asJsonString(asJsonObject(d.payload?.git)?.branch);
+        if (b) branch = b;
+      }
+    }
   };
+  return { add, result, state: result };
 }
 
 /**
@@ -684,42 +698,64 @@ export function extractMessages(lines: string[]): ExtractedMessage[] {
   // Source line of each emitted message — the pi annotation pass maps messages back
   // to tree entries through these.
   const messageLines: number[] = [];
-  let idx = 0;
+  createMessageStream().add(lines, (message, li) => {
+    messages.push(message);
+    messageLines.push(li);
+  });
+  annotatePiBranches(messages, messageLines, lines);
+  return messages;
+}
+
+export interface MessageStream {
+  /** Emit each message in `lines` with its line position within `lines`. */
+  add(lines: string[], emit: (message: ExtractedMessage, lineIndex: number) => void): void;
+  /** The index the next emitted message will get. */
+  nextIndex(): number;
+}
+
+/**
+ * The linear pass of extractMessages (no Codex envelope, no pi branch annotation),
+ * fed chunk by chunk and resumable at `nextIndex`. A stream resumed from a saved
+ * index has no turn head yet, so pure tool-use calls before its first message attach
+ * to that next message instead of the previous one; tools are not indexed, so the
+ * search index is the same either way.
+ */
+export function createMessageStream(nextIndex = 0): MessageStream {
+  let idx = nextIndex;
   // The turn's head message — where a following pure-tool-use line's calls attach.
   let current: ExtractedMessage | null = null;
   // Tool calls seen before any message was emitted (rare: a session opening on a tool
   // call). Buffered here and flushed onto the first emitted message.
   let pending: ToolUse[] = [];
-  for (let li = 0; li < lines.length; li++) {
-    const d = tryParseJson(lines[li]!);
-    if (!d) continue;
-    if (isUserMessage(d)) {
-      const text = extractUserText(d);
-      if (text.trim()) {
-        current = { role: 'user', text, index: idx++, genuine: isGenuineUserTurn(d, text.trim()), tools: pending };
-        pending = [];
-        messages.push(current);
-        messageLines.push(li);
-      }
-      // A user line with no text is a tool_result/empty turn — it carries no tool_use
-      // and must not reset `current` (assistant calls after it still belong to the turn).
-    } else {
-      const text = extractAssistantText(d);
-      const tools = extractToolUses(d);
-      if (text.trim()) {
-        current = { role: 'assistant', text, index: idx++, genuine: true, tools: pending.concat(tools) };
-        pending = [];
-        messages.push(current);
-        messageLines.push(li);
-      } else if (tools.length) {
-        // Pure tool-use turn: no text row (so no index), fold its calls into the head.
-        if (current) current.tools.push(...tools);
-        else pending.push(...tools);
+  const add = (lines: string[], emit: (message: ExtractedMessage, lineIndex: number) => void): void => {
+    for (let li = 0; li < lines.length; li++) {
+      const d = tryParseJson(lines[li]!);
+      if (!d) continue;
+      if (isUserMessage(d)) {
+        const text = extractUserText(d);
+        if (text.trim()) {
+          current = { role: 'user', text, index: idx++, genuine: isGenuineUserTurn(d, text.trim()), tools: pending };
+          pending = [];
+          emit(current, li);
+        }
+        // A user line with no text is a tool_result/empty turn — it carries no tool_use
+        // and must not reset `current` (assistant calls after it still belong to the turn).
+      } else {
+        const text = extractAssistantText(d);
+        const tools = extractToolUses(d);
+        if (text.trim()) {
+          current = { role: 'assistant', text, index: idx++, genuine: true, tools: pending.concat(tools) };
+          pending = [];
+          emit(current, li);
+        } else if (tools.length) {
+          // Pure tool-use turn: no text row (so no index), fold its calls into the head.
+          if (current) current.tools.push(...tools);
+          else pending.push(...tools);
+        }
       }
     }
-  }
-  annotatePiBranches(messages, messageLines, lines);
-  return messages;
+  };
+  return { add, nextIndex: () => idx };
 }
 
 /**
@@ -840,7 +876,17 @@ export function summarizeMessages(messages: ExtractedMessage[]): MessageSummary 
       lastAssistant = message.text;
     }
   }
+  return summarizeTurns({ first, lastUser, lastAssistant });
+}
 
+/** The raw turn texts summarizeMessages reads: first and last genuine user turn, last assistant turn. */
+export interface SummaryTurns {
+  first: string;
+  lastUser: string;
+  lastAssistant: string;
+}
+
+export function summarizeTurns({ first, lastUser, lastAssistant }: SummaryTurns): MessageSummary {
   const finish = (text: string): string => {
     const stripped = stripInjected(text).trim();
     return stripped.length > CLOSING_MAX ? stripped.slice(0, CLOSING_MAX) : stripped;

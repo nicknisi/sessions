@@ -5,6 +5,7 @@ import {
   asJsonObject,
   asJsonString,
   asJsonNumber,
+  type Collector,
   type JsonValue,
 } from './extract-util';
 
@@ -97,15 +98,28 @@ function extractOpencode(lines: string[], push: (m: string) => void): void {
 
 /** Whether (and how) a session hit errors — drives the `errored` filter + `context_text` FTS column. */
 export function extractErrors(lines: string[], tool: Tool): SessionErrors {
-  const messages: string[] = [];
-  let count = 0;
+  const collector = createErrorsCollector(tool);
+  collector.add(lines);
+  return collector.result();
+}
+
+/** extractErrors, fed chunk by chunk (see Collector). */
+export function createErrorsCollector(tool: Tool, seed?: SessionErrors): Collector<SessionErrors> {
+  const messages = seed ? seed.messages.slice() : [];
+  let count = seed?.count ?? 0;
   const push = (m: string): void => {
     count++;
     if (messages.length < MAX_ERROR_MESSAGES) messages.push(m.slice(0, MAX_ERROR_LEN));
   };
-  if (tool === 'claude') extractClaude(lines, push);
-  else if (tool === 'codex') extractCodex(lines, push);
-  else if (tool === 'pi') extractPi(lines, push);
-  else if (tool === 'opencode') extractOpencode(lines, push);
-  return { errored: count > 0, count, messages };
+  const result = (): SessionErrors => ({ errored: count > 0, count, messages });
+  return {
+    add(lines) {
+      if (tool === 'claude') extractClaude(lines, push);
+      else if (tool === 'codex') extractCodex(lines, push);
+      else if (tool === 'pi') extractPi(lines, push);
+      else if (tool === 'opencode') extractOpencode(lines, push);
+    },
+    result,
+    state: result,
+  };
 }
