@@ -699,6 +699,9 @@ function indexFile(db: Database, filePath: string, tool: Tool, ctx: RefreshCtx):
   return false;
 }
 
+/** Transcripts above this size get a full collection after they are indexed. */
+const LARGE_TRANSCRIPT_BYTES = 64 * 1024 * 1024;
+
 async function runRefreshIndex(opts: RefreshOptions): Promise<RefreshResult> {
   const db = getDb();
   // The vault manifest, loaded once and saved once (saveManifest at the end):
@@ -779,6 +782,11 @@ async function runRefreshIndex(opts: RefreshOptions): Promise<RefreshResult> {
     try {
       for (const file of batch) {
         if (indexFile(db, file.path, file.tool, ctx)) updated++;
+        // A long-lived agent transcript can be hundreds of MB. Its parse garbage
+        // (the whole-file string, its lines, every parsed line) is several times
+        // that, and the collector does not reclaim it before the next file, so peak
+        // memory grows with the corpus rather than with the largest file.
+        if ((statSession(file.path, file.tool)?.size ?? 0) > LARGE_TRANSCRIPT_BYTES) Bun.gc(true);
       }
       db.exec('COMMIT');
     } catch (error) {
