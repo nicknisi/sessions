@@ -646,23 +646,26 @@ function writeSessionRow(
   return { cwd: metadata.cwd };
 }
 
-function indexFile(db: Database, filePath: string, tool: Tool, ctx: RefreshCtx): boolean {
+/** What indexFile did: skipped the file unread, read it but ignored it (unusable), or indexed it. */
+type IndexOutcome = 'unchanged' | 'ignored' | 'indexed';
+
+function indexFile(db: Database, filePath: string, tool: Tool, ctx: RefreshCtx): IndexOutcome {
   // Deliberately re-stat rather than trusting refreshIndex's pre-lock snapshot: a
   // candidate may have waited behind another MCP process at BEGIN IMMEDIATE, and
   // this is where we observe that process's completed write (or a transcript
   // append) and skip the parse. A file that vanished during the wait — with no vault
   // copy either — stats as null and is left entirely alone; pruning is its owner.
   const stat = statSession(filePath, tool);
-  if (!stat) return false;
+  if (!stat) return 'unchanged';
 
   const existing = db
     .query<{ mtime: number; size: number }, [string]>('SELECT mtime, size FROM sessions WHERE file_path = ?')
     .get(filePath);
-  if (existing && existing.mtime === stat.mtimeMs && existing.size === stat.size) return false;
+  if (existing && existing.mtime === stat.mtimeMs && existing.size === stat.size) return 'unchanged';
   const ignored = db
     .query<{ mtime: number; size: number }, [string]>('SELECT mtime, size FROM ignored_files WHERE file_path = ?')
     .get(filePath);
-  if (ignored && ignored.mtime === stat.mtimeMs && ignored.size === stat.size) return false;
+  if (ignored && ignored.mtime === stat.mtimeMs && ignored.size === stat.size) return 'unchanged';
 
   const lines = readSessionLines(filePath, tool);
   const indexed = writeSessionRow(db, filePath, tool, stat, lines, !!existing);
@@ -680,7 +683,7 @@ function indexFile(db: Database, filePath: string, tool: Tool, ctx: RefreshCtx):
         ),
       );
     }
-    return true;
+    return 'indexed';
   }
 
   // The live file is unusable (empty/truncated/rotated by the vendor). If the vault
@@ -692,11 +695,11 @@ function indexFile(db: Database, filePath: string, tool: Tool, ctx: RefreshCtx):
     try {
       vaultLines = readFileSync(entry.vaultPath, 'utf-8').trimEnd().split('\n');
     } catch {}
-    if (writeSessionRow(db, filePath, tool, stat, vaultLines, !!existing)) return true;
+    if (writeSessionRow(db, filePath, tool, stat, vaultLines, !!existing)) return 'indexed';
   }
 
   ignoreSession(db, filePath, stat, !!existing);
-  return false;
+  return 'ignored';
 }
 
 /** Transcripts above this size get a full collection after they are indexed. */
@@ -798,12 +801,16 @@ async function runRefreshIndex(opts: RefreshOptions): Promise<RefreshResult> {
     db.exec('BEGIN IMMEDIATE');
     try {
       for (const file of batch) {
-        if (indexFile(db, file.path, file.tool, ctx)) updated++;
+        const outcome = indexFile(db, file.path, file.tool, ctx);
+        if (outcome === 'indexed') updated++;
         // A long-lived agent transcript can be hundreds of MB. Its parse garbage
         // (the whole-file string, its lines, every parsed line) is several times
         // that, and the collector does not reclaim it before the next file, so peak
-        // memory grows with the corpus rather than with the largest file.
-        if (parsedTranscriptBytes(file.path, file.tool) > LARGE_TRANSCRIPT_BYTES) Bun.gc(true);
+        // memory grows with the corpus rather than with the largest file. A file
+        // skipped unread left no garbage, so it costs no collection.
+        if (outcome !== 'unchanged' && parsedTranscriptBytes(file.path, file.tool) > LARGE_TRANSCRIPT_BYTES) {
+          Bun.gc(true);
+        }
       }
       db.exec('COMMIT');
     } catch (error) {
