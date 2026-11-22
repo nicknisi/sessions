@@ -99,7 +99,8 @@ if (command === 'context') {
 if (command === 'index') {
   const { refreshIndex } = await import('./src/cache');
   const result = await refreshIndex();
-  process.stdout.write(`indexed ${result.updated} changed of ${result.total} sessions\n`);
+  // `total` counts every transcript file found, including those indexing skips (no cwd).
+  process.stdout.write(`indexed ${result.updated} changed of ${result.total} transcript files\n`);
   process.exit(0);
 }
 
