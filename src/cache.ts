@@ -647,13 +647,13 @@ function writeSessionRow(
 }
 
 /** What indexFile did (skipped the file unread, read it but ignored it as unusable, or
- *  indexed it) and how much transcript text it parsed to do so. */
+ *  indexed it) and how many bytes of transcript text it parsed to do so. */
 interface IndexResult {
   outcome: 'unchanged' | 'ignored' | 'indexed';
-  parsedChars: number;
+  parsedBytes: number;
 }
 
-const textSize = (lines: string[]): number => lines.reduce((n, l) => n + l.length + 1, 0);
+const textBytes = (lines: string[]): number => lines.reduce((n, l) => n + Buffer.byteLength(l, 'utf8') + 1, 0);
 
 function indexFile(db: Database, filePath: string, tool: Tool, ctx: RefreshCtx): IndexResult {
   // Deliberately re-stat rather than trusting refreshIndex's pre-lock snapshot: a
@@ -662,24 +662,24 @@ function indexFile(db: Database, filePath: string, tool: Tool, ctx: RefreshCtx):
   // append) and skip the parse. A file that vanished during the wait — with no vault
   // copy either — stats as null and is left entirely alone; pruning is its owner.
   const stat = statSession(filePath, tool);
-  if (!stat) return { outcome: 'unchanged', parsedChars: 0 };
+  if (!stat) return { outcome: 'unchanged', parsedBytes: 0 };
 
   const existing = db
     .query<{ mtime: number; size: number }, [string]>('SELECT mtime, size FROM sessions WHERE file_path = ?')
     .get(filePath);
   if (existing && existing.mtime === stat.mtimeMs && existing.size === stat.size) {
-    return { outcome: 'unchanged', parsedChars: 0 };
+    return { outcome: 'unchanged', parsedBytes: 0 };
   }
   const ignored = db
     .query<{ mtime: number; size: number }, [string]>('SELECT mtime, size FROM ignored_files WHERE file_path = ?')
     .get(filePath);
   if (ignored && ignored.mtime === stat.mtimeMs && ignored.size === stat.size) {
-    return { outcome: 'unchanged', parsedChars: 0 };
+    return { outcome: 'unchanged', parsedBytes: 0 };
   }
 
   const lines = readSessionLines(filePath, tool);
   // Parsed text, not stat.size: for OpenCode that is a row count kept for invalidation.
-  let parsedChars = textSize(lines);
+  let parsedBytes = textBytes(lines);
   const indexed = writeSessionRow(db, filePath, tool, stat, lines, !!existing);
   if (indexed) {
     // Archive only when the LIVE source is present. `stat` is the live stat in that
@@ -695,7 +695,7 @@ function indexFile(db: Database, filePath: string, tool: Tool, ctx: RefreshCtx):
         ),
       );
     }
-    return { outcome: 'indexed', parsedChars };
+    return { outcome: 'indexed', parsedBytes };
   }
 
   // The live file is unusable (empty/truncated/rotated by the vendor). If the vault
@@ -707,12 +707,12 @@ function indexFile(db: Database, filePath: string, tool: Tool, ctx: RefreshCtx):
     try {
       vaultLines = readFileSync(entry.vaultPath, 'utf-8').trimEnd().split('\n');
     } catch {}
-    parsedChars += textSize(vaultLines);
-    if (writeSessionRow(db, filePath, tool, stat, vaultLines, !!existing)) return { outcome: 'indexed', parsedChars };
+    parsedBytes += textBytes(vaultLines);
+    if (writeSessionRow(db, filePath, tool, stat, vaultLines, !!existing)) return { outcome: 'indexed', parsedBytes };
   }
 
   ignoreSession(db, filePath, stat, !!existing);
-  return { outcome: 'ignored', parsedChars };
+  return { outcome: 'ignored', parsedBytes };
 }
 
 /** Transcripts above this size get a full collection after they are indexed. */
@@ -822,7 +822,7 @@ async function runRefreshIndex(opts: RefreshOptions): Promise<RefreshResult> {
         // skipped unread left no garbage, so it costs no collection.
         if (
           result.outcome !== 'unchanged' &&
-          result.parsedChars + subagentTranscriptBytes(file.path, file.tool) > LARGE_TRANSCRIPT_BYTES
+          result.parsedBytes + subagentTranscriptBytes(file.path, file.tool) > LARGE_TRANSCRIPT_BYTES
         ) {
           Bun.gc(true);
         }
