@@ -714,15 +714,15 @@ function indexPiStream(
     ? (db.query<{ state: string }, [string]>('SELECT state FROM pi_index_state WHERE file_path = ?').get(filePath)
         ?.state ?? null)
     : null;
-  // The head is hashed before the parse and again after it: a file replaced while it
-  // was read must not keep a state whose head describes the new file but whose rows
-  // and offset describe the old one.
+  // The head is hashed before the saved state is checked against the file, and again
+  // after the parse: a file replaced meanwhile must not keep a state whose head
+  // describes the new file but whose rows and offset describe the old one.
   const headLen = Math.min(HEAD_BYTES, stat.size);
   let resumed: PiIndexState | null;
   let headBefore: string;
   try {
-    resumed = resumableState(filePath, saved, stat.size);
     headBefore = headHash(filePath, headLen);
+    resumed = resumableState(filePath, saved, stat.size);
   } catch (error) {
     if (error instanceof TranscriptReadError) return null;
     throw error;
