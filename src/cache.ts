@@ -1,5 +1,5 @@
 import { Database } from 'bun:sqlite';
-import { existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, basename } from 'node:path';
 import { homedir } from 'node:os';
 import { readdir } from 'node:fs/promises';
@@ -646,25 +646,40 @@ function writeSessionRow(
   return { cwd: metadata.cwd };
 }
 
-function indexFile(db: Database, filePath: string, tool: Tool, ctx: RefreshCtx): boolean {
+/** What indexFile did (skipped the file unread, read it but ignored it as unusable, or
+ *  indexed it) and how many bytes of transcript text it parsed to do so. */
+interface IndexResult {
+  outcome: 'unchanged' | 'ignored' | 'indexed';
+  parsedBytes: number;
+}
+
+const textBytes = (lines: string[]): number => lines.reduce((n, l) => n + Buffer.byteLength(l, 'utf8') + 1, 0);
+
+function indexFile(db: Database, filePath: string, tool: Tool, ctx: RefreshCtx): IndexResult {
   // Deliberately re-stat rather than trusting refreshIndex's pre-lock snapshot: a
   // candidate may have waited behind another MCP process at BEGIN IMMEDIATE, and
   // this is where we observe that process's completed write (or a transcript
   // append) and skip the parse. A file that vanished during the wait — with no vault
   // copy either — stats as null and is left entirely alone; pruning is its owner.
   const stat = statSession(filePath, tool);
-  if (!stat) return false;
+  if (!stat) return { outcome: 'unchanged', parsedBytes: 0 };
 
   const existing = db
     .query<{ mtime: number; size: number }, [string]>('SELECT mtime, size FROM sessions WHERE file_path = ?')
     .get(filePath);
-  if (existing && existing.mtime === stat.mtimeMs && existing.size === stat.size) return false;
+  if (existing && existing.mtime === stat.mtimeMs && existing.size === stat.size) {
+    return { outcome: 'unchanged', parsedBytes: 0 };
+  }
   const ignored = db
     .query<{ mtime: number; size: number }, [string]>('SELECT mtime, size FROM ignored_files WHERE file_path = ?')
     .get(filePath);
-  if (ignored && ignored.mtime === stat.mtimeMs && ignored.size === stat.size) return false;
+  if (ignored && ignored.mtime === stat.mtimeMs && ignored.size === stat.size) {
+    return { outcome: 'unchanged', parsedBytes: 0 };
+  }
 
   const lines = readSessionLines(filePath, tool);
+  // Parsed text, not stat.size: for OpenCode that is a row count kept for invalidation.
+  let parsedBytes = textBytes(lines);
   const indexed = writeSessionRow(db, filePath, tool, stat, lines, !!existing);
   if (indexed) {
     // Archive only when the LIVE source is present. `stat` is the live stat in that
@@ -680,7 +695,7 @@ function indexFile(db: Database, filePath: string, tool: Tool, ctx: RefreshCtx):
         ),
       );
     }
-    return true;
+    return { outcome: 'indexed', parsedBytes };
   }
 
   // The live file is unusable (empty/truncated/rotated by the vendor). If the vault
@@ -692,11 +707,31 @@ function indexFile(db: Database, filePath: string, tool: Tool, ctx: RefreshCtx):
     try {
       vaultLines = readFileSync(entry.vaultPath, 'utf-8').trimEnd().split('\n');
     } catch {}
-    if (writeSessionRow(db, filePath, tool, stat, vaultLines, !!existing)) return true;
+    parsedBytes += textBytes(vaultLines);
+    if (writeSessionRow(db, filePath, tool, stat, vaultLines, !!existing)) return { outcome: 'indexed', parsedBytes };
   }
 
   ignoreSession(db, filePath, stat, !!existing);
-  return false;
+  return { outcome: 'ignored', parsedBytes };
+}
+
+/** Transcripts above this size get a full collection after they are indexed. */
+const LARGE_TRANSCRIPT_BYTES = 64 * 1024 * 1024;
+
+/** Size of the Claude subagent transcripts writeSessionRow reads alongside a session. */
+function subagentTranscriptBytes(filePath: string, tool: Tool): number {
+  let bytes = 0;
+  const dir = tool === 'claude' ? resolveSubagentsDir(filePath) : null;
+  if (!dir) return bytes;
+  try {
+    for (const f of readdirSync(dir)) {
+      if (!f.endsWith('.jsonl')) continue;
+      try {
+        bytes += statSync(join(dir, f)).size;
+      } catch {}
+    }
+  } catch {}
+  return bytes;
 }
 
 async function runRefreshIndex(opts: RefreshOptions): Promise<RefreshResult> {
@@ -778,7 +813,19 @@ async function runRefreshIndex(opts: RefreshOptions): Promise<RefreshResult> {
     db.exec('BEGIN IMMEDIATE');
     try {
       for (const file of batch) {
-        if (indexFile(db, file.path, file.tool, ctx)) updated++;
+        const result = indexFile(db, file.path, file.tool, ctx);
+        if (result.outcome === 'indexed') updated++;
+        // A long-lived agent transcript can be hundreds of MB. Its parse garbage
+        // (the whole-file string, its lines, every parsed line) is several times
+        // that, and the collector does not reclaim it before the next file, so peak
+        // memory grows with the corpus rather than with the largest file. A file
+        // skipped unread left no garbage, so it costs no collection.
+        if (
+          result.outcome !== 'unchanged' &&
+          result.parsedBytes + subagentTranscriptBytes(file.path, file.tool) > LARGE_TRANSCRIPT_BYTES
+        ) {
+          Bun.gc(true);
+        }
       }
       db.exec('COMMIT');
     } catch (error) {
