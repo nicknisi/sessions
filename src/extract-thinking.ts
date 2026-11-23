@@ -1,9 +1,16 @@
 import type { Tool } from './types';
-import { tryParse, asJsonObject, asJsonString } from './extract-util';
+import {
+  tryParse,
+  asJsonObject,
+  asJsonString,
+  createCappedTextCollector,
+  type CappedTextState,
+  type Collector,
+} from './extract-util';
 
 export const MAX_THINKING_LEN = 20_000;
 
-function collect(lines: string[]): string {
+function collect(lines: string[]): string[] {
   const parts: string[] = [];
   for (const line of lines) {
     const d = tryParse(line);
@@ -21,7 +28,7 @@ function collect(lines: string[]): string {
       }
     }
   }
-  return parts.join('\n').slice(0, MAX_THINKING_LEN);
+  return parts;
 }
 
 /**
@@ -31,6 +38,12 @@ function collect(lines: string[]): string {
  * encrypted in the logs, so Codex returns empty.
  */
 export function extractThinking(lines: string[], tool: Tool): string {
-  if (tool === 'codex') return '';
-  return collect(lines);
+  const collector = createThinkingCollector(tool);
+  collector.add(lines);
+  return collector.result();
+}
+
+/** extractThinking, fed chunk by chunk (see Collector). */
+export function createThinkingCollector(tool: Tool, seed?: CappedTextState): Collector<string, CappedTextState> {
+  return createCappedTextCollector(MAX_THINKING_LEN, (lines) => (tool === 'codex' ? [] : collect(lines)), seed);
 }

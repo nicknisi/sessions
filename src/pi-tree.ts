@@ -1,11 +1,4 @@
-import {
-  tryParse,
-  extractUserText,
-  isGenuineUserTurn,
-  isUserMessage,
-  asJsonString,
-  type JsonObject,
-} from './extract-util';
+import { tryParse, extractUserText, isGenuineUserTurn, isUserMessage, asJsonString } from './extract-util';
 
 export interface PiEntry {
   id: string;
@@ -13,6 +6,8 @@ export interface PiEntry {
   type: string;
   timestamp?: string;
   lineIndex: number; // 0-based position in lines[]
+  /** Genuine user text, trimmed and cut to FORK_TEXT_MAX; set only on genuine user turns. */
+  userText?: string;
 }
 
 export interface PiFork {
@@ -56,7 +51,7 @@ const FORK_TEXT_MAX = 80;
  * extractMessages call — including on multi-megabyte Claude logs during indexing —
  * and those must be rejected without a full parse.
  */
-const PI_SNIFF_LINES = 20;
+export const PI_SNIFF_LINES = 20;
 
 /**
  * The single authority on pi session topology.
@@ -77,35 +72,53 @@ const PI_SNIFF_LINES = 20;
  * null-chain convention, and a backlink cycle yields a fully-active, fork-free tree.
  */
 export function buildPiTree(lines: string[]): PiTree | null {
-  // Detection, on the sniff window only (see PI_SNIFF_LINES).
-  let detected = false;
+  if (!isPiTranscript(lines)) return null;
+  const entries: PiEntry[] = [];
+  collectPiEntries(lines, 0, entries);
+  return piTreeFromEntries(entries);
+}
+
+/** Detection, on the sniff window only (see PI_SNIFF_LINES). Pass the file's first lines. */
+export function isPiTranscript(lines: string[]): boolean {
   const sniff = Math.min(lines.length, PI_SNIFF_LINES);
   for (let i = 0; i < sniff; i++) {
     const d = tryParse(lines[i] ?? '');
-    if (d && asJsonString(d.id) !== undefined && 'parentId' in d) {
-      detected = true;
-      break;
-    }
+    if (d && asJsonString(d.id) !== undefined && 'parentId' in d) return true;
   }
-  if (!detected) return null;
+  return false;
+}
 
-  // Pass 1: collect the id-bearing entries (every line of a real pi file has one).
-  const parsed: (JsonObject | null)[] = [];
-  const entries: PiEntry[] = [];
+/**
+ * Pass 1: collect the id-bearing entries (every line of a real pi file has one),
+ * appending to `into`. `lineBase` is the file line number of lines[0], so a file can
+ * be collected in chunks, or resumed after its last indexed line.
+ */
+export function collectPiEntries(lines: string[], lineBase: number, into: PiEntry[]): void {
   for (let i = 0; i < lines.length; i++) {
     const d = tryParse(lines[i] ?? '');
-    parsed.push(d);
     const id = asJsonString(d?.id);
     if (!d || id === undefined) continue;
-    entries.push({
+    const entry: PiEntry = {
       id,
       parentId: asJsonString(d.parentId) ?? null,
       type: asJsonString(d.type) ?? '',
       timestamp: asJsonString(d.timestamp),
-      lineIndex: i,
-    });
+      lineIndex: lineBase + i,
+    };
+    // First genuine human text, under the same rules the parser applies to user
+    // turns, so injected/skill-preamble text never labels a fork.
+    if (isUserMessage(d)) {
+      const text = extractUserText(d).trim();
+      if (text && isGenuineUserTurn(d, text)) {
+        entry.userText = text.length > FORK_TEXT_MAX ? text.slice(0, FORK_TEXT_MAX) : text;
+      }
+    }
+    into.push(entry);
   }
+}
 
+/** Passes 2-4 over every entry of a file, in file order. */
+export function piTreeFromEntries(entries: PiEntry[]): PiTree {
   // Pass 2: resolve parents. Two conventions, both corpus-verified: a null parentId
   // (the header-adjacent model_change in EVERY pi file) chains to the preceding
   // entry, and an unknown parentId does the same (defensive — never observed). First
@@ -168,17 +181,7 @@ export function buildPiTree(lines: string[]): PiTree | null {
       for (const k of childIdx.get(c) ?? []) stack.push(k);
     }
     members.sort((a, b) => a - b);
-    // First genuine human text in the branch, under the same rules the parser
-    // applies to user turns, so injected/skill-preamble text never labels a fork.
-    let firstUserText = '';
-    for (const m of members) {
-      const d = parsed[entries[m]!.lineIndex];
-      if (!d || !isUserMessage(d)) continue;
-      const text = extractUserText(d).trim();
-      if (!text || !isGenuineUserTurn(d, text)) continue;
-      firstUserText = text.length > FORK_TEXT_MAX ? text.slice(0, FORK_TEXT_MAX) : text;
-      break;
-    }
+    const firstUserText = members.map((m) => entries[m]!.userText).find((text) => text !== undefined) ?? '';
     forks.push({
       atLine: entries[i]!.lineIndex,
       fromEntryId: entries[p]!.id,

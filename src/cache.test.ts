@@ -241,3 +241,91 @@ test('schema bump: stale rows are recomputed by the drop+rebuild, and ignored_fi
   // ignored_files was dropped with everything else and re-derived by the refresh.
   expect(ignoredRow(ignoredPath)).not.toBeNull();
 });
+
+interface MessageRow {
+  msg_index: number;
+  text: string;
+}
+
+function messageRows(filePath: string): MessageRow[] {
+  const db = new Database(cache.getDbPath(), { readonly: true });
+  try {
+    return db
+      .query<MessageRow, [string]>('SELECT msg_index, text FROM message_fts WHERE file_path = ? ORDER BY msg_index')
+      .all(filePath);
+  } finally {
+    db.close();
+  }
+}
+
+function closingAssistant(filePath: string): string | undefined {
+  const db = new Database(cache.getDbPath(), { readonly: true });
+  try {
+    return db
+      .query<{ closing_assistant: string }, [string]>('SELECT closing_assistant FROM sessions WHERE file_path = ?')
+      .get(filePath)?.closing_assistant;
+  } finally {
+    db.close();
+  }
+}
+
+test('pi refresh after an append parses only the appended lines', async () => {
+  const path = piPath('growing');
+  // The padding turn pushes "alpha" past the first bytes the resume check hashes.
+  const padding = 'p'.repeat(5000);
+  const first = [
+    piSession(),
+    piModelChange('m1', null),
+    piUser('u0', 'm1', padding),
+    piUser('u1', 'u0', 'alpha question'),
+    piAssistant('a1', 'u1', 'alpha answer'),
+  ];
+  writeFileSync(path, first.map(j).join('\n') + '\n');
+  await cache.refreshIndex();
+  expect(messageRows(path).map((r) => r.text)).toEqual([padding, 'alpha question', 'alpha answer']);
+
+  // Pi never edits earlier lines. Doing it here, same length and past the hashed
+  // head, shows which lines the next refresh reads: a resumed refresh keeps the
+  // indexed text, a full re-parse would pick up "ALPHA".
+  const appended = [piUser('u2', 'a1', 'bravo question'), piAssistant('a2', 'u2', 'bravo answer')];
+  writeFileSync(path, [...first, ...appended].map(j).join('\n').replace('alpha question', 'ALPHA question') + '\n');
+  await cache.refreshIndex();
+  expect(messageRows(path).map((r) => [r.msg_index, r.text])).toEqual([
+    [0, padding],
+    [1, 'alpha question'],
+    [2, 'alpha answer'],
+    [3, 'bravo question'],
+    [4, 'bravo answer'],
+  ]);
+  expect(closingAssistant(path)).toBe('bravo answer');
+});
+
+test('pi refresh re-parses a file rewritten from the start', async () => {
+  const path = piPath('rewritten');
+  writeFileSync(
+    path,
+    [piSession(), piModelChange('m1', null), piUser('u1', 'm1', 'charlie question')].map(j).join('\n') + '\n',
+  );
+  await cache.refreshIndex();
+  expect(messageRows(path).map((r) => r.text)).toEqual(['charlie question']);
+
+  // Longer than before, so only the changed head shows the old rows no longer apply.
+  writeFileSync(
+    path,
+    [
+      piSession(),
+      piModelChange('m1', null),
+      piUser('u1', 'm1', 'delta question'),
+      piAssistant('a1', 'u1', 'delta answer'),
+      piUser('u2', 'a1', 'echo question'),
+    ]
+      .map(j)
+      .join('\n') + '\n',
+  );
+  await cache.refreshIndex();
+  expect(messageRows(path).map((r) => [r.msg_index, r.text])).toEqual([
+    [0, 'delta question'],
+    [1, 'delta answer'],
+    [2, 'echo question'],
+  ]);
+});

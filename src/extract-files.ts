@@ -6,6 +6,8 @@ import {
   asJsonObject,
   asJsonString,
   jsonStrings,
+  createDedupCollector,
+  type Collector,
   type JsonObject,
 } from './extract-util';
 
@@ -132,20 +134,23 @@ function extractOpencode(lines: string[], push: (p: string) => void): void {
 
 /** De-duplicated, order-preserving, capped list of source-file paths edited during a session. */
 export function extractFiles(lines: string[], tool: Tool): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  const push = (path: string): void => {
-    if (seen.has(path) || out.length >= MAX_FILES) return;
-    seen.add(path);
-    out.push(path);
-  };
+  const collector = createFilesCollector(tool);
+  collector.add(lines);
+  return collector.result();
+}
 
-  if (tool === 'claude') extractClaude(lines, push);
-  else if (tool === 'codex') extractCodex(lines, push);
-  else if (tool === 'pi') extractPi(lines, push);
-  else if (tool === 'opencode') extractOpencode(lines, push);
-
-  return out;
+/** extractFiles, fed chunk by chunk (see Collector). */
+export function createFilesCollector(tool: Tool, seed?: string[]): Collector<string[]> {
+  return createDedupCollector(
+    MAX_FILES,
+    (lines, push) => {
+      if (tool === 'claude') extractClaude(lines, push);
+      else if (tool === 'codex') extractCodex(lines, push);
+      else if (tool === 'pi') extractPi(lines, push);
+      else if (tool === 'opencode') extractOpencode(lines, push);
+    },
+    seed,
+  );
 }
 
 /** Claude: read-only tool_use targets (Read/Grep/Glob), kept separate from edits. */
@@ -186,17 +191,22 @@ function extractPiRead(lines: string[], push: (p: string) => void): void {
  * Codex read-target shapes still need fixtures to confirm — deliberate no-op.
  */
 export function extractFilesRead(lines: string[], tool: Tool): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  const push = (path: string): void => {
-    if (seen.has(path) || out.length >= MAX_FILES) return;
-    seen.add(path);
-    out.push(path);
-  };
-  if (tool === 'claude') extractClaudeRead(lines, push);
-  else if (tool === 'pi') extractPiRead(lines, push);
-  else if (tool === 'opencode') extractOpencodeRead(lines, push);
-  return out;
+  const collector = createFilesReadCollector(tool);
+  collector.add(lines);
+  return collector.result();
+}
+
+/** extractFilesRead, fed chunk by chunk (see Collector). */
+export function createFilesReadCollector(tool: Tool, seed?: string[]): Collector<string[]> {
+  return createDedupCollector(
+    MAX_FILES,
+    (lines, push) => {
+      if (tool === 'claude') extractClaudeRead(lines, push);
+      else if (tool === 'pi') extractPiRead(lines, push);
+      else if (tool === 'opencode') extractOpencodeRead(lines, push);
+    },
+    seed,
+  );
 }
 
 /** OpenCode: read/searched targets — `read` tool `filePath`/`path`, `grep`/`glob` `path`/`pattern`. */
